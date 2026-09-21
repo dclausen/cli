@@ -6,7 +6,6 @@ import (
 	"runtime"
 
 	"github.com/entireio/cli/cmd/entire/cli/experimental"
-	"github.com/entireio/cli/cmd/entire/cli/investigate"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
@@ -49,6 +48,23 @@ const (
 func inGroup(c *cobra.Command, groupID string) *cobra.Command {
 	c.GroupID = groupID
 	return c
+}
+
+// requireSubcommand makes a command group answer an unknown subcommand with an
+// error instead of printing help and reporting success, so a verb that no
+// longer exists fails the shell rather than silently doing nothing.
+//
+// Both halves are load-bearing, and NoArgs alone is a no-op. Cobra rejects an
+// unknown subcommand only on a parentless command; below the root it returns
+// flag.ErrHelp for any command with no RunE *before* it validates arguments, so
+// the leftover word is never examined. Giving the group a RunE is what gets
+// execution as far as NoArgs. The bare group still prints its help.
+func requireSubcommand(cmd *cobra.Command) *cobra.Command {
+	cmd.Args = cobra.NoArgs
+	cmd.RunE = func(c *cobra.Command, _ []string) error {
+		return c.Help()
+	}
+	return cmd
 }
 
 // Run every ancestor's persistent hook, root first, not only the closest one
@@ -181,8 +197,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(exemptFromEntireDirCheck(inGroup(newRepoCmd(), groupControlPlane)))    // 'repo' — control-plane repo lifecycle
 
 	// Top-level lifecycle and standalone commands.
-	experimental.Register(cmd, cliReview.NewCommand(buildReviewDeps()))        // `review` (experimental)
-	experimental.Register(cmd, investigate.NewCommand(buildInvestigateDeps())) // `investigate` (experimental); multi-agent investigation
+	experimental.Register(cmd, cliReview.NewCommand(buildReviewDeps())) // `review` (experimental)
 	cmd.AddCommand(inGroup(newCleanCmd(), groupSetup))
 	cmd.AddCommand(inGroup(newSetupCmd(), groupSetup)) // 'configure' — non-agent settings; agent CRUD lives under 'agent'
 	cmd.AddCommand(inGroup(newEnableCmd(), groupSetup))

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/gitremote"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/trail"
@@ -410,18 +411,19 @@ func trailDisplayURL(t api.TrailResource, forge, owner, repo string) string {
 	if strings.TrimSpace(t.URL) != "" {
 		return t.URL
 	}
-	if t.Number > 0 {
-		return trailWebURL(api.BaseURL(), forge, owner, repo, t.Number)
+	base, err := auth.DataBaseURL()
+	if t.Number > 0 && err == nil {
+		return trailWebURL(base, forge, owner, repo, t.Number)
 	}
 	return ""
 }
 
 // trailWebURL builds a fallback browser URL for a trail used only when the
 // server does not supply one (older servers):
-// <web-origin>/<forge>/<owner>/<repo>/trails/<number>. In production the web app
-// is served from the same origin as the data API, so the API base URL doubles
-// as the web origin. A split local-dev setup (API and frontend on different
-// ports) would point this at the API port rather than the dev frontend.
+// <web-origin>/<forge>/<owner>/<repo>/trails/<number>. The web app is served
+// from the same origin as the data API, so that base doubles as the web
+// origin. A split local-dev setup (API and frontend on different ports) would
+// point this at the API port rather than the dev frontend.
 func trailWebURL(base, forge, owner, repo string, number int) string {
 	return strings.TrimRight(base, "/") + "/" + forge + "/" + owner + "/" + repo + "/trails/" + strconv.Itoa(number)
 }
@@ -2137,7 +2139,7 @@ func resolveTrailBranch(ctx context.Context, branchOverride string) (string, err
 
 // defaultTrailPushRemote is where a trail branch goes when git config declares
 // nothing — git's own fallback for a bare push. Not defaultMirrorRemote, which
-// shares the value but means "the remote `mirror use` repoints".
+// shares the value but means "the remote `remote use` repoints".
 const defaultTrailPushRemote = "origin"
 
 // resolveTrailPushRemote returns the remote a trail's branch is delivered to,
