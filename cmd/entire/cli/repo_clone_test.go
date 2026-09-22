@@ -499,17 +499,18 @@ func TestResolveNativeCloneURL(t *testing.T) {
 		require.Equal(t, "entire://aws-ap-southeast-2.entire.io/et/paul/dogbark", got)
 	})
 
-	t.Run("several placements and no terminal demand --cluster", func(t *testing.T) {
+	t.Run("several placements and no terminal resolve the home cluster", func(t *testing.T) {
 		t.Parallel()
+		// A native repo's home cluster is its data primary, so it is the answer
+		// a script gets when there is no terminal to pick a mirror on.
 		c := serveNativeRepoFixture(t, nativeRepoFixture{
 			repo:     native("aws-ap-southeast-2.entire.io", "/et/paul/dogbark"),
 			mirrors:  []coreapi.NativeMirrorPlacement{readyNativeMirror("aws-us-east-2")},
 			clusters: []coreapi.Cluster{usEast},
 		})
-		_, err := resolve(t, c, "")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "pass --cluster")
-		require.Contains(t, err.Error(), "aws-us-east-2.entire.io")
+		got, err := resolve(t, c, "")
+		require.NoError(t, err)
+		require.Equal(t, "entire://aws-ap-southeast-2.entire.io/et/paul/dogbark", got)
 	})
 
 	t.Run("a mirror that is not ready or marked deleted is not a placement", func(t *testing.T) {
@@ -718,21 +719,21 @@ func TestSelectCloneTarget(t *testing.T) {
 
 	t.Run("single placement returns directly", func(t *testing.T) {
 		t.Parallel()
-		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast}, "", clonePlacementPicker())
+		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast}, "", "", clonePlacementPicker())
 		require.NoError(t, err)
 		require.Equal(t, "aws-us-east-2.entire.io", got.ClusterHost)
 	})
 
 	t.Run("dedupes repeated host to a single placement", func(t *testing.T) {
 		t.Parallel()
-		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, usEast}, "", clonePlacementPicker())
+		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, usEast}, "", "", clonePlacementPicker())
 		require.NoError(t, err)
 		require.Equal(t, "aws-us-east-2.entire.io", got.ClusterHost)
 	})
 
 	t.Run("--cluster picks the matching placement", func(t *testing.T) {
 		t.Parallel()
-		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "aws-eu-west-1.entire.io", clonePlacementPicker())
+		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "aws-eu-west-1.entire.io", "", clonePlacementPicker())
 		require.NoError(t, err)
 		require.Equal(t, "aws-eu-west-1.entire.io", got.ClusterHost)
 	})
@@ -741,25 +742,51 @@ func TestSelectCloneTarget(t *testing.T) {
 		t.Parallel()
 		// DNS hosts are case-insensitive: a mixed-case --cluster must still match
 		// the API's lowercase ClusterHost rather than falsely "not mirrored".
-		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "AWS-EU-West-1.Entire.IO", clonePlacementPicker())
+		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "AWS-EU-West-1.Entire.IO", "", clonePlacementPicker())
 		require.NoError(t, err)
 		require.Equal(t, "aws-eu-west-1.entire.io", got.ClusterHost)
 	})
 
 	t.Run("--cluster with no match errors and lists hosts", func(t *testing.T) {
 		t.Parallel()
-		_, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "aws-ap-south-1.entire.io", clonePlacementPicker())
+		_, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "aws-ap-south-1.entire.io", "", clonePlacementPicker())
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "aws-us-east-2.entire.io")
 		require.Contains(t, err.Error(), "aws-eu-west-1.entire.io")
 	})
 
-	t.Run("multiple placements with no terminal errors with a --cluster pointer", func(t *testing.T) {
+	t.Run("--cluster loses to nothing: an explicit miss errors even when a default would match", func(t *testing.T) {
 		t.Parallel()
-		// go test is non-interactive, so the picker path is unreachable here.
-		_, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "", clonePlacementPicker())
-		require.Error(t, err)
+		// The default only stands in for an absent selector. A --cluster the repo
+		// is not on is a typo the user must see, not a reason to clone elsewhere.
+		_, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "aws-ap-south-1.entire.io", "aws-us-east-2.entire.io", clonePlacementPicker())
+		require.ErrorContains(t, err, "aws-ap-south-1.entire.io")
+	})
+
+	t.Run("no terminal resolves the default placement", func(t *testing.T) {
+		t.Parallel()
+		// go test is non-interactive, so this is the path a script or CI run takes.
+		got, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{euWest, usEast}, "", "aws-us-east-2.entire.io", clonePlacementPicker())
+		require.NoError(t, err)
+		require.Equal(t, "aws-us-east-2.entire.io", got.ClusterHost)
+	})
+
+	t.Run("no terminal and the default is not one of the placements errors", func(t *testing.T) {
+		t.Parallel()
+		_, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "", "aws-ap-south-1.entire.io", clonePlacementPicker())
+		require.ErrorContains(t, err, "none of them is aws-ap-south-1.entire.io")
 		require.Contains(t, err.Error(), "--cluster")
+		require.Contains(t, err.Error(), "aws-us-east-2.entire.io")
+		require.Contains(t, err.Error(), "aws-eu-west-1.entire.io")
+	})
+
+	t.Run("no terminal and no known primary asks only for the selector", func(t *testing.T) {
+		t.Parallel()
+		// A caller that could not determine a primary passes none. Phrasing that
+		// as a primary the repo lacks would name an empty host.
+		_, err := selectPlacement(newCloneTestCmd(), []coreapi.ResolvedPlacement{usEast, euWest}, "", "", clonePlacementPicker())
+		require.ErrorContains(t, err, "repo is on 2 clusters; pass --cluster")
+		require.NotContains(t, err.Error(), "none of them is")
 	})
 }
 
