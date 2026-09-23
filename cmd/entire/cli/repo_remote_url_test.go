@@ -65,15 +65,23 @@ func TestRepoRemoteURL_Local(t *testing.T) {
 }
 
 // Not parallel: replaces the process-global activeCoreClient and changes CWD.
+//
+// The ref keeps its `.git` suffix end to end: on a native ref the suffix is
+// part of the repo name, so it reaches the server verbatim and the URL is the
+// server's own path for the repo that name resolved to.
 func TestRepoRemoteURL_Native(t *testing.T) {
 	t.Chdir(t.TempDir()) // URL resolution must work outside a git repository.
 	for _, tc := range []struct{ name, host, path, want, wantErr string }{
-		{"ready", "aws-us-east-2.entire.io", "/et/paul/dogbark", "entire://aws-us-east-2.entire.io/et/paul/dogbark\n", ""},
+		{"ready", "aws-us-east-2.entire.io", "/et/paul/dogbark.git", "entire://aws-us-east-2.entire.io/et/paul/dogbark.git\n", ""},
 		{"provisioning", "", "", "", "no clone URL"},
-		{"invalid host", "example.com@evil.com", "/et/paul/dogbark", "", "invalid cluster host"},
+		{"invalid host", "example.com@evil.com", "/et/paul/dogbark.git", "", "invalid cluster host"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := serveNativeRepo(t, coreapi.Repo{ID: testNativeRepoULID, Name: "dogbark", OwningProjectId: testProjectULID, ClusterHost: coreapi.NewOptString(tc.host), Path: coreapi.NewOptString(tc.path)})
+			var queriedFullName string
+			client := serveNativeRepoFixture(t, nativeRepoFixture{
+				repo:            coreapi.Repo{ID: testNativeRepoULID, Name: "dogbark.git", OwningProjectId: testProjectULID, ClusterHost: coreapi.NewOptString(tc.host), Path: coreapi.NewOptString(tc.path)},
+				queriedFullName: &queriedFullName,
+			})
 			prev := activeCoreClient
 			activeCoreClient = func(context.Context) (*coreapi.Client, error) { return client, nil }
 			t.Cleanup(func() { activeCoreClient = prev })
@@ -90,6 +98,10 @@ func TestRepoRemoteURL_Native(t *testing.T) {
 				require.Empty(t, errOut.String())
 			}
 			require.Equal(t, tc.want, out.String())
+			// `.git` is part of a native repo's name: the lookup must be asked
+			// for "dogbark.git", not silently trimmed to "dogbark" before it
+			// ever reaches the request.
+			require.Equal(t, "paul/dogbark.git", queriedFullName)
 		})
 	}
 }

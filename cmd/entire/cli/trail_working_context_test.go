@@ -79,13 +79,13 @@ func serveWorkingProjectRead(t *testing.T, w http.ResponseWriter, r *http.Reques
 func TestWorkingTrailCommandsKeepProjectAndRepoNumbersSeparate(t *testing.T) {
 	// Replaces constructors; neither this test nor its subtests may run in parallel.
 	for _, tt := range []struct {
-		args           []string
-		method, suffix string
+		args                  []string
+		method, suffix, event string
 	}{
-		{[]string{"approve", "42"}, http.MethodPost, "/approvals"},
-		{[]string{"request-changes", "42", "-m", "Fix it"}, http.MethodPost, "/approvals"},
-		{[]string{"approvals", "42"}, http.MethodGet, "/approvals"},
-		{[]string{"finding", "list", "42", "--json"}, http.MethodGet, "/reviews/comments"},
+		{[]string{"approve", "42"}, http.MethodPost, "/approvals", "approve"},
+		{[]string{"request-changes", "42", "-m", "Fix it"}, http.MethodPost, "/approvals", "request_changes"},
+		{[]string{"approvals", "42"}, http.MethodGet, "/approvals", ""},
+		{[]string{"finding", "list", "42", "--json"}, http.MethodGet, "/reviews/comments", ""},
 	} {
 		t.Run(tt.args[0], func(t *testing.T) {
 			setupProjectTrailTest(t, func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +99,11 @@ func TestWorkingTrailCommandsKeepProjectAndRepoNumbersSeparate(t *testing.T) {
 				calls++
 				assert.Equal(t, tt.method, r.Method)
 				assert.Equal(t, "/api/v1/trails/gh/acme/widget/7"+tt.suffix, r.URL.Path)
+				if tt.event != "" {
+					var request api.TrailApprovalRequest
+					assert.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+					assert.Equal(t, tt.event, request.Event)
+				}
 				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"approvals": []any{}, "comments": []any{}}))
 			})
 			args := append(append([]string{}, tt.args...), "--repo", "gh/acme/widget", "--branch", "feature/work")
