@@ -113,6 +113,7 @@ type ProjectTrailCreateRequest struct {
 }
 
 type ChangeCreateRequest struct {
+	RepositoryID string   `json:"repositoryId"`
 	Title        string   `json:"title"`
 	Body         string   `json:"body,omitempty"`
 	BranchName   string   `json:"branchName,omitempty"`
@@ -122,7 +123,6 @@ type ChangeCreateRequest struct {
 	Assignees    []string `json:"assignees,omitempty"`
 	Priority     string   `json:"priority,omitempty"`
 	Type         string   `json:"type,omitempty"`
-	RepositoryID string   `json:"repositoryId"`
 }
 
 type ChangeCreateResponse struct {

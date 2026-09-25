@@ -31,6 +31,7 @@ const (
 	colHeaderBranch   = "BRANCH"
 	colHeaderCloneURL = "CLONE URL"
 	colHeaderCluster  = "CLUSTER"
+	colHeaderGrantee  = "GRANTEE"
 	colHeaderName     = "NAME"
 	colHeaderProject  = "PROJECT"
 	colHeaderRegion   = "REGION"

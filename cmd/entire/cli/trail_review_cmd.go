@@ -1455,12 +1455,12 @@ func encodeTrailReviewJSON(w io.Writer, target trailReviewTarget, comments []api
 		Findings:   toTrailReviewCommentsJSON(comments),
 		HasMore:    nextCursor != "",
 		NextCursor: nextCursor,
-		Trail:      toTrailResourceJSON(target.Trail),
+		Trail:      toTrailResourceJSON(trailForDisplay(target.Trail)),
 	})
 }
 
 func printTrailReviewDashboard(w io.Writer, target trailReviewTarget, comments []api.TrailReviewComment, nextCursor string, opts trailReviewListOptions, counts trailReviewCommentCounts) {
-	trail := target.Trail
+	trail := trailForDisplay(target.Trail)
 	if trail.Number > 0 {
 		fmt.Fprintf(w, "  Trail #%d  %s\n", trail.Number, trail.Title)
 	} else {
