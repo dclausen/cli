@@ -263,10 +263,10 @@ func HooksDirLinkTarget(hooksDir string) (string, bool) {
 //
 // Quoted only when it needs to be, so the common clean path stays readable.
 func HooksPathCommand(dir string) string {
-	return "git config core.hooksPath " + shellQuoteForDisplay(dir)
+	return "git config core.hooksPath " + ShellQuoteForDisplay(dir)
 }
 
-// shellQuoteForDisplay quotes a path for a command line the USER will paste. It
+// ShellQuoteForDisplay quotes a value for a command line the USER will paste. It
 // is not for building an argv -- nothing here is executed, and a path that
 // reaches an exec goes as a separate argument instead (see docs/development/git-safety.md's
 // "Never Put a Dynamic Value on a cmd.exe Line").
@@ -279,7 +279,7 @@ func HooksPathCommand(dir string) string {
 // path.
 //
 // Quoted only when it has to be, so the ordinary path stays readable.
-func shellQuoteForDisplay(s string) string {
+func ShellQuoteForDisplay(s string) string {
 	if s != "" && !strings.ContainsFunc(s, needsShellQuote) {
 		return s
 	}

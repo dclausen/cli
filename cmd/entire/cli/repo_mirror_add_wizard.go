@@ -18,6 +18,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/api"
 	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
+	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/uiform"
 	"github.com/entireio/cli/internal/coreapi"
 )
@@ -769,26 +770,6 @@ func (p *mirrorProgress) renderLocked() {
 	}
 }
 
-// shellWordForDisplay renders s as one word of a copy-paste command, bare when
-// every rune is safe unquoted and single-quoted otherwise. Hosts are the
-// motivating case: an IPv6 literal such as [::1]:8080 is a valid cluster host,
-// and zsh reads the brackets as a glob and fails before the command runs. An
-// allowlist, so a character nobody considered is quoted rather than passed.
-func shellWordForDisplay(s string) string {
-	if s != "" && !strings.ContainsFunc(s, unsafeBareShellRune) {
-		return s
-	}
-	return shellQuote(s)
-}
-
-func unsafeBareShellRune(r rune) bool {
-	switch {
-	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		return false
-	}
-	return !strings.ContainsRune(".-:_", r)
-}
-
 func terminalIcon(ok bool) string {
 	if ok {
 		return "✓"
@@ -828,16 +809,28 @@ func reportMirrorResults(outW, errW io.Writer, results []mirrorResult) error {
 	if len(readyURLs) > 0 {
 		fmt.Fprintln(outW, "\nClone them:")
 		for _, u := range readyURLs {
-			fmt.Fprintf(outW, "  git clone %s\n", u)
+			fmt.Fprintf(outW, "  git clone %s\n", strategy.ShellQuoteForDisplay(u))
 		}
 		// A `git remote set-url` line is only right inside its own repo's
 		// checkout. `repo remote add` reads the repo from the checkout's
 		// origin instead, and refuses one the cluster does not serve, so a
 		// line per cluster is safe to paste into any checkout.
+		//
+		// Both blocks quote what they interpolate: an IPv6 cluster host such
+		// as [::1]:8080 is valid, and zsh reads its brackets as a glob.
+		//
+		// Unlike the clone lines, these are alternatives: running two repoints
+		// origin twice. And --override replaces origin's URL, echoing the old
+		// one only with credentials redacted, so the header says both.
+		switch {
+		case len(readyHosts) == 1:
+			fmt.Fprintln(outW, "\nOr point an existing checkout's origin at the mirror (replaces its current URL):")
+		case len(readyHosts) > 1:
+			fmt.Fprintln(outW, "\nOr point an existing checkout's origin at one of them — run one line (replaces its current URL):")
+		}
 		if len(readyHosts) > 0 {
-			fmt.Fprintln(outW, "\nOr point an existing checkout's origin at the mirror:")
 			for _, h := range readyHosts {
-				fmt.Fprintf(outW, "  entire repo remote add origin --override --cluster %s\n", shellWordForDisplay(h))
+				fmt.Fprintf(outW, "  entire repo remote add origin --override --cluster %s\n", strategy.ShellQuoteForDisplay(h))
 			}
 		}
 	}

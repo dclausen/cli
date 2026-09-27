@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -194,6 +195,8 @@ func TestReportMirrorResults(t *testing.T) {
 		require.Contains(t, out.String(), "/gh/octocat/hello-world")
 		require.Contains(t, out.String(), "git clone "+mirrorURL)
 		require.Contains(t, out.String(), "entire repo remote add origin --override --cluster eu-west-1.entire.io\n")
+		require.Contains(t, out.String(), "(replaces its current URL)", "--override drops the old URL, so the hint must say so")
+		require.NotContains(t, out.String(), "run one line", "a single cluster has no choice to make")
 	})
 
 	// The remote command reads the repo from the checkout it runs in, so it is
@@ -212,18 +215,28 @@ func TestReportMirrorResults(t *testing.T) {
 		require.Equal(t, 2, strings.Count(out.String(), "entire repo remote add origin"))
 		require.Contains(t, out.String(), "--cluster eu-west-1.entire.io\n")
 		require.Contains(t, out.String(), "--cluster aws-us-east-2.entire.io\n")
+		require.Contains(t, out.String(), "run one line", "two clusters are alternatives, not steps")
 	})
 
 	// An IPv6 literal is a valid cluster host, and pasted bare into zsh its
-	// brackets glob ("no matches found") before entire ever runs.
-	t.Run("an IPv6 cluster host is shell-quoted in the remote command", func(t *testing.T) {
+	// brackets glob ("no matches found") before git or entire ever runs. The
+	// quotes follow the platform: cmd.exe keeps single quotes as part of the
+	// argument, which validateClusterHost would then reject.
+	t.Run("an IPv6 cluster host is shell-quoted in both commands", func(t *testing.T) {
 		t.Parallel()
+		const host = "[::1]:8080"
+		const cloneURL = "entire://" + host + "/gh/octocat/hello-world"
+		quote := func(s string) string { return "'" + s + "'" }
+		if runtime.GOOS == "windows" {
+			quote = func(s string) string { return `"` + s + `"` }
+		}
 		var out, errW bytes.Buffer
 		err := reportMirrorResults(&out, &errW, []mirrorResult{
-			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "local", clusterHost: "[::1]:8080", status: mirrorStatusReady, cloneURL: "entire://[::1]:8080/gh/octocat/hello-world"},
+			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "local", clusterHost: host, status: mirrorStatusReady, cloneURL: cloneURL},
 		})
 		require.NoError(t, err)
-		require.Contains(t, out.String(), "entire repo remote add origin --override --cluster '[::1]:8080'\n")
+		require.Contains(t, out.String(), "git clone "+quote(cloneURL)+"\n")
+		require.Contains(t, out.String(), "entire repo remote add origin --override --cluster "+quote(host)+"\n")
 	})
 
 	// A placement that is registered but not yet cloned must not be offered as
