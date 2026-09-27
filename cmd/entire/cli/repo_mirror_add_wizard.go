@@ -314,6 +314,7 @@ type mirrorResult struct {
 	owner       string
 	repo        string
 	regionLabel string
+	clusterHost string // bare host, as `--cluster` takes it
 	cloneURL    string
 	status      string // ready | registered | empty | suspended | timed out | error
 	err         error
@@ -604,7 +605,7 @@ func createOneMirror(ctx context.Context, t mirrorTarget, c *coreapi.Client, cli
 	if report == nil {
 		report = func(string, bool, bool) {}
 	}
-	res := mirrorResult{forge: t.forge, owner: t.owner, repo: t.repo, regionLabel: regionLabel(t.region)}
+	res := mirrorResult{forge: t.forge, owner: t.owner, repo: t.repo, regionLabel: regionLabel(t.region), clusterHost: t.region.host}
 	if t.forge == nativeCloneForge {
 		return createOneNativeMirror(ctx, t, c, clientErr, opts, report)
 	}
@@ -768,6 +769,26 @@ func (p *mirrorProgress) renderLocked() {
 	}
 }
 
+// shellWordForDisplay renders s as one word of a copy-paste command, bare when
+// every rune is safe unquoted and single-quoted otherwise. Hosts are the
+// motivating case: an IPv6 literal such as [::1]:8080 is a valid cluster host,
+// and zsh reads the brackets as a glob and fails before the command runs. An
+// allowlist, so a character nobody considered is quoted rather than passed.
+func shellWordForDisplay(s string) string {
+	if s != "" && !strings.ContainsFunc(s, unsafeBareShellRune) {
+		return s
+	}
+	return shellQuote(s)
+}
+
+func unsafeBareShellRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return false
+	}
+	return !strings.ContainsRune(".-:_", r)
+}
+
 func terminalIcon(ok bool) string {
 	if ok {
 		return "✓"
@@ -775,10 +796,10 @@ func terminalIcon(ok bool) string {
 	return "✗"
 }
 
-// reportMirrorResults renders the results table, a copy-pasteable git-clone
-// block for the ready mirrors, and per-failure detail. It returns a
-// SilentError (so the table isn't reprinted) when any mirror failed, giving the
-// command a non-zero exit while still showing what succeeded.
+// reportMirrorResults renders the results table, copy-pasteable git-clone and
+// `repo remote add` blocks for the ready mirrors, and per-failure detail. It
+// returns a SilentError (so the table isn't reprinted) when any mirror failed,
+// giving the command a non-zero exit while still showing what succeeded.
 func reportMirrorResults(outW, errW io.Writer, results []mirrorResult) error {
 	if len(results) == 0 {
 		return nil
@@ -789,11 +810,16 @@ func reportMirrorResults(outW, errW io.Writer, results []mirrorResult) error {
 		return err
 	}
 
-	var readyURLs []string
+	var readyURLs, readyHosts []string
+	seenHosts := make(map[string]bool)
 	var failures int
 	for _, r := range results {
 		if r.status == mirrorStatusReady && r.cloneURL != "" {
 			readyURLs = append(readyURLs, r.cloneURL)
+			if r.clusterHost != "" && !seenHosts[r.clusterHost] {
+				seenHosts[r.clusterHost] = true
+				readyHosts = append(readyHosts, r.clusterHost)
+			}
 		}
 		if r.err != nil {
 			failures++
@@ -803,6 +829,16 @@ func reportMirrorResults(outW, errW io.Writer, results []mirrorResult) error {
 		fmt.Fprintln(outW, "\nClone them:")
 		for _, u := range readyURLs {
 			fmt.Fprintf(outW, "  git clone %s\n", u)
+		}
+		// A `git remote set-url` line is only right inside its own repo's
+		// checkout. `repo remote add` reads the repo from the checkout's
+		// origin instead, and refuses one the cluster does not serve, so a
+		// line per cluster is safe to paste into any checkout.
+		if len(readyHosts) > 0 {
+			fmt.Fprintln(outW, "\nOr point an existing checkout's origin at the mirror:")
+			for _, h := range readyHosts {
+				fmt.Fprintf(outW, "  entire repo remote add origin --override --cluster %s\n", shellWordForDisplay(h))
+			}
 		}
 	}
 	if failures > 0 {

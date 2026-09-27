@@ -184,15 +184,46 @@ func TestReportMirrorResults(t *testing.T) {
 	t.Parallel()
 	const mirrorURL = "entire://eu-west-1.entire.io/gh/octocat/hello-world"
 
-	t.Run("a ready row is listed and offered as a clone command", func(t *testing.T) {
+	t.Run("a ready row is listed and offered as clone and remote commands", func(t *testing.T) {
 		t.Parallel()
 		var out, errW bytes.Buffer
 		err := reportMirrorResults(&out, &errW, []mirrorResult{
-			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "eu-west-1", status: mirrorStatusReady, cloneURL: mirrorURL},
+			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "eu-west-1", clusterHost: "eu-west-1.entire.io", status: mirrorStatusReady, cloneURL: mirrorURL},
 		})
 		require.NoError(t, err)
 		require.Contains(t, out.String(), "/gh/octocat/hello-world")
 		require.Contains(t, out.String(), "git clone "+mirrorURL)
+		require.Contains(t, out.String(), "entire repo remote add origin --override --cluster eu-west-1.entire.io\n")
+	})
+
+	// The remote command reads the repo from the checkout it runs in, so it is
+	// one line per cluster however many repos landed there: several repos on
+	// one cluster share a line, and each extra cluster adds one.
+	t.Run("remote commands are one per cluster, not per mirror", func(t *testing.T) {
+		t.Parallel()
+		var out, errW bytes.Buffer
+		err := reportMirrorResults(&out, &errW, []mirrorResult{
+			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "eu-west-1", clusterHost: "eu-west-1.entire.io", status: mirrorStatusReady, cloneURL: mirrorURL},
+			{forge: mirrorCloneForge, owner: "octocat", repo: "spoon-knife", regionLabel: "eu-west-1", clusterHost: "eu-west-1.entire.io", status: mirrorStatusReady, cloneURL: "entire://eu-west-1.entire.io/gh/octocat/spoon-knife"},
+			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "aws-us-east-2", clusterHost: "aws-us-east-2.entire.io", status: mirrorStatusReady, cloneURL: "entire://aws-us-east-2.entire.io/gh/octocat/hello-world"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, 3, strings.Count(out.String(), "git clone "))
+		require.Equal(t, 2, strings.Count(out.String(), "entire repo remote add origin"))
+		require.Contains(t, out.String(), "--cluster eu-west-1.entire.io\n")
+		require.Contains(t, out.String(), "--cluster aws-us-east-2.entire.io\n")
+	})
+
+	// An IPv6 literal is a valid cluster host, and pasted bare into zsh its
+	// brackets glob ("no matches found") before entire ever runs.
+	t.Run("an IPv6 cluster host is shell-quoted in the remote command", func(t *testing.T) {
+		t.Parallel()
+		var out, errW bytes.Buffer
+		err := reportMirrorResults(&out, &errW, []mirrorResult{
+			{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world", regionLabel: "local", clusterHost: "[::1]:8080", status: mirrorStatusReady, cloneURL: "entire://[::1]:8080/gh/octocat/hello-world"},
+		})
+		require.NoError(t, err)
+		require.Contains(t, out.String(), "entire repo remote add origin --override --cluster '[::1]:8080'\n")
 	})
 
 	// A placement that is registered but not yet cloned must not be offered as
@@ -206,6 +237,7 @@ func TestReportMirrorResults(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, out.String(), mirrorStatusRegistered)
 		require.NotContains(t, out.String(), "git clone")
+		require.NotContains(t, out.String(), "entire repo remote add")
 	})
 
 	// One failure fails the command but must not hide the ones that worked:
