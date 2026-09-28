@@ -822,13 +822,12 @@ func reportMirrorResults(outW, errW io.Writer, results []mirrorResult) error {
 		// Unlike the clone lines, these are alternatives: running two repoints
 		// origin twice. And --override replaces origin's URL, echoing the old
 		// one only with credentials redacted, so the header says both.
-		switch {
-		case len(readyHosts) == 1:
-			fmt.Fprintln(outW, "\nOr point an existing checkout's origin at the mirror (replaces its current URL):")
-		case len(readyHosts) > 1:
-			fmt.Fprintln(outW, "\nOr point an existing checkout's origin at one of them — run one line (replaces its current URL):")
-		}
 		if len(readyHosts) > 0 {
+			header := "\nOr point an existing checkout's origin at the mirror (replaces its current URL):"
+			if len(readyHosts) > 1 {
+				header = "\nOr point an existing checkout's origin at one of them — run one line (replaces its current URL):"
+			}
+			fmt.Fprintln(outW, header)
 			for _, h := range readyHosts {
 				fmt.Fprintf(outW, "  entire repo remote add origin --override --cluster %s\n", strategy.ShellQuoteForDisplay(h))
 			}

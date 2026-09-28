@@ -292,12 +292,18 @@ func ShellQuoteForDisplay(s string) string {
 // needsShellQuote reports a rune that is not safe bare in a shell word. An
 // allowlist, so a character nobody has considered is quoted rather than passed
 // through.
+//
+// A backslash is literal only on Windows, where it separates path components.
+// A POSIX shell reads it as an escape and drops it, and a trailing one joins
+// the next pasted line onto this one.
 func needsShellQuote(r rune) bool {
 	switch {
 	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		return false
+	case r == '\\':
+		return runtime.GOOS != goosWindows
 	}
-	return !strings.ContainsRune(`_@%+=:,./-\`, r)
+	return !strings.ContainsRune(`_@%+=:,./-`, r)
 }
 
 // symlinkedHooksDirError explains a refusal from hooksRootForInstall in terms of
