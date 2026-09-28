@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 
 	cp "github.com/entireio/cli/cmd/entire/cli/checkpoint"
@@ -887,6 +888,93 @@ func TestRun_SkipsTurnsImportedUnderOtherPrimary(t *testing.T) {
 				t.Fatalf("session state LastCheckpointID = %+v, want the original import %s", st, last)
 			}
 		})
+	}
+}
+
+// TestRun_GitRefsModTimeTurnsKeepIDsAsTranscriptGrows: Cursor and Factory
+// turns carry the transcript file's modtime, which moves whenever the session
+// grows. Under git-refs that time must not feed the ULID, or re-importing a
+// grown transcript would write every earlier turn again under a new ID.
+func TestRun_GitRefsModTimeTurnsKeepIDsAsTranscriptGrows(t *testing.T) {
+	// Not parallel: sets the checkpoint backend via the environment.
+	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", "git-refs")
+
+	repo, repoDir := initRepoWithCommit(t)
+	cursorDir := t.TempDir()
+	path := filepath.Join(cursorDir, "sessGrow.jsonl")
+	lines := []string{
+		`{"role":"user","message":{"role":"user","content":"first"}}`,
+		`{"role":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}`,
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{LinkCommitSHA: repoHeadSHA(t, repo), RepoRoot: repoDir, OverridePath: cursorDir, Now: time.Now()}
+	if res, err := Run(context.Background(), repo, cursorImporter{}, opts); err != nil || res.TurnsImported != 1 {
+		t.Fatalf("first import: %+v, %v", res, err)
+	}
+
+	lines = append(lines, `{"role":"user","message":{"role":"user","content":"second"}}`)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(context.Background(), repo, cursorImporter{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TurnsSkipped != 1 || res.TurnsImported != 1 {
+		t.Fatalf("grown transcript: want the first turn skipped and the second imported, got %+v", res)
+	}
+
+	stores, err := cp.Open(context.Background(), repo, cp.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos, err := stores.Persistent.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("got %d checkpoints, want 2 (no duplicate of the first turn): %+v", len(infos), infos)
+	}
+}
+
+// TestRun_SkipsTurnsImportedOnlyOnRemote: from a fresh clone, turns imported
+// elsewhere exist only as remote refs. The idempotency listing must see them
+// by name, or a git-refs re-import writes hex-imported turns again as ULIDs.
+func TestRun_SkipsTurnsImportedOnlyOnRemote(t *testing.T) {
+	// Not parallel: sets the checkpoint backend via the environment.
+	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", "git-refs")
+
+	repo, repoDir := initRepoWithCommit(t)
+	claudeDir := t.TempDir()
+	writeFixtureSession(t, claudeDir, "sess-remote.jsonl")
+	var remote []plumbing.ReferenceName
+	for _, uuid := range []string{"u1", "u2"} {
+		ref, err := cp.RefName(DeriveCheckpointID("sess-remote", uuid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		remote = append(remote, ref)
+	}
+	opts := Options{
+		LinkCommitSHA:   repoHeadSHA(t, repo),
+		RepoRoot:        repoDir,
+		OverridePath:    claudeDir,
+		Now:             time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC),
+		RemoteRefLister: func(context.Context) ([]plumbing.ReferenceName, error) { return remote, nil },
+	}
+
+	res, err := Run(context.Background(), repo, claudeImporter{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TurnsImported != 0 || res.TurnsSkipped != 2 {
+		t.Fatalf("remote-only imports were not skipped: %+v", res)
 	}
 }
 

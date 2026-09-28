@@ -44,6 +44,11 @@ type Turn struct {
 	UUID               string
 	Prompt, Model      string
 	CreatedAt          time.Time
+	// CreatedAtFromModTime reports that CreatedAt is the transcript file's
+	// modtime because the transcript records no per-turn time (Cursor,
+	// Factory). It changes whenever the file grows, so it must not feed the
+	// turn's checkpoint ID.
+	CreatedAtFromModTime bool
 	// Tokens is this turn's token usage. Every field is a per-turn delta:
 	// main-agent fields are scoped to the turn's [LineStart, LineEnd) slice by
 	// the token helpers, and SubagentTokens is rescoped from the cumulative
@@ -126,6 +131,13 @@ type Options struct {
 	// origin's stale tracking ref get skipped. Callers resolve it via
 	// strategy.CheckpointReadRemotes.
 	ReadRemotes []string
+
+	// RemoteRefLister, when set, adds the checkpoint refs present only on the
+	// remote (names only, no fetch) to the idempotency listing, so a re-import
+	// from a fresh clone skips turns imported elsewhere instead of writing them
+	// again (under a new ID format, if the primary has since changed). Callers
+	// pass the CLI's ListCheckpointRefsOnRemote.
+	RemoteRefLister cp.RemoteRefListFunc
 }
 
 // Result summarizes an import run.
@@ -214,7 +226,11 @@ func turnCheckpointID(sessionID string, turn Turn, ulids bool, existing map[stri
 	if existing[legacy.String()] {
 		return legacy, true, nil
 	}
-	cid, err := DeriveULIDCheckpointID(sessionID, turn.UUID, turn.CreatedAt)
+	idTime := turn.CreatedAt
+	if turn.CreatedAtFromModTime {
+		idTime = time.Time{} // epoch: a growing file must not re-derive older turns' IDs
+	}
+	cid, err := DeriveULIDCheckpointID(sessionID, turn.UUID, idTime)
 	if err == nil && existing[cid.String()] {
 		return cid, true, nil
 	}
@@ -244,12 +260,12 @@ func Run(ctx context.Context, repo *git.Repository, imp Importer, opts Options) 
 		return res, fmt.Errorf("discover %s sessions: %w", imp.Name(), err)
 	}
 
-	stores, err := cp.Open(ctx, repo, cp.OpenOptions{ReadRemotes: opts.ReadRemotes})
+	stores, err := cp.Open(ctx, repo, cp.OpenOptions{ReadRemotes: opts.ReadRemotes, RemoteRefLister: opts.RemoteRefLister})
 	if err != nil {
 		return res, fmt.Errorf("open checkpoint store: %w", err)
 	}
 	existing := make(map[string]bool)
-	if infos, listErr := stores.Persistent.List(ctx); listErr == nil {
+	if infos, listErr := stores.Persistent.List(cp.WithRemoteListDiscovery(ctx)); listErr == nil {
 		for _, in := range infos {
 			existing[in.CheckpointID.String()] = true
 		}
