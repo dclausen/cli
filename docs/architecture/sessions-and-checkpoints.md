@@ -2,7 +2,7 @@
 
 ## Overview
 
-Entire CLI creates checkpoints for AI coding sessions. The system is agent-agnostic - it works with Claude Code, Codex, Gemini CLI, OpenCode, Cursor, Factory AI Droid, Copilot CLI, or any tool that triggers Entire hooks.
+Entire CLI creates checkpoints for AI coding sessions. The system is agent-agnostic - it works with Claude Code, Codex, Antigravity, OpenCode, Cursor, Factory AI Droid, Copilot CLI, or any tool that triggers Entire hooks.
 
 This document covers the domain model shared by both checkpoint storage backends. For how the **git-refs** backend stores checkpoints as one ref per checkpoint — its layout, push/fetch model, read routing, and configuration — see [Ref-Based Checkpoint Backend](ref-checkpoint-backend.md).
 
@@ -202,6 +202,28 @@ matched outside its home worktree is **guest-linked**, whether it came from
 identity matching or the pre-existing single-worktree fallback below: it
 condenses and links, but never mutates worktree-coupled state (`BaseCommit`,
 shadow-branch realignment) — those follow only the session's own worktree HEAD.
+
+**Squashes inherit their trailers** (`inheritSquashedCheckpointTrailers`). A
+commit made while `git merge --squash` is in progress (SQUASH_MSG present in
+the per-worktree git dir) contains the squashed commits' work, so every
+`Entire-Checkpoint` trailer in SQUASH_MSG is carried into the message when
+missing when a staged path is one a commit Git recorded there changed; a file
+touched up before committing still counts. An abandoned squash can leave
+SQUASH_MSG behind; staged work on other paths therefore inherits nothing, and inherited trailers in Git's seeded message are
+removed. git only reports source `squash` when its seeded message is accepted;
+a squash committed with `-m` reports `message`, which used to run ordinary
+matching and either refuse or mint a fresh, empty checkpoint. Inherited
+trailers are links to checkpoints that already exist. Matching still runs, so
+work a session holds at squash time is stamped as its own trailer after the
+inherited ones, and post-commit condenses only into the trailer that has no
+checkpoint yet (`pickCondensationTarget`) among those prepare stamped: prepare
+records the inherited IDs in the per-worktree git dir, tied to the commit's
+parent (`recordInheritedTrailers`), so an inherited trailer whose checkpoint
+simply is not in this clone's store yet is never mistaken for a fresh one, rechecks whether that target appeared
+between selection and condensation, and never writes into an inherited one; a
+write into a checkpoint the session did not stamp for this commit is refused
+(`stampedByAnotherCommit`). Merge commits stay unlinked by design; the
+merged commits keep their own trailers.
 
 **Worktree matching** (always computed; the sole mechanism for commits with
 no recorded agent in their ancestry — human commits, detached runners): exact
@@ -484,7 +506,9 @@ both the git-branch and git-refs backends (git-refs leaves its push queue
 intact for the next elected-remote push). The dedicated `checkpoint_remote`
 URL mode is exempt — it addresses a separate metadata store directly. `entire
 status` shows the sync destination and how many checkpoints have not reached
-it yet.
+it yet. Git-refs push failures never block the user's push: refs stay queued, and
+confirmed remote rejections show one bounded warning with the remote's reason
+rather than being mislabeled as divergence (see [pre-push flow](ref-checkpoint-backend.md#pre-push-flow)).
 
 A gated push is not fully silent: when checkpoints are waiting for the
 elected remote, the hook prints a two-line stderr hint naming the elected
@@ -638,20 +662,25 @@ When condensing multiple concurrent sessions:
 - `sessions` array in `CheckpointSummary` maps each session to its file paths
 - `files_touched` is merged from all sessions
 
-Checkpoints written by `entire import <agent>` additionally carry a `commit_sha`
+Checkpoints written by the import path — `entire import <agent>` and `entire
+enable`'s optional history import — additionally carry a `commit_sha`
 (omitempty) on both the session `Metadata` and the root `CheckpointSummary`,
 set to the default branch's head at import time — origin's tip is preferred
 (the commit the server already knows about), falling back to the local branch
-tip, then HEAD, then empty when nothing resolves. When the transcript itself
+tip, then HEAD. Each candidate must resolve to an actual commit object, and an
+import that finds none (an empty repository, say) is refused before anything is
+written rather than producing anchorless checkpoints; onboarding reports the
+same condition and skips its optional import instead of failing `entire
+enable`. When the transcript itself
 records the commit(s) a turn made (Claude Code `gitOperation` records), the
 turn's checkpoint instead anchors to the last such commit that resolves and is
 reachable from the resolved link anchor (the default-branch head when
 resolvable) — see `turnAnchorResolver` (`agentimport/turn_anchor.go`);
 otherwise (older transcripts, or a recorded commit that's been
 squashed/rebased away) it falls back to the default-branch head as described
-above. It is a best-effort anchor for UI display only, not
-an attribution signal, and pre-existing imported checkpoints are not
-backfilled with it.
+above. It is an anchor for UI display only, not an attribution signal — an
+imported session's local `session.State.BaseCommit` stays empty — and
+pre-existing imported checkpoints are not backfilled with it.
 
 ### Checkpoint ID Linking
 

@@ -121,7 +121,6 @@ var (
 func (fakePluginAgent) Name() types.AgentName                { return "terminalhire-plugin" }
 func (fakePluginAgent) Type() types.AgentType                { return "TerminalHire" }
 func (fakePluginAgent) Description() string                  { return "fake external plugin for tests" }
-func (fakePluginAgent) IsPreview() bool                      { return true }
 func (fakePluginAgent) ProtectedDirs() []string              { return []string{".terminalhire"} }
 func (fakePluginAgent) ProtectedFiles() []string             { return []string{".terminalhirerc"} }
 func (fakePluginAgent) GetSessionID(*agent.HookInput) string { return "" }
@@ -3861,6 +3860,48 @@ func TestWriteCommitted_RedactsPromptSecrets(t *testing.T) {
 	}
 	if !strings.Contains(content.Prompts, "REDACTED") {
 		t.Error("prompts should contain REDACTED placeholder")
+	}
+}
+
+// ReviewPrompt and InvestigateTopic are free text written into metadata.json.
+// A review's prompt can be a session's first user prompt (session attach
+// --review), so it must get the same redaction as prompt.txt.
+func TestWriteCommitted_RedactsReviewPromptAndInvestigateTopic(t *testing.T) {
+	t.Parallel()
+	repo, _ := setupBranchTestRepo(t)
+	store := NewGitStore(repo, DefaultV1Refs())
+	checkpointID := id.MustCheckpointID("aabbccddeef3")
+
+	err := store.Write(context.Background(), Session{
+		CheckpointID:     checkpointID,
+		SessionID:        "redact-review-session",
+		Strategy:         "manual-commit",
+		Transcript:       redact.AlreadyRedacted([]byte(`{"msg":"safe"}`)),
+		ReviewPrompt:     "Deploy fails with 403. Config line is: key=" + awsKeyFixture + " -- why?",
+		InvestigateTopic: "Why does API_KEY=" + highEntropySecret + " get rejected?",
+		CheckpointsCount: 1,
+		AuthorName:       "Test Author",
+		AuthorEmail:      "test@example.com",
+	})
+	if err != nil {
+		t.Fatalf("WriteCommitted() error = %v", err)
+	}
+
+	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	if err != nil {
+		t.Fatalf("ReadSessionContent() error = %v", err)
+	}
+
+	for field, got := range map[string]string{
+		"ReviewPrompt":     content.Metadata.ReviewPrompt,
+		"InvestigateTopic": content.Metadata.InvestigateTopic,
+	} {
+		if strings.Contains(got, awsKeyFixture) || strings.Contains(got, highEntropySecret) {
+			t.Errorf("%s should not contain the secret after redaction, got %q", field, got)
+		}
+		if !strings.Contains(got, "REDACTED") {
+			t.Errorf("%s should contain REDACTED placeholder, got %q", field, got)
+		}
 	}
 }
 

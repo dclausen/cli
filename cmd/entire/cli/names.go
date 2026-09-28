@@ -29,8 +29,10 @@ const (
 const (
 	colHeaderCloneURL = "CLONE URL"
 	colHeaderCluster  = "CLUSTER"
+	colHeaderGrantee  = "GRANTEE"
 	colHeaderName     = "NAME"
 	colHeaderRegion   = "REGION"
+	colHeaderRepo     = "REPO"
 	colHeaderRole     = "ROLE"
 	colHeaderStatus   = "STATUS"
 )
