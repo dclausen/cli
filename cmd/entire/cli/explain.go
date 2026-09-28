@@ -2566,6 +2566,10 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
 
 	var points []strategy.PendingCheckpoint
+	// linked records every checkpoint the commit walk matched, including ones
+	// later dropped by the limit, so the imported pass below never hydrates a
+	// commit-linked stub just to learn it is not imported.
+	linked := make(map[id.CheckpointID]bool)
 
 	collectCheckpoint := func(c *object.Commit) {
 		cpID, found := trailers.ParseCheckpoint(c.Message)
@@ -2576,6 +2580,7 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 		if !found {
 			return
 		}
+		linked[cpID] = true
 		// Defer hydration of remote-discovered stubs until after sort+truncate
 		// below: hydrating here (during the commitScanLimit walk) can issue up
 		// to hundreds of sequential ref fetches to display at most `limit`
@@ -2670,7 +2675,7 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 	// Append imported (read-only, commit-less) checkpoints after the live points,
 	// bounded by the same limit so a one-month import doesn't produce an
 	// unbounded list. They get their own budget and never displace live points.
-	imported := getImportedPendingCheckpoints(ctx, repo)
+	imported := getImportedPendingCheckpoints(ctx, store, committedInfos, linked)
 	sort.Slice(imported, func(i, j int) bool {
 		return imported[i].Date.After(imported[j].Date)
 	})
@@ -2692,11 +2697,7 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 // is not silent.
 func hydrateListedBranchCheckpoints(
 	ctx context.Context,
-	store interface {
-		checkpoint.SessionReader
-		Read(ctx context.Context, checkpointID id.CheckpointID) (*checkpoint.CheckpointSummary, error)
-		ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*checkpoint.Metadata, error)
-	},
+	store listedCheckpointReader,
 	points []strategy.PendingCheckpoint,
 	committedByID map[id.CheckpointID]checkpoint.CheckpointInfo,
 ) {
@@ -2741,30 +2742,46 @@ func hydrateListedBranchCheckpoints(
 	}
 }
 
+// listedCheckpointReader is the store surface the branch listing needs to
+// hydrate remote-discovered List stubs and read their prompts.
+type listedCheckpointReader interface {
+	checkpoint.SessionReader
+	Read(ctx context.Context, checkpointID id.CheckpointID) (*checkpoint.CheckpointSummary, error)
+	ReadSessionMetadata(ctx context.Context, checkpointID id.CheckpointID, sessionIndex int) (*checkpoint.Metadata, error)
+}
+
 // getImportedPendingCheckpoints returns read-only imported checkpoints (Kind
-// "imported", flagged Imported) as PendingCheckpoint entries. They live on the v1
-// metadata branch but carry no commit trailer, so the commit-driven branch
-// walk never surfaces them. Best-effort: returns nil on read failure.
-func getImportedPendingCheckpoints(ctx context.Context, repo *git.Repository) []strategy.PendingCheckpoint {
-	stores, err := checkpoint.Open(ctx, repo, checkpoint.OpenOptions{ReadRemotes: strategy.CheckpointReadRemotes(ctx)})
-	if err != nil {
-		return nil
-	}
-	infos, err := stores.Persistent.List(ctx)
-	if err != nil {
-		return nil
-	}
+// "imported", flagged Imported) as PendingCheckpoint entries. They carry no
+// commit trailer, so the commit-driven branch walk never surfaces them.
+//
+// infos is the discovery-enabled List from getBranchCheckpoints, so it includes
+// names-only stubs for checkpoints that exist only on the remote (a fresh clone
+// of a git-refs repo). A stub's Imported flag and CreatedAt are unknown until
+// its ref is read, so stubs not already linked to a commit are hydrated here,
+// one lazy ref fetch each, bounded by ListHydrationPassTimeout. Hydration also
+// recovers CreatedAt for legacy hex IDs, which carry no ULID timestamp.
+func getImportedPendingCheckpoints(ctx context.Context, store listedCheckpointReader, infos []checkpoint.CheckpointInfo, linked map[id.CheckpointID]bool) []strategy.PendingCheckpoint {
+	passCtx, passCancel := context.WithTimeout(ctx, checkpoint.ListHydrationPassTimeout)
+	defer passCancel()
+
+	unchecked := 0
 	points := make([]strategy.PendingCheckpoint, 0)
 	for _, info := range infos {
-		// Imported checkpoints live on v1 alongside normal ones but have no
-		// commit trailer, so the commit-driven walk above never surfaces them.
-		// Add only the imported ones here.
+		if info.ListedStub && !linked[info.CheckpointID] {
+			if passCtx.Err() != nil {
+				unchecked++
+				continue
+			}
+			hctx, cancel := context.WithTimeout(passCtx, checkpoint.ListHydrationTimeout)
+			info = checkpoint.HydrateListedCheckpointInfo(hctx, store, info)
+			cancel()
+		}
 		if !info.Imported {
 			continue
 		}
 		point := strategy.PendingCheckpoint{
 			ID:           info.CheckpointID.String(),
-			Message:      readLatestCommittedSessionPrompt(ctx, stores.Persistent, info.CheckpointID, info.SessionCount),
+			Message:      readLatestCommittedSessionPrompt(ctx, store, info.CheckpointID, info.SessionCount),
 			Date:         info.CreatedAt,
 			IsLogsOnly:   true,
 			Imported:     true,
@@ -2776,6 +2793,9 @@ func getImportedPendingCheckpoints(ctx context.Context, repo *git.Repository) []
 		}
 		point.SessionPrompt = point.Message
 		points = append(points, point)
+	}
+	if unchecked > 0 {
+		fmt.Fprintf(os.Stderr, "[entire] Warning: could not load %d remote checkpoint(s) in time; imported checkpoints among them are not listed.\n", unchecked)
 	}
 	return points
 }

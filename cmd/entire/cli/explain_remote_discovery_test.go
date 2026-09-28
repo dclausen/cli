@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
@@ -109,4 +110,83 @@ func TestGetBranchCheckpoints_HydratesRemoteDiscoveredStub(t *testing.T) {
 		}
 	}
 	require.True(t, found, "PendingCheckpoint for remote-discovered checkpoint %s missing; got %+v", cid, points)
+}
+
+// TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints covers a fresh
+// clone of a git-refs repo produced by `entire repo migrate`: no
+// checkpoint_remote (checkpoints live on origin), imported checkpoints with
+// legacy hex IDs, and no commit trailers. The imported pass must hydrate the
+// remote-discovered stubs to learn they are imported, and order them by their
+// stored CreatedAt, since legacy IDs carry no timestamp.
+// Not parallel: uses t.Chdir.
+func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
+	bareDir := t.TempDir()
+	gitRun(t, bareDir, "init", "--bare", "-q", bareDir)
+	bareURL := "file://" + filepath.ToSlash(bareDir)
+
+	deviceA := t.TempDir()
+	testutil.InitRepo(t, deviceA)
+	testutil.WriteFile(t, deviceA, "f.txt", "init")
+	testutil.GitAdd(t, deviceA, "f.txt")
+	testutil.GitCommit(t, deviceA, "init")
+	branch := gitDefaultBranch(t, deviceA)
+	gitRun(t, deviceA, "remote", "add", "origin", bareURL)
+	gitRun(t, deviceA, "push", "-q", "-u", "origin", "HEAD:"+branch)
+	gitRun(t, bareDir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
+
+	settingsBody := `{"enabled":true,"checkpoints":{"primary":{"type":"git-refs"}}}`
+	require.NoError(t, os.MkdirAll(filepath.Join(deviceA, ".entire"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(deviceA, ".entire", "settings.json"), []byte(settingsBody), 0o644))
+	t.Chdir(deviceA)
+
+	repoA, err := git.PlainOpen(deviceA)
+	require.NoError(t, err)
+	stores, err := checkpoint.Open(context.Background(), repoA, checkpoint.OpenOptions{})
+	require.NoError(t, err)
+
+	// The newer checkpoint has the ID that sorts last by ref name, so the
+	// expected order only holds if it comes from CreatedAt.
+	older := id.MustCheckpointID("aaaaaaaaaaaa")
+	newer := id.MustCheckpointID("ffffffffffff")
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for i, cid := range []id.CheckpointID{older, newer} {
+		require.NoError(t, stores.Persistent.Write(context.Background(), checkpoint.Session{
+			CheckpointID: cid,
+			SessionID:    "imported-" + cid.String(),
+			CreatedAt:    base.Add(time.Duration(i) * time.Hour),
+			Strategy:     "import",
+			Kind:         "imported",
+			Transcript:   redact.AlreadyRedacted([]byte("imported transcript")),
+			Prompts:      []string{"prompt " + cid.String()},
+			AuthorName:   "Test",
+			AuthorEmail:  "test@example.com",
+		}))
+		refName, refErr := checkpoint.RefName(cid)
+		require.NoError(t, refErr)
+		gitRun(t, deviceA, "push", "-q", "origin", refName.String()+":"+refName.String())
+	}
+
+	deviceB := filepath.Join(t.TempDir(), "device-b")
+	gitRun(t, t.TempDir(), "clone", "-q", "--branch", branch, bareURL, deviceB)
+	require.NoError(t, os.MkdirAll(filepath.Join(deviceB, ".entire"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(deviceB, ".entire", "settings.json"), []byte(settingsBody), 0o644))
+	require.Empty(t, gitOutput(t, deviceB, "for-each-ref", checkpoint.CheckpointRefPrefix),
+		"clone must not bring checkpoint refs; discovery has to find them on origin")
+
+	t.Chdir(deviceB)
+	repoB, err := git.PlainOpen(deviceB)
+	require.NoError(t, err)
+
+	points, _, err := getBranchCheckpoints(context.Background(), repoB, 10)
+	require.NoError(t, err)
+	require.Len(t, points, 2, "both remote-only imported checkpoints must be listed; got %+v", points)
+
+	assert.Equal(t, newer, points[0].CheckpointID, "newest imported checkpoint first")
+	assert.Equal(t, older, points[1].CheckpointID)
+	for i, p := range points {
+		assert.True(t, p.Imported)
+		assert.Equal(t, "imported-"+p.CheckpointID.String(), p.SessionID)
+		assert.Equal(t, "prompt "+p.CheckpointID.String(), p.SessionPrompt)
+		assert.Equal(t, base.Add(time.Duration(1-i)*time.Hour), p.Date.UTC())
+	}
 }
