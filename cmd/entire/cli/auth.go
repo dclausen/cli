@@ -1200,9 +1200,8 @@ func lastUsedSortKey(s api.AuthSession) string {
 	return *s.LastUsedAt
 }
 
-// authLapsedLabel is how both the session table and the verdict line name a
-// deadline that has passed.
-const authLapsedLabel = "expired"
+// expiredLabel is what the expiry columns show once a deadline has passed.
+const expiredLabel = "expired"
 
 // formatSessionExpiry renders the session table's EXPIRES cell: the remaining
 // time ("in 27d") while the session is live, a flat "expired" once it is not.
@@ -1225,7 +1224,7 @@ func formatSessionExpiry(s string) string {
 		return s
 	}
 	if !ts.After(time.Now()) {
-		return authLapsedLabel
+		return expiredLabel
 	}
 	return timeAgo(ts)
 }
@@ -1261,7 +1260,7 @@ func authDeadlineClause(deadline time.Time) string {
 	case deadline.IsZero():
 		return ""
 	case !deadline.After(time.Now()):
-		return authLapsedLabel
+		return expiredLabel
 	default:
 		return "expires " + timeAgo(deadline)
 	}
