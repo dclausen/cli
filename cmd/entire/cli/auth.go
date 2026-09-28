@@ -753,8 +753,10 @@ type authStatusJSON struct {
 	// User is the provider-qualified handle. The bare handle and provider are
 	// deliberately not split out: one field beats two a caller has to rejoin.
 	//
-	// It is the spelling `entire grant` takes for every provider, including
-	// Google, whose minted handle is shown by subject id — see providerIdentity.
+	// It carries the stored (wire) handle, like every --json listing, so a
+	// script can compare it with `grant … list --json` grantee names directly.
+	// For Google that is `google:google-<subject id>`, where the text view shows
+	// `google:<subject id>` (see providerIdentity); `entire grant` accepts both.
 	User string `json:"user,omitempty"`
 	// DisplayName is the account's human name where the server has one. Spelled
 	// display_name, not name: `sessions[].name` in this same envelope is a
@@ -846,7 +848,9 @@ func buildAuthStatusJSON(d authStatusData, opts authStatusOptions) authStatusJSO
 
 	out.ForeignRegion = d.profile.ForeignRegion
 	out.Jurisdiction = d.profile.Jurisdiction
-	out.User = authIdentityLabel(d.profile)
+	if d.profile.Handle != "" {
+		out.User = formatQualifiedHandle(d.profile.Provider, d.profile.Handle)
+	}
 	out.DisplayName = strings.TrimSpace(d.profile.DisplayName)
 
 	if t.envToken {

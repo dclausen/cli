@@ -807,6 +807,28 @@ func TestResolveAccountRef(t *testing.T) {
 		}
 	})
 
+	// `project create --owner` takes the same spellings a grantee does.
+	for _, ref := range []string{"google:1001", "google:google-1001"} {
+		t.Run("google owner "+ref+" resolves the minted handle", func(t *testing.T) {
+			t.Parallel()
+			c, _ := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/google/google-1001") {
+					t.Errorf("resolved path %q, want the minted handle google-1001", r.URL.Path)
+				}
+				if err := printJSON(w, &coreapi.ResolvedIdentity{AccountId: ulidResolvedAcct, Provider: providerGoogle, Handle: "google-1001", ProviderUserId: "1001"}); err != nil {
+					t.Errorf("encode identity: %v", err)
+				}
+			})
+			got, err := resolveAccountRef(context.Background(), c, ref)
+			if err != nil {
+				t.Fatalf("resolveAccountRef: %v", err)
+			}
+			if got != ulidResolvedAcct {
+				t.Errorf("resolveAccountRef = %q, want %q", got, ulidResolvedAcct)
+			}
+		})
+	}
+
 	t.Run("non-qualified handle fails before any network call", func(t *testing.T) {
 		t.Parallel()
 		c, calls := resolveTestClient(t, func(w http.ResponseWriter, _ *http.Request) {

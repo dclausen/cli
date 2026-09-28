@@ -1393,6 +1393,22 @@ func TestBuildAuthStatusJSON_DisplayNameSpellingAndCollapse(t *testing.T) {
 	}
 }
 
+// --json user carries the stored handle, the spelling every --json grant
+// listing uses, so a script comparing the two matches for a Google account.
+// The text row keeps the de-duplicated display form.
+func TestBuildAuthStatusJSON_UserIsTheWireHandle(t *testing.T) {
+	t.Parallel()
+
+	profile := &authProfile{Handle: "google-1001", Provider: "google", ProviderUserID: "1001"}
+	got := buildAuthStatusJSON(authStatusData{loggedIn: true, profile: profile, current: -1}, authStatusOptions{})
+	if got.User != "google:google-1001" {
+		t.Errorf("user = %q, want the wire handle google:google-1001", got.User)
+	}
+	if !hasRow(authProfileRows(profile), "user", "google:1001") {
+		t.Error("text rows lost the de-duplicated google:1001")
+	}
+}
+
 // Where the bearer came from is settled before /me is consulted, so a script
 // can see that ENTIRE_TOKEN supplied the token even when /me rejected it —
 // which is also why "run entire login" cannot help in that state.

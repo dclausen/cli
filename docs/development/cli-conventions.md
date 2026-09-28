@@ -170,7 +170,9 @@ the commands are always runnable in every build.
   `entire grant` restores the prefix before resolving and accepts either
   spelling. `grant … list` tables and pickers show the display form too, so
   `user`, list rows and the accepted grantee are one spelling for every
-  provider; `--json` listings keep the wire value. `auth status` also marks the caller's
+  provider in text output. Every `--json` surface keeps the wire value instead
+  — `auth status --json` `user` included (`google:google-100…`) — so a script
+  can compare it with `grant … list --json` grantee names directly. `auth status` also marks the caller's
   own row `(current)`, matching the login JWT's `fid` (refresh-token family id)
   claim against the listed session ids, since a session IS a refresh-token
   family. That match is the only thing entitling the verdict line to state an
