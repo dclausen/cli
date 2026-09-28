@@ -126,7 +126,7 @@ func resolveAccountRef(ctx context.Context, c *coreapi.Client, ref string) (stri
 	if looksLikeULID(ref) {
 		return ref, nil
 	}
-	provider, handle, err := parseQualifiedHandle(ref)
+	provider, handle, err := parseGranteeHandle(ref)
 	if err != nil {
 		return "", err
 	}
@@ -162,14 +162,14 @@ func resolveGranteeProvider(ctx context.Context, c *coreapi.Client, ref string) 
 	if err := ensureGranteeIsHandle(ref); err != nil {
 		return "", "", err
 	}
-	p, handle, err := parseQualifiedHandle(ref)
+	p, handle, err := parseGranteeHandle(ref)
 	if err != nil {
 		return "", "", err
 	}
 	id, err := c.ResolveHandle(ctx, coreapi.ResolveHandleParams{Provider: p, Handle: handle})
 	if err != nil {
 		if isCoreNotFound(err) {
-			return "", "", fmt.Errorf("no %s identity for handle %q", p, handle)
+			return "", "", fmt.Errorf("no %s identity for handle %q", p, identityFor(p).displayHandle(handle))
 		}
 		return "", "", err
 	}

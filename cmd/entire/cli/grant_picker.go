@@ -67,9 +67,10 @@ type grantCandidate struct {
 	byID bool
 }
 
-// handleCandidate is a candidate addressed and shown by its handle.
+// handleCandidate is a candidate addressed by its handle and shown in the
+// spelling users type.
 func handleCandidate(handle string) grantCandidate {
-	return grantCandidate{ref: handle, label: handle}
+	return grantCandidate{ref: handle, label: displayGranteeName(handle)}
 }
 
 // option is the row as a picker shows it and as a prompt names it. label is the

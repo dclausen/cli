@@ -844,6 +844,30 @@ func TestResolveGranteeProvider(t *testing.T) {
 		}
 	})
 
+	// `auth status` shows a Google login as google:<subject id>; the server
+	// only resolves its minted google-<subject id>, so both spellings must look
+	// up the minted one.
+	for _, ref := range []string{"google:1001", "google:google-1001"} {
+		t.Run("google grantee "+ref+" resolves the minted handle", func(t *testing.T) {
+			t.Parallel()
+			c, _ := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/google/google-1001") {
+					t.Errorf("resolved path %q, want the minted handle google-1001", r.URL.Path)
+				}
+				if err := printJSON(w, &coreapi.ResolvedIdentity{AccountId: ulidResolvedAcct, Provider: providerGoogle, Handle: "google-1001", ProviderUserId: "1001"}); err != nil {
+					t.Errorf("encode identity: %v", err)
+				}
+			})
+			provider, puid, err := resolveGranteeProvider(context.Background(), c, ref)
+			if err != nil {
+				t.Fatalf("resolveGranteeProvider: %v", err)
+			}
+			if provider != providerGoogle || puid != "1001" {
+				t.Errorf("resolveGranteeProvider = (%q, %q), want (google, 1001)", provider, puid)
+			}
+		})
+	}
+
 	t.Run("non-qualified handle fails before any network call", func(t *testing.T) {
 		t.Parallel()
 		c, calls := resolveTestClient(t, func(w http.ResponseWriter, _ *http.Request) {

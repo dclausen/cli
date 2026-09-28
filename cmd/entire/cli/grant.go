@@ -280,7 +280,7 @@ func grantEach[Row any](ctx context.Context, cmd *cobra.Command, c *coreapi.Clie
 		}
 		wires = append(wires, wire)
 		if !jsonRequested(cmd) {
-			fmt.Fprintf(cmd.OutOrStdout(), "✓ Granted %s %s access to %s\n", p.handle, granted, pt.describe())
+			fmt.Fprintf(cmd.OutOrStdout(), "✓ Granted %s %s access to %s\n", displayGranteeName(p.handle), granted, pt.describe())
 		}
 	}
 	return emitGrantJSON(cmd, wires, single)
@@ -627,11 +627,12 @@ func repoGrantRow(g coreapi.RepoGrant) []string {
 	return []string{granteeName(g.GranteeName, g.GranteeId), g.Role, g.Source, g.GranteeType}
 }
 
-// granteeName returns the friendly name when the server resolved one, falling
-// back to the ULID for grantees it couldn't label (e.g. teams).
+// granteeName returns the friendly name when the server resolved one, in the
+// spelling users type (see displayGranteeName), falling back to the ULID for
+// grantees it couldn't label (e.g. teams).
 func granteeName(name coreapi.OptString, granteeID string) string {
 	if n := name.Or(""); n != "" {
-		return n
+		return displayGranteeName(n)
 	}
 	return granteeID
 }

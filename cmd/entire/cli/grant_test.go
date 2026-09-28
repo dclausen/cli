@@ -70,6 +70,7 @@ func TestGranteeName(t *testing.T) {
 		want string
 	}{
 		{name: "friendly name wins", in: coreapi.NewOptString("github:alice"), id: ulid, want: "github:alice"},
+		{name: "google minted handle shows the subject id", in: coreapi.NewOptString("google:google-1001"), id: ulid, want: "google:1001"},
 		{name: "unset falls back to ULID", in: coreapi.OptString{}, id: ulid, want: ulid},
 		{name: "empty string falls back to ULID", in: coreapi.NewOptString(""), id: ulid, want: ulid},
 	}

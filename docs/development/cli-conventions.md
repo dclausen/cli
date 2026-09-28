@@ -153,10 +153,11 @@ the commands are always runnable in every build.
   caller has to rejoin. **Identity is split across providers**, so the view takes
   whichever half each one has. GitHub supplies a human handle
   (`github:gtrrz-victor`); Google supplies a display name and a handle
-  synthesised as `google-<subject id>`, which qualifies to `google:google-100…`
-  — the provider twice. That prefix is dropped when what
-  follows it IS the `providerUserId`, so the handle is provably the minted form
-  and a GitHub user genuinely named `github-foo` keeps their name. A `name` row
+  minted as `google-<subject id>`, which would qualify to `google:google-100…`
+  — the provider twice. How each provider's handle is shown and typed is owned
+  by `providerIdentity` (`provider_identity.go`): GitHub handles pass through
+  unchanged (so a user genuinely named `github-foo` keeps that name), while
+  Google's render as `google:<subject id>`. A `name` row
   carries the display name, and earns its line only where the handle is not
   already that name — the test is the value, not the provider, so a GitHub
   account that does carry a display name grows the row like any other. In JSON
@@ -164,11 +165,12 @@ the commands are always runnable in every build.
   envelope is a session's name, and one document must not spell two subjects
   the same way — it also matches `entire experts` and /me's own `displayName`.
   It is uncollapsed, as `--json` never applies a text-view collapse.
-  **The trade-off is deliberate and worth knowing:** the de-duplicated spelling
-  does not resolve as a grantee — `GET /identity/handles/google/<subject id>`
-  answers 404 while the doubled form resolves — so for synthetic handles `user`
-  is a legible identity, not a value to paste into `entire grant`. It stays
-  grant-able for every provider that issues real usernames. `auth status` also marks the caller's
+  The same mapping runs in reverse wherever a grantee is typed:
+  `/identity/handles` resolves only the stored `google-<subject id>`, so
+  `entire grant` restores the prefix before resolving and accepts either
+  spelling. `grant … list` tables and pickers show the display form too, so
+  `user`, list rows and the accepted grantee are one spelling for every
+  provider; `--json` listings keep the wire value. `auth status` also marks the caller's
   own row `(current)`, matching the login JWT's `fid` (refresh-token family id)
   claim against the listed session ids, since a session IS a refresh-token
   family. That match is the only thing entitling the verdict line to state an

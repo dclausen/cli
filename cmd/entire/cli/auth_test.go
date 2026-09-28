@@ -1320,8 +1320,8 @@ func TestAuthIdentityLabel_PerProvider(t *testing.T) {
 		{"github username", authProfile{Handle: "gtrrz-victor", Provider: "github", ProviderUserID: "881031"}, "github:gtrrz-victor"},
 		// google-<subject id> would qualify to google:google-… — the provider twice.
 		{"google synthetic handle", authProfile{Handle: "google-100164574874856813796", Provider: "google", ProviderUserID: "100164574874856813796"}, "google:100164574874856813796"},
-		// The prefix is only dropped when what follows it IS the providerUserId,
-		// so a user genuinely called github-foo is not renamed to foo.
+		// Only a provider that mints handles strips a prefix, so a GitHub user
+		// genuinely called github-foo is not renamed to foo.
 		{"username that looks synthetic", authProfile{Handle: "github-foo", Provider: "github", ProviderUserID: "881031"}, "github:github-foo"},
 		// A providerUserId is not a handle: qualifying one yields a string the
 		// resolver answers 404 for, so no row beats a wrong one.
