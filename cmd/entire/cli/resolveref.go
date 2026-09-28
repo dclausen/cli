@@ -15,10 +15,12 @@ import (
 // <id>, …). ULIDs are unfriendly to type, so these refs also accept a human
 // name: looksLikeULID decides which form was given, and the resolveXRef helpers
 // turn a name into its ULID. A ULID is always passed straight through with no
-// network call. A name is resolved by the control plane's O(1), case-insensitive
-// by-name lookup (the server matches on lower(name) and returns the single match
-// under the response's singular `org`/`project` field, or 404) — the CLI never
-// lists everything and filters client-side.
+// network call. A project or repo name is resolved by the control plane's O(1),
+// case-insensitive by-name lookup (the server matches on lower(name) and returns
+// the single match under the response's singular `project`/`repo` field, or
+// 404). An org name is different: org names are labels, not identifiers, so
+// the CLI matches the name against the caller's own org listing instead of a
+// global lookup.
 
 // providerGitHub is the identity-provider slug for GitHub-backed accounts, the
 // provider half of a qualified grantee handle like "github:alice". GitHub is the
@@ -82,8 +84,8 @@ func looksLikeULID(s string) bool {
 }
 
 // isCoreNotFound reports whether err is a control-plane 404. The by-name lookups
-// (ListOrgs/ListProjects/ListOrgProjects with ?name=) return 404 when nothing
-// matches; callers turn that into a friendly "no X named" message.
+// (ListProjects/ListProjectRepos with ?name=) return 404 when nothing matches;
+// callers turn that into a friendly "no X named" message.
 func isCoreNotFound(err error) bool {
 	var se *coreapi.ErrorModelStatusCode
 	return errors.As(err, &se) && se.StatusCode == http.StatusNotFound
@@ -96,23 +98,40 @@ func resolveOrgRefResolved(ctx context.Context, c *coreapi.Client, ref string) (
 	if looksLikeULID(ref) {
 		return resolvedRef{ID: ref}, nil
 	}
-	out, err := c.ListOrgs(ctx, coreapi.ListOrgsParams{Name: coreapi.NewOptString(ref)})
+	orgs, err := listAllOrgs(ctx, c)
 	if err != nil {
-		if isCoreNotFound(err) {
-			return resolvedRef{}, noOrgNamedErr(ref)
+		return resolvedRef{}, fmt.Errorf("list orgs: %w", err)
+	}
+	var exact, folded []coreapi.Org
+	for _, org := range orgs {
+		switch {
+		case org.Name == ref:
+			exact = append(exact, org)
+		case strings.EqualFold(org.Name, ref):
+			folded = append(folded, org)
 		}
-		return resolvedRef{}, err
 	}
-	org, ok := out.Response.Org.Get()
-	if !ok {
+	matches := exact
+	if len(matches) == 0 {
+		matches = folded
+	}
+	switch len(matches) {
+	case 0:
 		return resolvedRef{}, noOrgNamedErr(ref)
+	case 1:
+		return resolvedRef{ID: matches[0].ID, Name: matches[0].Name}, nil
+	default:
+		return resolvedRef{}, &ambiguousOrgError{name: ref, matches: matches}
 	}
-	return resolvedRef{ID: org.ID, Name: org.Name}, nil
 }
 
 // resolveOrgRef turns an org reference (ULID or name) into its ULID. A ULID is
-// returned unchanged; a name is resolved via the server's case-insensitive
-// by-name lookup.
+// returned unchanged. A name is matched case-insensitively against the
+// caller's own org listing (`GET /api/v1/orgs`, every page): org names are
+// not unique across accounts, so the server's global ?name= lookup is not
+// used. An exact-case match takes precedence over case-folded ones, so "acme"
+// still resolves when the caller also sees "ACME". One match resolves; several
+// are an ambiguousOrgError, since only the ULID can tell same-named orgs apart.
 func resolveOrgRef(ctx context.Context, c *coreapi.Client, ref string) (string, error) {
 	r, err := resolveOrgRefResolved(ctx, c, ref)
 	return r.ID, err
@@ -489,6 +508,22 @@ type orgNotFoundError struct{ name string }
 
 func (e *orgNotFoundError) Error() string {
 	return fmt.Sprintf("no org named %q (run `entire org list` to see names, or pass a ULID)", e.name)
+}
+
+// ambiguousOrgError is a by-name org lookup with more than one match in the
+// caller's own orgs. The message lists each match so the user can pick a ULID.
+type ambiguousOrgError struct {
+	name    string
+	matches []coreapi.Org
+}
+
+func (e *ambiguousOrgError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d orgs are named %q; pass the ULID instead:", len(e.matches), e.name)
+	for _, org := range e.matches {
+		fmt.Fprintf(&b, "\n  %s  %s", org.Name, org.ID)
+	}
+	return b.String()
 }
 
 var errNamedRefNotFound = errors.New("named reference not found")
