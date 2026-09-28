@@ -3020,7 +3020,7 @@ func TestHandleLifecycleSessionStart_NoSynchronousNetworkForTrailEnablement(t *t
 // control plane.
 type blockingCellCore struct{}
 
-func (blockingCellCore) GetRepo(ctx context.Context, _ coreapi.GetRepoParams) (*coreapi.Repo, error) {
+func (blockingCellCore) GetRepo(ctx context.Context, _ coreapi.GetRepoParams) (*coreapi.RepoHeaders, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }

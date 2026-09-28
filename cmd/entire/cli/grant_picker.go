@@ -73,6 +73,19 @@ func handleCandidate(handle string) grantCandidate {
 	return grantCandidate{ref: handle, label: displayGranteeName(handle)}
 }
 
+// memberCandidate is an org member's candidate: addressed by handle, and
+// labelled with the member's display name where the server sent one, so a
+// Google account reads as a person rather than a subject id. The name joins
+// the label rather than the ref, so it reaches every prompt and confirmation
+// while the grant itself still goes by handle.
+func memberCandidate(handle string, m coreapi.OrgMemberListItem) grantCandidate {
+	c := handleCandidate(handle)
+	if name := memberDisplayName(m); name != "" {
+		c.label += " · " + name
+	}
+	return c
+}
+
 // option is the row as a picker shows it and as a prompt names it. label is the
 // identity and is what every message about the grant says; the role is
 // parenthesised after it where one is known, so a destructive choice is made
@@ -230,7 +243,7 @@ func orgMemberCandidates(ctx context.Context, c *coreapi.Client, orgID string, d
 		if directHolders[m.AccountId] {
 			continue
 		}
-		pool.candidates = append(pool.candidates, handleCandidate(handle))
+		pool.candidates = append(pool.candidates, memberCandidate(handle, m))
 	}
 	return pool, nil
 }
@@ -241,8 +254,8 @@ const orgMembershipActive = "active"
 
 // listOrgMembers is the one org-membership page call, shared by the pool that
 // offers members for adding and the pool that offers them for removing.
-func listOrgMembers(c *coreapi.Client, orgID string) func(context.Context, coreapi.OptString) ([]coreapi.Membership, coreapi.OptString, error) {
-	return func(ctx context.Context, pageToken coreapi.OptString) ([]coreapi.Membership, coreapi.OptString, error) {
+func listOrgMembers(c *coreapi.Client, orgID string) func(context.Context, coreapi.OptString) ([]coreapi.OrgMemberListItem, coreapi.OptString, error) {
+	return func(ctx context.Context, pageToken coreapi.OptString) ([]coreapi.OrgMemberListItem, coreapi.OptString, error) {
 		out, err := c.ListOrgMembers(ctx, coreapi.ListOrgMembersParams{OrgId: orgID, PageToken: pageToken})
 		if err != nil {
 			return nil, coreapi.OptString{}, err
@@ -271,7 +284,7 @@ func listOrgMembers(c *coreapi.Client, orgID string) func(context.Context, corea
 // the server will resolve. Verify against the control plane's real status
 // vocabulary before relying on this as a rule, or before extending it to a
 // path where being filtered out is the end of the road.
-func grantableMember(m coreapi.Membership) (handle string, ok bool) {
+func grantableMember(m coreapi.OrgMemberListItem) (handle string, ok bool) {
 	handle = strings.TrimSpace(m.Handle.Or(""))
 	return handle, handle != "" && m.Status == orgMembershipActive
 }
@@ -365,7 +378,7 @@ func repoGrantCandidates(ctx context.Context, c *coreapi.Client, repoID string) 
 	if err != nil {
 		return memberPool{}, err
 	}
-	orgID, err := owningOrgOf(ctx, c, repo.OwningProjectId)
+	orgID, err := owningOrgOf(ctx, c, repo.Response.OwningProjectId)
 	if err != nil {
 		return memberPool{}, err
 	}
@@ -690,7 +703,7 @@ func orgMemberHolders(ctx context.Context, c *coreapi.Client, orgID string) ([]g
 		if !ok {
 			continue
 		}
-		h := handleCandidate(handle)
+		h := memberCandidate(handle, m)
 		h.role = m.Role
 		holders = append(holders, h)
 	}

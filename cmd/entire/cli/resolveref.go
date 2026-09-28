@@ -57,7 +57,7 @@ type repoRefClient interface {
 	projectRefClient
 	ListProjectRepos(ctx context.Context, params coreapi.ListProjectReposParams) (*coreapi.ListProjectReposOutputBody, error)
 	ResolveRepos(ctx context.Context, request *coreapi.ResolveReposInputBody) (*coreapi.ResolveReposResponse, error)
-	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.Repo, error)
+	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.RepoHeaders, error)
 }
 
 // looksLikeULID reports whether s has the shape of a ULID: 26 characters drawn
@@ -416,7 +416,7 @@ func resolveRepoPathRef(ctx context.Context, c repoRefClient, ref, projectRef st
 		if err != nil {
 			return resolvedRef{}, fmt.Errorf("get repo: %w", err)
 		}
-		if !strings.EqualFold(projectRef, repo.OwningProjectId) {
+		if !strings.EqualFold(projectRef, repo.Response.OwningProjectId) {
 			return resolvedRef{}, projectMismatchErr(projectRef, project, ref)
 		}
 	}
