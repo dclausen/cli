@@ -64,8 +64,9 @@ func serveRepoView(t *testing.T, repoJSON string, authoritative func(w http.Resp
 
 // TestRepoView_AuthoritativeSnapshot pins that `repo view` always reads the
 // repo authoritatively, so the primary's STATUS says whether it is usable
-// rather than dashing. The provision reason rides along, which is the field
-// that says why a repo stopped where it did.
+// rather than dashing. The provision reason rides along in --json, which is
+// the field that says why a repo stopped where it did; the human view shows it
+// only where it has a failure to explain.
 //
 // Not parallel: runCoreCmd replaces the shared client constructor.
 func TestRepoView_AuthoritativeSnapshot(t *testing.T) {
@@ -74,13 +75,21 @@ func TestRepoView_AuthoritativeSnapshot(t *testing.T) {
 			body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","path":"/et/acme/web","state":%q,"provisionReason":"max retries exhausted","capabilities":{"canManage":false,"canPush":false,"canPull":true}}`, testDeleteULID, testProjectULID, state)
 			srv, authReads := serveRepoView(t, body, nil)
 
-			// The header is Name and Visibility only, so the reason a repo
-			// stopped provisioning rides on stderr with the other detail the
-			// table has no column for — never on stdout, which is the view.
+			// The reason is scoped to the state it explains. provisionReason
+			// outlives the failure it describes, so a repo reading `ready` used
+			// to carry "max retries exhausted" underneath it. This fixture has
+			// no clusterSlug, so a failed repo has no placement and reports on
+			// stdout, where there is no table to keep clean; every other state
+			// reports nothing at all.
 			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
 			require.NoError(t, err)
-			require.Contains(t, stderr, "max retries exhausted")
-			require.NotContains(t, out, "max retries exhausted")
+			if state == repoStateFailed {
+				require.Contains(t, out, "Provisioning failed: max retries exhausted")
+			} else {
+				require.NotContains(t, out, "max retries exhausted")
+				require.NotContains(t, stderr, "max retries exhausted",
+					"a reason without a failure to explain is noise under a healthy repo")
+			}
 
 			out, _, err = runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
 			require.NoError(t, err)
@@ -130,19 +139,21 @@ func TestRepoView_ReasonFollowsTheAuthoritativeState(t *testing.T) {
 				return true
 			})
 
-			_, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
 			require.NoError(t, err)
-			out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+			jsonOut, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
 			require.NoError(t, err)
 			var row repoDirRow
-			require.NoError(t, json.Unmarshal([]byte(out), &row))
+			require.NoError(t, json.Unmarshal([]byte(jsonOut), &row))
 
 			require.Equal(t, tc.wantReason, row.ProvisionReason)
 			if tc.wantReason == "" {
 				require.Empty(t, stderr)
 				return
 			}
-			require.Contains(t, stderr, tc.wantReason)
+			// The fresh state here is "failed" and the fixture has no
+			// clusterSlug, so there is no table and the reason leads on stdout.
+			require.Contains(t, out, tc.wantReason)
 		})
 	}
 }
@@ -173,9 +184,9 @@ func TestRepoView_BeforeThePrimaryIsPlaced(t *testing.T) {
 		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, "/et/acme/web")
 		require.NoError(t, err)
 		requireOrder(t, out, "Name:", "/et/acme/web", "Visibility:", "Private")
-		require.Contains(t, out, "Not placed yet")
+		require.Contains(t, out, "No cluster holds this repository yet.")
 		require.NotContains(t, out, "Not mirrored on any cluster",
-			"a repo Entire holds a record for has a primary; the read was merely early")
+			"a repo Entire holds a record for is not a GitHub upstream")
 	})
 
 	t.Run("a ULID ref looks nothing up, so the repo's own name is all there is", func(t *testing.T) {
@@ -217,20 +228,18 @@ func TestRepoView_UnplacedRepoStatesItsLifecycle(t *testing.T) {
 		srv, _ := serveRepoView(t, body("failed", `,"provisionReason":"cluster quota exceeded"`), nil)
 		out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
 		require.NoError(t, err)
-		require.Contains(t, out, "failed")
-		require.NotContains(t, out, "Not placed yet",
-			"the lifecycle already answered; the read was not early")
-		// The reason has no cluster to name, so it stands alone rather than
-		// arriving behind an empty prefix.
-		require.Contains(t, stderr, "cluster quota exceeded")
-		require.NotContains(t, stderr, ": cluster quota exceeded")
+		// Lead with the problem, not with an explanation of the missing table.
+		require.Contains(t, out, "Provisioning failed: cluster quota exceeded.")
+		require.NotContains(t, out, "No cluster holds this repository yet.",
+			"the lifecycle already answered; this is a failure, not a wait")
+		require.Empty(t, stderr, "with no table to keep clean, the reason leads on stdout")
 	})
 
 	t.Run("a provisioning repo is still the early read", func(t *testing.T) {
 		srv, _ := serveRepoView(t, body("provisioning", ""), nil)
 		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
 		require.NoError(t, err)
-		require.Contains(t, out, "Not placed yet")
+		require.Contains(t, out, "No cluster holds this repository yet.")
 	})
 
 	// Visibility is a security assertion, so the absent case is not the

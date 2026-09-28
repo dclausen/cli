@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -512,12 +513,58 @@ func runNativeRepoView(cmd *cobra.Command, ref, project, clusterHost string, aut
 		}
 		row := nativeRepoDetailRow(name, repo, mirrors, clusters)
 		if jsonRequested(cmd) {
-			return printJSON(cmd.OutOrStdout(), row)
+			out, jerr := nativeRepoViewJSON(repo, row)
+			if jerr != nil {
+				return jerr
+			}
+			return printJSON(cmd.OutOrStdout(), out)
 		}
 		renderRepoDetail(cmd.OutOrStdout(), row)
 		reportNativeMirrorNotes(cmd.ErrOrStderr(), repo, mirrors, clusterHostBySlug(clusters))
 		return nil
 	})
+}
+
+// nativeRepoViewJSON answers with the repo as the SERVER describes it, plus the
+// keys this view computed. It is a superset, never a substitution: a native
+// repo keeps every field its record carries, so `repo create --json` and `repo
+// view --json` describe a repo the same way, and a consumer asking
+// `.capabilities.canPush` gets an answer instead of a null at exit 0.
+//
+// The added keys are exactly the ones a GitHub upstream also has, so the common
+// core parses identically for either forge — `repo`, `private`, `status` and
+// `placements`. A GitHub upstream simply has no record to carry the rest, which
+// is the truth rather than an omission.
+//
+// Nothing here overwrites a server value: `repo`/`private` are this view's
+// spellings of `path`/`visibility` under the keys `mirror list --json` uses,
+// `project` is the project NAME where the record carries only its ULID, and
+// `status`/`placements` come from reads the record knows nothing about.
+func nativeRepoViewJSON(repo *coreapi.Repo, row repoDirRow) (map[string]json.RawMessage, error) {
+	obj, err := wireObject(repo)
+	if err != nil {
+		return nil, err
+	}
+	fields := map[string]any{
+		"repo":       row.Repo,
+		"status":     row.Status,
+		"placements": row.Placements,
+	}
+	// Absent, never null: an unstated visibility is not a claim, and `null`
+	// reads as false to jq on the question asked to confirm a repo is
+	// restricted. The record's own `visibility` is carried either way.
+	if row.Private != nil {
+		fields["private"] = *row.Private
+	}
+	if row.Project != "" {
+		fields["project"] = row.Project
+	}
+	for field, value := range fields {
+		if perr := putJSONField(obj, field, value); perr != nil {
+			return nil, perr
+		}
+	}
+	return obj, nil
 }
 
 // primaryPlacementStatus renders a repo's own lifecycle state in the vocabulary
@@ -652,8 +699,14 @@ func nativeRepoDetailRow(name string, repo *coreapi.Repo, mirrors []coreapi.Nati
 // stays legible.
 func reportNativeMirrorNotes(w io.Writer, repo *coreapi.Repo, mirrors []coreapi.NativeMirrorPlacement, hostBySlug map[string]string) {
 	// The primary's equivalent of a mirror's lastError: the STATUS cell says a
-	// repo failed to provision, and this is the only place that says why.
-	if reason := strings.TrimSpace(repo.ProvisionReason.Or("")); reason != "" {
+	// repo failed to provision, and this is the only place that says why. It is
+	// therefore scoped to a repo that HAS failed — the field outlives the
+	// failure it describes, so printing it whenever it is non-empty put "max
+	// retries exhausted" under a repo reading `ready`. A failed repo with no
+	// placement prints its reason on stdout instead (renderRepoDetail), where
+	// there is no table for it to dirty.
+	if reason := strings.TrimSpace(repo.ProvisionReason.Or("")); reason != "" &&
+		repo.State.Or("") == repoStateFailed && repo.ClusterSlug.Or("") != "" {
 		// A repo that never got placed has no cluster to name, and prefixing
 		// the one line carrying the failure reason with ": " loses its subject
 		// without gaining one.

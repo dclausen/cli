@@ -237,6 +237,34 @@ func renderCoreListShaped[T any](cmd *cobra.Command, empty string, view listView
 	}
 }
 
+// wireObject round-trips a generated wire type into a JSON object, so a command
+// can answer with the server's own description of a thing plus whatever it
+// computed alongside. The generated types carry custom marshalers and arbitrary
+// additional properties, so they cannot be embedded in a wrapper struct;
+// encoding through their own marshaler is what preserves both. Pass a pointer —
+// the marshalers have pointer receivers.
+func wireObject(v any) (map[string]json.RawMessage, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encode %T: %w", v, err)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("decode %T: %w", v, err)
+	}
+	return obj, nil
+}
+
+// putJSONField encodes one computed value into an object built by wireObject.
+func putJSONField(obj map[string]json.RawMessage, field string, v any) error {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", field, err)
+	}
+	obj[field] = encoded
+	return nil
+}
+
 // mergeSynthesizedField renders a wire object as JSON with one synthesized
 // string field merged in. The generated types carry custom marshalers plus
 // arbitrary additional properties, so they can't be embedded in a wrapper
@@ -247,13 +275,9 @@ func renderCoreListShaped[T any](cmd *cobra.Command, empty string, view listView
 // is left untouched, so the server value always wins, and an empty synth
 // result adds nothing rather than a half-formed placeholder.
 func mergeSynthesizedField(v any, field string, synth func() string) (map[string]json.RawMessage, error) {
-	raw, err := json.Marshal(v)
+	obj, err := wireObject(v)
 	if err != nil {
-		return nil, fmt.Errorf("encode %T: %w", v, err)
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil, fmt.Errorf("decode %T: %w", v, err)
+		return nil, err
 	}
 	if _, ok := obj[field]; ok {
 		return obj, nil

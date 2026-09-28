@@ -1387,20 +1387,22 @@ func renderRepoDetail(w io.Writer, row repoDirRow) {
 
 	if len(row.Placements) == 0 {
 		switch {
-		case row.ID != "" && row.State != "" && row.State != repoStateProvisioning:
-			// Entire holds a record and the repo's own lifecycle has already
-			// answered. Say what it answered: a repo whose provisioning FAILED
-			// has no placement either, and explaining that away as a read that
-			// arrived early sends the reader back to wait for something that is
-			// never coming. reportNativeMirrorNotes carries the reason.
-			fmt.Fprintf(w, "Not placed on any cluster; the repository is %s.\n", row.State)
+		case row.ID != "" && row.State == repoStateFailed:
+			// Lead with the problem rather than explaining why a table is
+			// missing. The reason rides on stderr when there IS a table, to
+			// keep a piped one clean — there is no table here to keep clean,
+			// so it belongs with the failure it explains.
+			failed := "Provisioning failed"
+			if row.ProvisionReason != "" {
+				failed += ": " + row.ProvisionReason
+			}
+			fmt.Fprintln(w, failed+".")
 		case row.ID != "":
-			// A record, and a lifecycle still in progress or unread. Such a
-			// repo always gets exactly one primary, so an empty table here is
-			// about the READ rather than the repo: it landed in the seconds
-			// between create returning coordinates and the registry carrying
-			// them (the window waitForRepoClonable polls through).
-			fmt.Fprintln(w, "Not placed yet: this read caught the repo before its primary was assigned.")
+			// A record and nothing placed: still provisioning, or the read
+			// landed in the seconds before the registry caught up. Neither is a
+			// problem to report, and which one it is does not change what the
+			// reader can do about it.
+			fmt.Fprintln(w, "No cluster holds this repository yet.")
 		case row.Status != "":
 			fmt.Fprintf(w, "Not mirrored on any cluster (%s).\n", row.Status)
 		default:

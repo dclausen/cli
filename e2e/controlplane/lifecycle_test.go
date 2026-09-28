@@ -73,9 +73,15 @@ func TestControlPlane_CreateCloneDelete(t *testing.T) {
 // and its readiness belong to the placement holding it.
 type repoJSON struct {
 	ID string `json:"id"`
-	// Path is the /et/<project>/<repo> reference, which the view prints as the
-	// repo's name because it is the spelling every other verb takes.
-	Path       string          `json:"repo"`
+	// Path is the /et/<project>/<repo> reference. It reads `path`, the server's
+	// own key, which BOTH verbs carry: create answers with the repo record, and
+	// view answers with that record plus what it computed. Tagging it `repo` —
+	// the view's own spelling — silently zeroed it for every create.
+	Path string `json:"path"`
+	// State is the repo's OWN lifecycle word, and the only thing that reports a
+	// failed provision: such a repo never gets a placement, so every
+	// placement-shaped check reads the zero value and sees nothing wrong.
+	State      string          `json:"state"`
 	Placements []placementJSON `json:"placements"`
 }
 
@@ -113,13 +119,16 @@ func waitForRepoClonable(t *testing.T, dir, ref string) repoJSON {
 		} else {
 			repo := decodeJSON[repoJSON](t, stdout)
 			primary := repo.primary()
-			require.NotEqual(t, "failed", primary.Status, "repo %s failed to provision", ref)
+			// On the repo's state, not the primary's status: a failed repo has
+			// no placement, so primary() returns the zero value and a check on
+			// its status silently passes until the deadline expires.
+			require.NotEqual(t, "failed", repo.State, "repo %s failed to provision: %s", ref, stderr)
 			// "ready", not "active": the primary reports in the same vocabulary
 			// its mirrors do, so one STATUS column speaks one language.
 			if primary.Status == "ready" && primary.Cluster != "" && repo.Path != "" {
 				return repo
 			}
-			pending = fmt.Sprintf("status %q, cluster %q, path %q", primary.Status, primary.Cluster, repo.Path)
+			pending = fmt.Sprintf("state %q, status %q, cluster %q, path %q", repo.State, primary.Status, primary.Cluster, repo.Path)
 		}
 		require.True(t, time.Now().Before(deadline), "repo %s not clonable after 2 minutes: %s", ref, pending)
 		time.Sleep(3 * time.Second)
