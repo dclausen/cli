@@ -351,7 +351,8 @@ trusted_hash = "sha256:aaa"
 }
 
 // TestReadCodexTrustedKeys_DecodesQuotedKeys pins the key text for each TOML
-// quoting style Codex may write, and rejects bare or malformed headers.
+// quoting style Codex may write, and rejects bare keys and escapes TOML does
+// not define (including Go-only ones strconv.Unquote would accept).
 func TestReadCodexTrustedKeys_DecodesQuotedKeys(t *testing.T) {
 	t.Parallel()
 	configPath := filepath.Join(t.TempDir(), "config.toml")
@@ -359,7 +360,10 @@ func TestReadCodexTrustedKeys_DecodesQuotedKeys(t *testing.T) {
 [hooks.state."C:\\Users\\Victor\\repo\\.codex\\hooks.json:stop:0:0"]
 [hooks.state."/repo/say \"hi\"/.codex/hooks.json:stop:0:0"]
 [hooks.state.bare-key]
+[hooks.state."/repo/caf\u00e9/.codex/hooks.json:stop:0:0"]
 [hooks.state."bad \q escape:stop:0:0"]
+[hooks.state."C:\x5cUsers\x5cVictor\x5crepo\x5c.codex\x5chooks.json:session_start:0:0"]
+[hooks.state."/repo/go-only \a \v \101 escapes:stop:0:0"]
 `
 	require.NoError(t, os.WriteFile(configPath, []byte(configTOML), 0o600))
 
@@ -369,5 +373,6 @@ func TestReadCodexTrustedKeys_DecodesQuotedKeys(t *testing.T) {
 		`C:\Users\Victor\repo\.codex\hooks.json:post_tool_use:0:0`: {},
 		`C:\Users\Victor\repo\.codex\hooks.json:stop:0:0`:          {},
 		`/repo/say "hi"/.codex/hooks.json:stop:0:0`:                {},
+		`/repo/café/.codex/hooks.json:stop:0:0`:                    {},
 	}, keys)
 }

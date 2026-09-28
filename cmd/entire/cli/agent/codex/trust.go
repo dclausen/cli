@@ -199,8 +199,19 @@ func readCodexTrustedKeys(configPath string) (map[string]struct{}, bool) {
 
 // unescapeTOMLBasicString decodes the body of a TOML basic string. TOML's
 // escapes (\b \t \n \f \r \" \\ \uXXXX \UXXXXXXXX) are a subset of Go's
-// double-quoted string syntax, so strconv.Unquote decodes every valid key.
+// double-quoted string syntax, so once every escape is checked against TOML's
+// allowlist, strconv.Unquote decodes the key. Go-only escapes such as \x5c or
+// \a are rejected: Codex would refuse that config, so it must not count as trust.
 func unescapeTOMLBasicString(body string) (string, bool) {
+	for i := 0; i < len(body); i++ {
+		if body[i] != '\\' {
+			continue
+		}
+		i++
+		if i >= len(body) || !strings.ContainsRune(`btnfr"\uU`, rune(body[i])) {
+			return "", false
+		}
+	}
 	s, err := strconv.Unquote(`"` + body + `"`)
 	return s, err == nil
 }
