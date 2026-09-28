@@ -102,11 +102,18 @@ func resolveOrgRefResolved(ctx context.Context, c *coreapi.Client, ref string) (
 	if err != nil {
 		return resolvedRef{}, fmt.Errorf("list orgs: %w", err)
 	}
-	var matches []coreapi.Org
+	var exact, folded []coreapi.Org
 	for _, org := range orgs {
-		if org.Name == ref {
-			matches = append(matches, org)
+		switch {
+		case org.Name == ref:
+			exact = append(exact, org)
+		case strings.EqualFold(org.Name, ref):
+			folded = append(folded, org)
 		}
+	}
+	matches := exact
+	if len(matches) == 0 {
+		matches = folded
 	}
 	switch len(matches) {
 	case 0:
@@ -119,11 +126,12 @@ func resolveOrgRefResolved(ctx context.Context, c *coreapi.Client, ref string) (
 }
 
 // resolveOrgRef turns an org reference (ULID or name) into its ULID. A ULID is
-// returned unchanged. A name is matched exactly, case-sensitively, against the
+// returned unchanged. A name is matched case-insensitively against the
 // caller's own org listing (`GET /api/v1/orgs`, every page): org names are
 // not unique across accounts, so the server's global ?name= lookup is not
-// used. One match resolves; several are an ambiguousOrgError, since only the
-// ULID can tell same-named orgs apart.
+// used. An exact-case match takes precedence over case-folded ones, so "acme"
+// still resolves when the caller also sees "ACME". One match resolves; several
+// are an ambiguousOrgError, since only the ULID can tell same-named orgs apart.
 func resolveOrgRef(ctx context.Context, c *coreapi.Client, ref string) (string, error) {
 	r, err := resolveOrgRefResolved(ctx, c, ref)
 	return r.ID, err

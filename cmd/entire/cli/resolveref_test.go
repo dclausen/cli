@@ -96,12 +96,47 @@ func TestResolveOrgRef(t *testing.T) {
 		}
 	})
 
-	t.Run("name match is case-sensitive", func(t *testing.T) {
+	t.Run("name match is case-insensitive", func(t *testing.T) {
 		t.Parallel()
 		c, _ := resolveTestClient(t, orgPagesHandler(t, []coreapi.Org{{ID: ulidOrgAcme, Name: "Acme"}}))
+		got, err := resolveOrgRefResolved(context.Background(), c, "acme")
+		if err != nil {
+			t.Fatalf("resolveOrgRef case mismatch: %v", err)
+		}
+		if got.ID != ulidOrgAcme || got.Name != "Acme" {
+			t.Errorf("resolveOrgRef = %+v, want Acme with the server's spelling", got)
+		}
+	})
+
+	t.Run("exact-case match wins over case-folded ones", func(t *testing.T) {
+		t.Parallel()
+		c, _ := resolveTestClient(t, orgPagesHandler(t,
+			[]coreapi.Org{{ID: ulidOrgAcme, Name: "ACME"}},
+			[]coreapi.Org{{ID: ulidOrgGlobex, Name: "acme"}},
+		))
+		got, err := resolveOrgRef(context.Background(), c, "acme")
+		if err != nil {
+			t.Fatalf("resolveOrgRef exact-case: %v", err)
+		}
+		if got != ulidOrgGlobex {
+			t.Errorf("resolveOrgRef = %q, want the exact-case match %q", got, ulidOrgGlobex)
+		}
+	})
+
+	t.Run("several case-folded matches are ambiguous", func(t *testing.T) {
+		t.Parallel()
+		c, _ := resolveTestClient(t, orgPagesHandler(t,
+			[]coreapi.Org{{ID: ulidOrgAcme, Name: "ACME"}, {ID: ulidOrgGlobex, Name: "Acme"}},
+		))
 		_, err := resolveOrgRef(context.Background(), c, "acme")
-		if err == nil || !strings.Contains(err.Error(), "no org named") {
-			t.Errorf("resolveOrgRef case mismatch: err = %v, want a \"no org named\" error", err)
+		if err == nil {
+			t.Fatal("resolveOrgRef case-folded ambiguous name: want an error")
+		}
+		msg := err.Error()
+		for _, want := range []string{"2 orgs are named \"acme\"", "ACME  " + ulidOrgAcme, "Acme  " + ulidOrgGlobex} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("ambiguous error %q lacks %q", msg, want)
+			}
 		}
 	})
 
