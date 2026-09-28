@@ -28,29 +28,8 @@ import (
 // to origin after file:// derivation fails — origin is the bare file:// URL.
 // Not parallel: uses t.Chdir.
 func TestGetBranchCheckpoints_HydratesRemoteDiscoveredStub(t *testing.T) {
-	bareDir := t.TempDir()
-	gitRun(t, bareDir, "init", "--bare", "-q", bareDir)
-	bareURL := "file://" + filepath.ToSlash(bareDir)
-
-	deviceA := t.TempDir()
-	testutil.InitRepo(t, deviceA)
-	testutil.WriteFile(t, deviceA, "f.txt", "init")
-	testutil.GitAdd(t, deviceA, "f.txt")
-	testutil.GitCommit(t, deviceA, "init")
-	branch := gitDefaultBranch(t, deviceA)
-	gitRun(t, deviceA, "remote", "add", "origin", bareURL)
-	gitRun(t, deviceA, "push", "-q", "-u", "origin", "HEAD:"+branch)
-	gitRun(t, bareDir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
-
 	settingsBody := `{"enabled":true,"checkpoints":{"primary":{"type":"git-refs"}},"strategy_options":{"checkpoint_remote":{"provider":"local","repo":"org/checkpoints"}}}`
-	require.NoError(t, os.MkdirAll(filepath.Join(deviceA, ".entire"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(deviceA, ".entire", "settings.json"), []byte(settingsBody), 0o644))
-	t.Chdir(deviceA)
-
-	repoA, err := git.PlainOpen(deviceA)
-	require.NoError(t, err)
-	stores, err := checkpoint.Open(context.Background(), repoA, checkpoint.OpenOptions{})
-	require.NoError(t, err)
+	deviceA, bareURL, branch, stores := setupRemoteDiscoveryDeviceA(t, settingsBody)
 
 	cid := id.CheckpointID("01KVBJCWYA4YW6J5M9GP655HZN")
 	const sessionID = "session-from-device-a"
@@ -76,10 +55,7 @@ func TestGetBranchCheckpoints_HydratesRemoteDiscoveredStub(t *testing.T) {
 	gitRun(t, deviceA, "commit", "-F", msgPath)
 	gitRun(t, deviceA, "push", "-q", "origin", "HEAD:"+branch)
 
-	deviceB := filepath.Join(t.TempDir(), "device-b")
-	gitRun(t, t.TempDir(), "clone", "-q", "--branch", branch, bareURL, deviceB)
-	require.NoError(t, os.MkdirAll(filepath.Join(deviceB, ".entire"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(deviceB, ".entire", "settings.json"), []byte(settingsBody), 0o644))
+	deviceB := cloneRemoteDiscoveryDeviceB(t, bareURL, branch, settingsBody)
 
 	// Clone must not have brought the checkpoint ref — that is the second-device gap.
 	verify := exec.CommandContext(context.Background(), "git", "show-ref", "--verify", "--quiet", refName.String())
@@ -120,29 +96,8 @@ func TestGetBranchCheckpoints_HydratesRemoteDiscoveredStub(t *testing.T) {
 // stored CreatedAt, since legacy IDs carry no timestamp.
 // Not parallel: uses t.Chdir.
 func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
-	bareDir := t.TempDir()
-	gitRun(t, bareDir, "init", "--bare", "-q", bareDir)
-	bareURL := "file://" + filepath.ToSlash(bareDir)
-
-	deviceA := t.TempDir()
-	testutil.InitRepo(t, deviceA)
-	testutil.WriteFile(t, deviceA, "f.txt", "init")
-	testutil.GitAdd(t, deviceA, "f.txt")
-	testutil.GitCommit(t, deviceA, "init")
-	branch := gitDefaultBranch(t, deviceA)
-	gitRun(t, deviceA, "remote", "add", "origin", bareURL)
-	gitRun(t, deviceA, "push", "-q", "-u", "origin", "HEAD:"+branch)
-	gitRun(t, bareDir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
-
 	settingsBody := `{"enabled":true,"checkpoints":{"primary":{"type":"git-refs"}}}`
-	require.NoError(t, os.MkdirAll(filepath.Join(deviceA, ".entire"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(deviceA, ".entire", "settings.json"), []byte(settingsBody), 0o644))
-	t.Chdir(deviceA)
-
-	repoA, err := git.PlainOpen(deviceA)
-	require.NoError(t, err)
-	stores, err := checkpoint.Open(context.Background(), repoA, checkpoint.OpenOptions{})
-	require.NoError(t, err)
+	deviceA, bareURL, branch, stores := setupRemoteDiscoveryDeviceA(t, settingsBody)
 
 	// The newer checkpoint has the ID that sorts last by ref name, so the
 	// expected order only holds if it comes from CreatedAt.
@@ -166,10 +121,7 @@ func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
 		gitRun(t, deviceA, "push", "-q", "origin", refName.String()+":"+refName.String())
 	}
 
-	deviceB := filepath.Join(t.TempDir(), "device-b")
-	gitRun(t, t.TempDir(), "clone", "-q", "--branch", branch, bareURL, deviceB)
-	require.NoError(t, os.MkdirAll(filepath.Join(deviceB, ".entire"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(deviceB, ".entire", "settings.json"), []byte(settingsBody), 0o644))
+	deviceB := cloneRemoteDiscoveryDeviceB(t, bareURL, branch, settingsBody)
 	require.Empty(t, gitOutput(t, deviceB, "for-each-ref", checkpoint.CheckpointRefPrefix),
 		"clone must not bring checkpoint refs; discovery has to find them on origin")
 
@@ -189,4 +141,87 @@ func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
 		assert.Equal(t, "prompt "+p.CheckpointID.String(), p.SessionPrompt)
 		assert.Equal(t, base.Add(time.Duration(1-i)*time.Hour), p.Date.UTC())
 	}
+}
+
+// TestGetBranchCheckpoints_FeatureBranchSkipsMainLinkedStubs: on a feature
+// branch the commit walk stops at main, so main's checkpoints are not collected.
+// Their trailers still mark them linked, so the imported pass must not fetch
+// each of them just to learn they are not imported.
+// Not parallel: uses t.Chdir.
+func TestGetBranchCheckpoints_FeatureBranchSkipsMainLinkedStubs(t *testing.T) {
+	settingsBody := `{"enabled":true,"checkpoints":{"primary":{"type":"git-refs"}}}`
+	deviceA, bareURL, branch, stores := setupRemoteDiscoveryDeviceA(t, settingsBody)
+
+	cid := id.CheckpointID("01KVBJCWYA4YW6J5M9GP655HZN")
+	require.NoError(t, stores.Persistent.Write(context.Background(), checkpoint.Session{
+		CheckpointID: cid,
+		SessionID:    "main-session",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte("transcript")),
+		Prompts:      []string{"main work"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@example.com",
+	}))
+	refName, err := checkpoint.RefName(cid)
+	require.NoError(t, err)
+	gitRun(t, deviceA, "push", "-q", "origin", refName.String()+":"+refName.String())
+
+	testutil.WriteFile(t, deviceA, "main.txt", "on main")
+	testutil.GitAdd(t, deviceA, "main.txt")
+	msgPath := filepath.Join(deviceA, ".git", "COMMIT_EDITMSG_TEST")
+	require.NoError(t, os.WriteFile(msgPath, []byte(trailers.FormatCheckpoint("main work", cid)), 0o644))
+	gitRun(t, deviceA, "commit", "-F", msgPath)
+	gitRun(t, deviceA, "push", "-q", "origin", "HEAD:"+branch)
+
+	deviceB := cloneRemoteDiscoveryDeviceB(t, bareURL, branch, settingsBody)
+	gitRun(t, deviceB, "switch", "-q", "-c", "feature")
+
+	t.Chdir(deviceB)
+	repoB, err := git.PlainOpen(deviceB)
+	require.NoError(t, err)
+
+	points, _, err := getBranchCheckpoints(context.Background(), repoB, 10)
+	require.NoError(t, err)
+	assert.Empty(t, points, "main's checkpoint is not unique to the feature branch")
+	assert.Empty(t, gitOutput(t, deviceB, "for-each-ref", checkpoint.CheckpointRefPrefix),
+		"main-linked stub must not be fetched by the imported pass")
+}
+
+// setupRemoteDiscoveryDeviceA creates a bare file:// origin and a device A repo
+// that pushed one commit to it, writes settingsBody, chdirs into device A, and
+// opens its checkpoint stores.
+func setupRemoteDiscoveryDeviceA(t *testing.T, settingsBody string) (deviceA, bareURL, branch string, stores *checkpoint.Stores) {
+	t.Helper()
+	bareDir := t.TempDir()
+	gitRun(t, bareDir, "init", "--bare", "-q", bareDir)
+	bareURL = "file://" + filepath.ToSlash(bareDir)
+
+	deviceA = t.TempDir()
+	testutil.InitRepo(t, deviceA)
+	testutil.WriteFile(t, deviceA, "f.txt", "init")
+	testutil.GitAdd(t, deviceA, "f.txt")
+	testutil.GitCommit(t, deviceA, "init")
+	branch = gitDefaultBranch(t, deviceA)
+	gitRun(t, deviceA, "remote", "add", "origin", bareURL)
+	gitRun(t, deviceA, "push", "-q", "-u", "origin", "HEAD:"+branch)
+	gitRun(t, bareDir, "symbolic-ref", "HEAD", "refs/heads/"+branch)
+
+	testutil.WriteFile(t, deviceA, ".entire/settings.json", settingsBody)
+	t.Chdir(deviceA)
+
+	repoA, err := git.PlainOpen(deviceA)
+	require.NoError(t, err)
+	stores, err = checkpoint.Open(context.Background(), repoA, checkpoint.OpenOptions{})
+	require.NoError(t, err)
+	return deviceA, bareURL, branch, stores
+}
+
+// cloneRemoteDiscoveryDeviceB clones bareURL into a fresh device B repo (heads
+// only, as a normal clone) and writes settingsBody.
+func cloneRemoteDiscoveryDeviceB(t *testing.T, bareURL, branch, settingsBody string) string {
+	t.Helper()
+	deviceB := filepath.Join(t.TempDir(), "device-b")
+	gitRun(t, t.TempDir(), "clone", "-q", "--branch", branch, bareURL, deviceB)
+	testutil.WriteFile(t, deviceB, ".entire/settings.json", settingsBody)
+	return deviceB
 }
