@@ -161,14 +161,16 @@ func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
 
 // TestGetBranchCheckpoints_FeatureBranchSkipsMainLinkedStubs: on a feature
 // branch the commit walk stops at main, so main's checkpoints are not collected.
-// Their trailers still mark them linked, so the imported pass must not fetch
-// each of them just to learn they are not imported.
+// Their trailers still mark them linked, including trailers on a side branch
+// merged into main (second parent), so the imported pass must not fetch each of
+// them just to learn they are not imported. Uses a legacy hex ID, since only
+// those are imported-pass candidates.
 // Not parallel: uses t.Chdir.
 func TestGetBranchCheckpoints_FeatureBranchSkipsMainLinkedStubs(t *testing.T) {
 	settingsBody := `{"enabled":true,"checkpoints":{"primary":{"type":"git-refs"}}}`
 	deviceA, bareURL, branch, stores := setupRemoteDiscoveryDeviceA(t, settingsBody)
 
-	cid := id.CheckpointID("01KVBJCWYA4YW6J5M9GP655HZN")
+	cid := id.MustCheckpointID("bbbbbbbbbbbb")
 	require.NoError(t, stores.Persistent.Write(context.Background(), checkpoint.Session{
 		CheckpointID: cid,
 		SessionID:    "main-session",
@@ -182,11 +184,14 @@ func TestGetBranchCheckpoints_FeatureBranchSkipsMainLinkedStubs(t *testing.T) {
 	require.NoError(t, err)
 	gitRun(t, deviceA, "push", "-q", "origin", refName.String()+":"+refName.String())
 
-	testutil.WriteFile(t, deviceA, "main.txt", "on main")
-	testutil.GitAdd(t, deviceA, "main.txt")
+	gitRun(t, deviceA, "switch", "-q", "-c", "side")
+	testutil.WriteFile(t, deviceA, "side.txt", "on side")
+	testutil.GitAdd(t, deviceA, "side.txt")
 	msgPath := filepath.Join(deviceA, ".git", "COMMIT_EDITMSG_TEST")
-	require.NoError(t, os.WriteFile(msgPath, []byte(trailers.FormatCheckpoint("main work", cid)), 0o644))
+	require.NoError(t, os.WriteFile(msgPath, []byte(trailers.FormatCheckpoint("side work", cid)), 0o644))
 	gitRun(t, deviceA, "commit", "-F", msgPath)
+	gitRun(t, deviceA, "switch", "-q", branch)
+	gitRun(t, deviceA, "merge", "-q", "--no-ff", "-m", "merge side", "side")
 	gitRun(t, deviceA, "push", "-q", "origin", "HEAD:"+branch)
 
 	deviceB := cloneRemoteDiscoveryDeviceB(t, bareURL, branch, settingsBody)

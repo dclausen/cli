@@ -1837,7 +1837,7 @@ func getAssociatedCommits(ctx context.Context, repo *git.Repository, checkpointI
 	} else {
 		// First-parent walk with depth limit and branch filtering.
 		// Avoids walking into main's history through merge commit parents.
-		reachableFromMain := computeReachableFromMain(ctx, repo, nil)
+		reachableFromMain := computeReachableFromMain(ctx, repo)
 
 		err = walkFirstParentCommits(ctx, repo, head.Hash(), commitScanLimit, func(c *object.Commit) error {
 			// Once we hit a commit reachable from main on the first-parent chain,
@@ -2425,9 +2425,7 @@ func getCurrentWorktreeHash(ctx context.Context) string {
 // On the default branch itself, returns an empty map (no filtering needed).
 // Only first-parent commits are included — commits from side branches merged into main are excluded,
 // since those could be feature branch commits that shouldn't be filtered out.
-//
-// onCommit, when non-nil, is called for each main commit visited.
-func computeReachableFromMain(ctx context.Context, repo *git.Repository, onCommit func(*object.Commit)) map[plumbing.Hash]bool {
+func computeReachableFromMain(ctx context.Context, repo *git.Repository) map[plumbing.Hash]bool {
 	reachableFromMain := make(map[plumbing.Hash]bool)
 
 	isOnDefault, _ := strategy.IsOnDefaultBranch(repo)
@@ -2456,13 +2454,32 @@ func computeReachableFromMain(ctx context.Context, repo *git.Repository, onCommi
 	// Walk main's first-parent chain to build the set
 	_ = walkFirstParentCommits(ctx, repo, mainBranchHash, strategy.MaxCommitTraversalDepth, func(c *object.Commit) error { //nolint:errcheck // Best-effort
 		reachableFromMain[c.Hash] = true
-		if onCommit != nil {
-			onCommit(c)
-		}
 		return nil
 	})
 
 	return reachableFromMain
+}
+
+// markTrailerLinked records in linked every checkpoint ID named by a trailer on
+// the first limit commits of the full DAG reachable from `from`. Best-effort: a
+// walk failure leaves linked partially filled, which only costs extra hydration.
+func markTrailerLinked(ctx context.Context, repo *git.Repository, from plumbing.Hash, limit int, linked map[id.CheckpointID]bool) {
+	iter, err := repo.Log(&git.LogOptions{From: from, Order: git.LogOrderCommitterTime})
+	if err != nil {
+		return
+	}
+	defer iter.Close()
+	count := 0
+	_ = iter.ForEach(func(c *object.Commit) error { //nolint:errcheck // Best-effort
+		if ctx.Err() != nil || count >= limit {
+			return storer.ErrStop
+		}
+		count++
+		if cpID, found := trailers.ParseCheckpoint(c.Message); found {
+			linked[cpID] = true
+		}
+		return nil
+	})
 }
 
 // walkFirstParentCommits walks the first-parent chain starting from `from`,
@@ -2639,13 +2656,7 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 	} else {
 		// On feature branches, use first-parent walk with branch filtering.
 		// This avoids walking into main's full history through merge commit parents.
-		// Main's trailers also count as linked, so a feature branch in a fresh
-		// clone doesn't hydrate every checkpoint on main in the imported pass.
-		reachableFromMain := computeReachableFromMain(ctx, repo, func(c *object.Commit) {
-			if cpID, found := trailers.ParseCheckpoint(c.Message); found {
-				linked[cpID] = true
-			}
-		})
+		reachableFromMain := computeReachableFromMain(ctx, repo)
 
 		err = walkFirstParentCommits(ctx, repo, head.Hash(), commitScanLimit, func(c *object.Commit) error {
 			// Once we hit a commit reachable from main on the first-parent chain,
@@ -2660,6 +2671,14 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 
 	if err != nil {
 		return nil, false, fmt.Errorf("error iterating commits: %w", err)
+	}
+	if !isOnDefault {
+		// The feature-branch walk stops at main, so also mark trailers from the
+		// shared history, including side branches merged into main (the same
+		// full-DAG walk the default branch uses). Otherwise a fresh clone would
+		// hydrate those checkpoints in the imported pass only to find they are
+		// not imported.
+		markTrailerLinked(ctx, repo, head.Hash(), commitScanLimit, linked)
 	}
 
 	// Get temporary checkpoints from ALL shadow branches whose base commit is reachable from HEAD.
