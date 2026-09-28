@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -49,20 +51,43 @@ func TestAgentHelpDelegatesToPlugin(t *testing.T) { //nolint:paralleltest // mut
 	}
 }
 
-// A failing plugin fails agent-help, silently: the plugin's stderr already
-// said why, so main must not print a second message.
-func TestAgentHelpDelegation_PluginFailureIsSilentError(t *testing.T) { //nolint:paralleltest // mutates PATH via t.Setenv
+// A failing plugin's outcome travels back to main as a PluginExitError, so
+// agent-help exits with the plugin's own code — or re-raises the signal that
+// killed it — instead of a plain 1, and prints nothing over its stderr.
+func TestAgentHelpDelegation_CarriesThePluginsOutcome(t *testing.T) { //nolint:paralleltest // mutates PATH via t.Setenv
+	if runtime.GOOS == windowsGOOS {
+		t.Skip("plugin shell-script harness only runs on Unix")
+	}
 	dir := t.TempDir()
-	writePluginBinary(t, dir, "entire-pgr", filepath.Join(dir, "args.txt"), 3)
+	writeExecutableScript(t, filepath.Join(dir, "entire-failing"), "#!/bin/sh\nexit 3\n")
+	writeExecutableScript(t, filepath.Join(dir, "entire-signaller"), "#!/bin/sh\ntrap - TERM\nkill -TERM $$\n")
 	withPathDir(t, dir)
 
-	handled, err := maybeDelegateAgentHelpToPlugin(context.Background(), newTestRoot(), []string{"pgr"}, false)
-	if !handled {
-		t.Fatal("expected the plugin to handle the request")
-	}
-	var silent *SilentError
-	if !errors.As(err, &silent) {
-		t.Fatalf("err = %v (%T), want *SilentError", err, err)
+	for _, tc := range []struct {
+		name     string
+		plugin   string
+		wantCode int
+		wantSig  os.Signal
+	}{
+		{"exit code", "failing", 3, nil},
+		{"killed by its own signal", "signaller", ExitPluginSignalled, syscall.SIGTERM},
+	} {
+		t.Run(tc.name, func(t *testing.T) { // no t.Parallel: the parent set PATH
+			handled, err := maybeDelegateAgentHelpToPlugin(context.Background(), newTestRoot(), []string{tc.plugin}, false)
+			if !handled {
+				t.Fatal("expected the plugin to handle the request")
+			}
+			var exitErr *PluginExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("err = %v (%T), want *PluginExitError", err, err)
+			}
+			if exitErr.Code != tc.wantCode || exitErr.KilledBy != tc.wantSig {
+				t.Errorf("outcome = (code %d, signal %v), want (code %d, signal %v)", exitErr.Code, exitErr.KilledBy, tc.wantCode, tc.wantSig)
+			}
+			if !exitErr.AlreadyPrinted() {
+				t.Error("the plugin's stderr is the message; main must not print another")
+			}
+		})
 	}
 }
 

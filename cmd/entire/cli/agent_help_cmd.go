@@ -517,13 +517,15 @@ func maybeDelegateAgentHelpToPlugin(ctx context.Context, rootCmd *cobra.Command,
 	if asJSON {
 		pluginArgs = append(pluginArgs, "--json")
 	}
-	if code, _ := runPlugin(ctx, name, binPath, pluginArgs); code != 0 {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			// A signal cancelled us; main re-raises it for a context.Canceled.
-			return true, fmt.Errorf("%s%s %s: %w", pluginBinaryPrefix, name, agentHelpCmdName, ctxErr)
+	if code, killedBy := runPlugin(ctx, name, binPath, pluginArgs); code != 0 {
+		// main exits with this outcome as for a dispatched plugin: the code
+		// verbatim, or the signal re-raised. The plugin's own stderr is the
+		// message; runPlugin prints launch failures itself.
+		return true, &PluginExitError{
+			Code:     code,
+			KilledBy: killedBy,
+			Err:      fmt.Errorf("%s%s %s exited with code %d", pluginBinaryPrefix, name, agentHelpCmdName, code),
 		}
-		// The plugin's own stderr is the message; runPlugin prints launch failures.
-		return true, NewSilentError(fmt.Errorf("%s%s %s exited with code %d", pluginBinaryPrefix, name, agentHelpCmdName, code))
 	}
 	return true, nil
 }
