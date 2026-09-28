@@ -31,13 +31,30 @@ func TestProviderIdentity_RoundTrip(t *testing.T) {
 }
 
 // A value copied from --json carries the stored spelling; typing it back must
-// not mint the prefix a second time.
+// not mint the prefix a second time, and a prefix typed in any case is
+// rebuilt in the canonical spelling the server minted.
 func TestProviderIdentity_StoredFormIsAcceptedAsTyped(t *testing.T) {
 	t.Parallel()
-	for _, typed := range []string{"google-1001", "Google-1001"} {
-		if got := identityFor(providerGoogle).storedHandle(typed); got != typed {
-			t.Errorf("storedHandle(%q) = %q, want it unchanged", typed, got)
+	for _, typed := range []string{"google-1001", "Google-1001", "GOOGLE-1001"} {
+		if got := identityFor(providerGoogle).storedHandle(typed); got != "google-1001" {
+			t.Errorf("storedHandle(%q) = %q, want google-1001", typed, got)
 		}
+	}
+}
+
+// Google documents the subject id as case-sensitive, so neither direction may
+// fold it: two ids differing only in case are two different accounts.
+func TestProviderIdentity_SubjectIDCaseIsPreserved(t *testing.T) {
+	t.Parallel()
+	id := identityFor(providerGoogle)
+	if got := id.storedHandle("AbC1001"); got != "google-AbC1001" {
+		t.Errorf("storedHandle(AbC1001) = %q, want google-AbC1001", got)
+	}
+	if got := id.storedHandle("Google-AbC1001"); got != "google-AbC1001" {
+		t.Errorf("storedHandle(Google-AbC1001) = %q, want google-AbC1001", got)
+	}
+	if got := id.displayHandle("google-AbC1001"); got != "AbC1001" {
+		t.Errorf("displayHandle(google-AbC1001) = %q, want AbC1001", got)
 	}
 }
 

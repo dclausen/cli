@@ -45,6 +45,11 @@ func (usernameIdentity) storedHandle(typed string) string   { return typed }
 // mints the handle as "<provider>-<subject id>", which qualified would spell
 // the provider twice — `google:google-100…` — so users see and type the
 // subject id alone, `google:100…`, and the prefix is restored for lookup.
+//
+// The subject id is case-sensitive (Google documents `sub` as up to 255
+// case-sensitive ASCII characters), so it is never folded. Only the fixed
+// prefix is matched without regard to case, and it is always rebuilt in its
+// canonical spelling so the server sees exactly what it minted.
 type mintedIdentity struct{ prefix string }
 
 func (m mintedIdentity) displayHandle(stored string) string {
@@ -55,10 +60,8 @@ func (m mintedIdentity) displayHandle(stored string) string {
 }
 
 func (m mintedIdentity) storedHandle(typed string) string {
-	if _, ok := cutPrefixFold(typed, m.prefix); ok {
-		return typed
-	}
-	return m.prefix + typed
+	rest, _ := cutPrefixFold(typed, m.prefix)
+	return m.prefix + rest
 }
 
 func cutPrefixFold(s, prefix string) (string, bool) {
