@@ -37,7 +37,7 @@ func TestPiReviewer_BuildCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reviewExtensionPath: %v", err)
 	}
-	wantPrefix := []string{"pi", "--mode", "json", "--print", "--no-extensions", "--extension", extPath, "--model", "anthropic/claude-sonnet-4-5:high"}
+	wantPrefix := []string{"pi", "--mode", "json", "--print", "--no-approve", "--no-extensions", "--extension", extPath, "--model", "anthropic/claude-sonnet-4-5:high"}
 	if len(cmd.Args) != len(wantPrefix)+1 {
 		t.Fatalf("args len = %d, want %d: %v", len(cmd.Args), len(wantPrefix)+1, cmd.Args)
 	}

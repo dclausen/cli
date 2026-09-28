@@ -21,7 +21,8 @@ import (
 
 // NewReviewer returns the AgentReviewer for Pi.
 //
-// Argv shape: pi --mode json --print --no-extensions -e <Entire extension>
+// Argv shape: pi --mode json --print --no-approve --no-extensions
+// --extension <Entire extension>
 // [--model <model>] <prompt> (see buildPiReviewCmd).
 // The prompt is passed as a positional message because Pi's CLI accepts prompts
 // as message arguments in non-interactive mode. Stdout is newline-delimited JSON
@@ -44,15 +45,20 @@ const reviewExtensionName = "pi-review/entire-extension.ts"
 //
 // The reviewer runs inside the checkout under review, and pi loads every
 // project extension under .pi/extensions as code at startup, so a branch
-// could run anything as the reviewing user just by being reviewed. Extension
-// discovery is therefore off (--no-extensions), and Entire's own extension,
+// could run anything as the reviewing user just by being reviewed. Project
+// trust is inherited from the nearest trusted ancestor, so a review worktree
+// inside a trusted repo would also load the branch's .pi/settings.json
+// (shellCommandPrefix, shellPath) and SYSTEM.md. --no-approve ignores all
+// project-local files for the run. --no-extensions is kept for pi releases
+// that predate project trust: they load project extensions unconditionally
+// and only warn about --no-approve as an unknown option. Entire's own extension,
 // which normally comes from that same project directory, is loaded from a copy
 // the binary writes (writeReviewExtension) so the review is still captured.
 // If that copy cannot be located, the review runs untracked rather than
 // falling back to discovery.
 func buildPiReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	prompt := review.ComposeReviewPrompt(cfg)
-	args := []string{"--mode", "json", "--print", "--no-extensions"}
+	args := []string{"--mode", "json", "--print", "--no-approve", "--no-extensions"}
 	if extPath, err := reviewExtensionPath(); err == nil {
 		args = append(args, "--extension", extPath)
 	}

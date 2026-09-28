@@ -188,11 +188,6 @@ func TestReviewerTemplate_WaitIncludesStderrOnFailure(t *testing.T) {
 	}
 }
 
-// TestReviewerTemplate_StartReturnsErrTemplateMisconfigured pins the typed
-// validation errors Start returns when required fields are missing. The
-// previous behaviour panicked here, which would crash a whole multi-agent
-// fan-out (CU8) when one agent's template is misconfigured. Returning a
-// typed error lets callers skip that agent and continue.
 func TestReviewerTemplate_PrepareErrorAbortsBeforeBuild(t *testing.T) {
 	t.Parallel()
 	prepareErr := errors.New("prepare failed")
@@ -214,6 +209,11 @@ func TestReviewerTemplate_PrepareErrorAbortsBeforeBuild(t *testing.T) {
 	}
 }
 
+// TestReviewerTemplate_StartReturnsErrTemplateMisconfigured pins the typed
+// validation errors Start returns when required fields are missing. The
+// previous behaviour panicked here, which would crash a whole multi-agent
+// fan-out (CU8) when one agent's template is misconfigured. Returning a
+// typed error lets callers skip that agent and continue.
 func TestReviewerTemplate_StartReturnsErrTemplateMisconfigured(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

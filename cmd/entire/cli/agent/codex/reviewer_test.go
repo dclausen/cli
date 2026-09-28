@@ -2,10 +2,12 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,8 +86,9 @@ func TestCodexReviewer_ArgvShape(t *testing.T) {
 	cfg := reviewtypes.RunConfig{Skills: []string{"/skill"}}
 	cmd := buildCodexReviewCmd(context.Background(), cfg)
 
-	// Expect: codex exec --skip-git-repo-check --json -
-	want := []string{wantCodexAgentName, "exec", "--skip-git-repo-check", "--json", "-"}
+	// Expect: codex exec --skip-git-repo-check --json -c <untrusted checkout> -
+	want := []string{wantCodexAgentName, "exec", "--skip-git-repo-check", "--json",
+		"-c", untrustedProjectOverride(reviewCheckoutRoot(context.Background())), "-"}
 	if len(cmd.Args) != len(want) {
 		t.Fatalf("len(Args) = %d, want %d: %v", len(cmd.Args), len(want), cmd.Args)
 	}
@@ -100,6 +103,50 @@ func TestCodexReviewer_ArgvShape(t *testing.T) {
 	}
 }
 
+// Codex resolves trust for a linked worktree to the main repo root, so a
+// review worktree inside a trusted repo would load the branch's
+// .codex/config.toml. The override must name the checkout the reviewer runs
+// in, canonicalized the way codex keys trust, in the inline-table form codex
+// honors.
+func TestCodexReviewer_MarksCheckoutUntrusted(t *testing.T) {
+	t.Parallel()
+	cmd := buildCodexReviewCmd(context.Background(), reviewtypes.RunConfig{})
+
+	var override string
+	for i, arg := range cmd.Args {
+		if arg == "-c" && i+1 < len(cmd.Args) && strings.HasPrefix(cmd.Args[i+1], "projects=") {
+			override = cmd.Args[i+1]
+		}
+	}
+	if override == "" {
+		t.Fatalf("no projects trust override; codex would load the checkout's .codex/config.toml: %v", cmd.Args)
+	}
+
+	root := reviewCheckoutRoot(context.Background())
+	if root == "" {
+		t.Fatal("reviewCheckoutRoot returned empty")
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err != nil || resolved != root {
+		t.Errorf("reviewCheckoutRoot = %q is not canonical (EvalSymlinks = %q, %v)", root, resolved, err)
+	}
+	quoted, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "projects={" + string(quoted) + `={trust_level="untrusted"}}`; override != want {
+		t.Errorf("override = %q, want %q", override, want)
+	}
+}
+
+func TestCodexReviewer_UntrustedProjectOverrideQuotesPath(t *testing.T) {
+	t.Parallel()
+	got := untrustedProjectOverride(`/tmp/a "b"\c`)
+	want := `projects={"/tmp/a \"b\"\\c"={trust_level="untrusted"}}`
+	if got != want {
+		t.Errorf("untrustedProjectOverride = %q, want %q", got, want)
+	}
+}
+
 func TestCodexReviewer_BuiltinReviewExpandsToScopedExecPrompt(t *testing.T) {
 	t.Parallel()
 	cfg := reviewtypes.RunConfig{
@@ -110,7 +157,8 @@ func TestCodexReviewer_BuiltinReviewExpandsToScopedExecPrompt(t *testing.T) {
 	}
 	cmd := buildCodexReviewCmd(context.Background(), cfg)
 
-	want := []string{wantCodexAgentName, "exec", "--skip-git-repo-check", "--json", "-"}
+	want := []string{wantCodexAgentName, "exec", "--skip-git-repo-check", "--json",
+		"-c", untrustedProjectOverride(reviewCheckoutRoot(context.Background())), "-"}
 	if len(cmd.Args) != len(want) {
 		t.Fatalf("len(Args) = %d, want %d: %v", len(cmd.Args), len(want), cmd.Args)
 	}

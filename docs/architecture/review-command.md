@@ -50,13 +50,16 @@ execution-capable agent configuration from that checkout:
   the checkout's `.claude/settings.json`, `.claude/settings.local.json`, and
   `.mcp.json` are not loaded; Entire's lifecycle hooks are passed from the
   binary via `--settings`. The user's own MCP servers are not loaded either.
-- pi runs with `--no-extensions`, so `.pi/extensions/` and extensions or
-  packages named in `.pi/settings.json` are not loaded; Entire's extension is
-  loaded with `--extension` from a copy the binary writes to the per-user
-  cache directory.
-- codex runs a project hook only when the user's own `config.toml` trusts that
-  exact hook at that path, so hooks in a review checkout do not run; review
-  passes no trust-bypass flag.
+- pi runs with `--no-approve` and `--no-extensions`, so `.pi/settings.json`,
+  `.pi/extensions/`, `.pi/SYSTEM.md`, and extensions or packages named in
+  project settings are not loaded, even when the repository is trusted (pi
+  inherits trust from the nearest trusted ancestor, which covers review
+  worktrees). Entire's extension is loaded with `--extension` from a copy the
+  binary writes to the per-user cache directory.
+- codex runs with the checkout marked untrusted
+  (`-c projects={"<checkout>"={trust_level="untrusted"}}`), so the checkout's
+  `.codex/config.toml`, `mcp_servers` included, is not loaded. Without it, a
+  review worktree inside a repository the user trusts in codex is trusted too.
 
 The user's own agent settings still apply. The checkout's instruction files
 (`CLAUDE.md`, `AGENTS.md`, skills) are still read by the agent.

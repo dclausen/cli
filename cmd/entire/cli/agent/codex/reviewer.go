@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
@@ -49,10 +51,18 @@ func NewReviewer() *reviewtypes.ReviewerTemplate {
 // leaving no channel for Entire's scope enumeration, per-run prompt, and
 // checkpoint context. Plain `codex exec -` with the composed prompt on stdin
 // runs the same skill while carrying our arguments.
+//
+// The reviewer runs inside the checkout under review. Codex loads that
+// checkout's .codex/config.toml (mcp_servers included) when the project is
+// trusted, and it resolves trust for a linked worktree to the main repo root,
+// so trusting a repo also trusts every `entire review --target` worktree
+// inside it. The checkout is therefore marked untrusted for this run
+// (untrustedProjectOverride); the user's own config.toml still applies.
 func buildCodexReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	promptCfg := cfg
 	promptCfg.Skills = codexNativeSkillInvocations(cfg.Skills)
-	args := []string{codexExecCommand, "--skip-git-repo-check", "--json"}
+	args := []string{codexExecCommand, "--skip-git-repo-check", "--json",
+		"-c", untrustedProjectOverride(reviewCheckoutRoot(ctx))}
 	args = review.AppendModelFlag(args, cfg.Model)
 	args = append(args, "-")
 	prompt := review.ComposeReviewPrompt(promptCfg)
@@ -63,6 +73,37 @@ func buildCodexReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.C
 }
 
 const codexExecCommand = "exec"
+
+// untrustedProjectOverride returns a `-c` value marking root untrusted. Codex
+// checks the working directory's own trust entry before the repo root's, so
+// this wins over a trusted parent repo. It must be the inline-table form:
+// codex silently ignores the dotted `projects."<path>".trust_level` spelling.
+// The path is JSON-quoted, which is also a valid TOML basic string.
+func untrustedProjectOverride(root string) string {
+	quoted, err := json.Marshal(root)
+	if err != nil {
+		quoted = []byte(`""`)
+	}
+	return "projects={" + string(quoted) + `={trust_level="untrusted"}}`
+}
+
+// reviewCheckoutRoot returns the checkout the reviewer runs in, spelled the
+// way codex keys trust: codex canonicalizes its working directory, so an
+// entry under a symlinked spelling (/tmp vs /private/tmp) would not match.
+func reviewCheckoutRoot(ctx context.Context) string {
+	root, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		//nolint:forbidigo // the reviewer runs in the process cwd; no repo means no other root to use
+		root, err = os.Getwd()
+		if err != nil {
+			return ""
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		return resolved
+	}
+	return root
+}
 
 // codexNativeSkillInvocations rewrites slash-form skill invocations (the
 // agent-portable form profiles are configured with) into codex's native
