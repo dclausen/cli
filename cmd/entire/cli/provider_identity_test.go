@@ -76,3 +76,24 @@ func TestDisplayGranteeName(t *testing.T) {
 		})
 	}
 }
+
+// A subject id that itself begins with the prefix must not lose a layer on
+// display: `google-1001` shown for `google-google-1001` is the stored form of
+// another account, and pasting it back would grant to that account instead.
+func TestProviderIdentity_PrefixedSubjectIDStaysUnambiguous(t *testing.T) {
+	t.Parallel()
+	id := identityFor(providerGoogle)
+	for _, stored := range []string{"google-google-1001", "google-Google-1001"} {
+		shown := id.displayHandle(stored)
+		if shown != stored {
+			t.Errorf("displayHandle(%q) = %q, want it shown in its stored form", stored, shown)
+		}
+		if back := id.storedHandle(shown); back != stored {
+			t.Errorf("storedHandle(displayHandle(%q)) = %q, want the same account back", stored, back)
+		}
+	}
+	// The ordinary case still de-duplicates, and still round-trips.
+	if shown := id.displayHandle("google-1001"); shown != "1001" || id.storedHandle(shown) != "google-1001" {
+		t.Errorf("google-1001 displayed as %q, want 1001 round-tripping to google-1001", shown)
+	}
+}

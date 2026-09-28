@@ -50,13 +50,24 @@ func (usernameIdentity) storedHandle(typed string) string   { return typed }
 // case-sensitive ASCII characters), so it is never folded. Only the fixed
 // prefix is matched without regard to case, and it is always rebuilt in its
 // canonical spelling so the server sees exactly what it minted.
+//
+// The subject id is also opaque, so it could itself begin with the prefix.
+// Stripping one layer from `google-google-1001` would show `google-1001`,
+// which is the stored form of a different account (subject `1001`), and a
+// value pasted back from a list would grant to it. Such a handle is shown in
+// its stored form instead, so every displayed value maps back to exactly one
+// stored handle.
 type mintedIdentity struct{ prefix string }
 
 func (m mintedIdentity) displayHandle(stored string) string {
-	if rest, ok := cutPrefixFold(stored, m.prefix); ok && rest != "" {
-		return rest
+	rest, ok := cutPrefixFold(stored, m.prefix)
+	if !ok || rest == "" {
+		return stored
 	}
-	return stored
+	if _, ambiguous := cutPrefixFold(rest, m.prefix); ambiguous {
+		return stored
+	}
+	return rest
 }
 
 func (m mintedIdentity) storedHandle(typed string) string {
