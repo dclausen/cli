@@ -597,3 +597,23 @@ func TestParseCheckpointRemoteFlag(t *testing.T) {
 		})
 	}
 }
+
+// The reason can quote the owner parsed out of the committed checkpoint_remote,
+// so it is as repo-controlled as the repo and must reach the terminal stripped
+// of escape and control sequences, as must the claim command.
+func TestIgnoredCheckpointRemoteWording_SanitizesRepoControlledParts(t *testing.T) {
+	t.Parallel()
+	hostile := "evil\x1b[2J\x1b]0;pwned\x07\r\x00"
+	sentence := ignoredCheckpointRemoteSentence("acme/"+hostile, "owned by "+hostile, "origin\x1b[31m")
+	fix := ignoredCheckpointRemoteFix("acme/"+hostile, "entire claim "+hostile)
+	for _, out := range []string{sentence, fix} {
+		for _, bad := range []string{"\x1b", "\x07", "\r", "\x00"} {
+			if strings.Contains(out, bad) {
+				t.Errorf("%q still contains %q", out, bad)
+			}
+		}
+	}
+	if !strings.Contains(sentence, "owned by evil") {
+		t.Errorf("the reason's text must survive sanitizing: %q", sentence)
+	}
+}

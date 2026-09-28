@@ -446,9 +446,15 @@ func printSetupCheckpointDestinationNote(ctx context.Context, w io.Writer) {
 // It speaks only for the elected remote. Another remote may still reach the
 // store (pushing to it uploads there), so an unscoped "not in use" would be
 // false for such a repo, while "checkpoints sync to <elected>, not to it" is
-// true either way. destination may be empty when no remote is elected; repo
-// must already be sanitized for the terminal.
+// true either way. destination may be empty when no remote is elected.
+//
+// Every part is sanitized here, not by the callers: the reason can quote the
+// owner parsed out of the committed checkpoint_remote, so it is as
+// repo-controlled as the repo itself and must not reach the terminal raw.
 func ignoredCheckpointRemoteSentence(repo, reason, destination string) string {
+	repo = tuiutil.SanitizeDisplayText(repo)
+	reason = tuiutil.SanitizeDisplayText(reason)
+	destination = tuiutil.SanitizeDisplayText(destination)
 	if destination == "" {
 		return "The configured checkpoint_remote " + repo + " is not in use: " + reason + "."
 	}
@@ -459,6 +465,10 @@ func ignoredCheckpointRemoteSentence(repo, reason, destination string) string {
 // shared for the same reason. claim is the command from
 // ClaimCheckpointRemoteCommand, empty when the entry cannot be expressed as one.
 func ignoredCheckpointRemoteFix(repo, claim string) string {
+	// Sanitized for the same reason as the sentence: the claim command quotes
+	// the committed repo.
+	repo = tuiutil.SanitizeDisplayText(repo)
+	claim = tuiutil.SanitizeDisplayText(claim)
 	if claim == "" {
 		return "If " + repo + " is yours, declare checkpoint_remote in .entire/settings.local.json."
 	}
