@@ -2688,7 +2688,7 @@ func getBranchCheckpoints(ctx context.Context, repo *git.Repository, limit int) 
 
 	// Append imported (read-only, commit-less) checkpoints after the live points,
 	// bounded by the same limit so a one-month import doesn't produce an
-	// unbounded list. They get their own budget and never displace live points.
+	// unbounded list. They get their own limit and never displace live points.
 	imported := getImportedPendingCheckpoints(passCtx, store, committedInfos, linked)
 	sort.Slice(imported, func(i, j int) bool {
 		return imported[i].Date.After(imported[j].Date)
@@ -2771,7 +2771,9 @@ func hydrateListedWithin(passCtx context.Context, store checkpoint.PersistentSto
 // PendingCheckpoint entries, without prompts (the caller reads those after
 // truncating). They carry no commit trailer, so the commit walk never surfaces
 // them. Remote-discovered stubs not in linked are hydrated to learn Imported
-// and CreatedAt; legacy hex IDs have no ULID timestamp to sort by otherwise.
+// and CreatedAt (legacy hex IDs have no timestamp to sort by otherwise). Only
+// legacy-hex stubs are candidates: imports always get hex IDs
+// (agentimport.DeriveCheckpointID), while ULIDs are native git-refs checkpoints.
 func getImportedPendingCheckpoints(
 	passCtx context.Context,
 	store checkpoint.PersistentStore,
@@ -2781,9 +2783,13 @@ func getImportedPendingCheckpoints(
 	unchecked := 0
 	points := make([]strategy.PendingCheckpoint, 0)
 	for _, info := range infos {
-		if info.ListedStub && !linked[info.CheckpointID] {
+		if info.ListedStub {
+			if linked[info.CheckpointID] || info.CheckpointID.Kind() != id.KindLegacy {
+				continue
+			}
 			hydrated, ok := hydrateListedWithin(passCtx, store, info)
-			if !ok {
+			if !ok || hydrated.SessionID == "" {
+				// Budget spent or the fetch failed: whether it is imported is unknown.
 				unchecked++
 				continue
 			}
@@ -2805,7 +2811,7 @@ func getImportedPendingCheckpoints(
 		})
 	}
 	if unchecked > 0 {
-		fmt.Fprintf(os.Stderr, "[entire] Warning: could not load %d remote checkpoint(s) in time; imported checkpoints among them are not listed.\n", unchecked)
+		fmt.Fprintf(os.Stderr, "[entire] Warning: could not load %d remote checkpoint(s); any imported ones among them are not listed.\n", unchecked)
 	}
 	return points
 }

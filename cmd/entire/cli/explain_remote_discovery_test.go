@@ -93,7 +93,8 @@ func TestGetBranchCheckpoints_HydratesRemoteDiscoveredStub(t *testing.T) {
 // checkpoint_remote (checkpoints live on origin), imported checkpoints with
 // legacy hex IDs, and no commit trailers. The imported pass must hydrate the
 // remote-discovered stubs to learn they are imported, and order them by their
-// stored CreatedAt, since legacy IDs carry no timestamp.
+// stored CreatedAt, since legacy IDs carry no timestamp. An unlinked native
+// ULID checkpoint on origin is never imported and must not be fetched.
 // Not parallel: uses t.Chdir.
 func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
 	settingsBody := `{"enabled":true,"checkpoints":{"primary":{"type":"git-refs"}}}`
@@ -120,6 +121,19 @@ func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
 		require.NoError(t, refErr)
 		gitRun(t, deviceA, "push", "-q", "origin", refName.String()+":"+refName.String())
 	}
+	native := id.CheckpointID("01KVBJCWYA4YW6J5M9GP655HZN")
+	require.NoError(t, stores.Persistent.Write(context.Background(), checkpoint.Session{
+		CheckpointID: native,
+		SessionID:    "native-session",
+		Strategy:     "manual-commit",
+		Transcript:   redact.AlreadyRedacted([]byte("native transcript")),
+		Prompts:      []string{"native work on another branch"},
+		AuthorName:   "Test",
+		AuthorEmail:  "test@example.com",
+	}))
+	nativeRef, err := checkpoint.RefName(native)
+	require.NoError(t, err)
+	gitRun(t, deviceA, "push", "-q", "origin", nativeRef.String()+":"+nativeRef.String())
 
 	deviceB := cloneRemoteDiscoveryDeviceB(t, bareURL, branch, settingsBody)
 	require.Empty(t, gitOutput(t, deviceB, "for-each-ref", checkpoint.CheckpointRefPrefix),
@@ -141,6 +155,8 @@ func TestGetBranchCheckpoints_ListsRemoteOnlyImportedCheckpoints(t *testing.T) {
 		assert.Equal(t, "prompt "+p.CheckpointID.String(), p.SessionPrompt)
 		assert.Equal(t, base.Add(time.Duration(1-i)*time.Hour), p.Date.UTC())
 	}
+	assert.NotContains(t, gitOutput(t, deviceB, "for-each-ref", checkpoint.CheckpointRefPrefix), nativeRef.String(),
+		"a ULID stub cannot be imported, so the imported pass must not fetch it")
 }
 
 // TestGetBranchCheckpoints_FeatureBranchSkipsMainLinkedStubs: on a feature
