@@ -484,8 +484,10 @@ func runAgentHelp(rootCmd *cobra.Command, args []string, repoLine string, asJSON
 // all apply, and runPlugin gives the child the filtered plugin environment
 // rather than ours. Two deliberate differences from MaybeRunPlugin: a missing
 // on-demand plugin is not offered for installation (agents run this unprompted,
-// and a help lookup must not end in a download), and no invocation telemetry
-// or version notice fires, since nobody ran the plugin as a command.
+// and a help lookup must not end in a download), and no plugin-invocation
+// telemetry fires, since nobody ran the plugin as a command. agent-help's own
+// post-run (command telemetry, version notice on stderr) still runs, exactly as
+// for a built-in lookup; it records no positional args, so no plugin name.
 //
 // Only the CLI command delegates. The MCP agent_help tool calls runAgentHelp
 // directly, and runPlugin writes to the process's stdout — which, under
@@ -494,6 +496,12 @@ func maybeDelegateAgentHelpToPlugin(ctx context.Context, rootCmd *cobra.Command,
 	if len(args) == 0 || agentHelpFindChild(rootCmd, args[0]) != nil {
 		return false, nil
 	}
+	// main prepends the managed bin dir only around the dispatcher and
+	// restores PATH before Cobra runs, so without this `entire plugin install`
+	// plugins are invisible here. The child inherits the prepended PATH, as a
+	// dispatched plugin does.
+	restorePATH := PrependPluginBinDirToPATH(ctx)
+	defer restorePATH()
 	binPath, rest, ok := resolvePlugin(rootCmd, args)
 	if !ok || binPath == "" {
 		// An empty path is resolvePlugin's on-demand install offer.

@@ -110,3 +110,29 @@ func TestAgentHelpDelegation_DoesNotOfferOnDemandInstall(t *testing.T) { //nolin
 		t.Errorf("handled=%v err=%v, want fall-through for a missing on-demand plugin", handled, err)
 	}
 }
+
+// main restores PATH before Cobra runs, so the managed bin dir is not on it
+// when agent-help executes; plugins from `entire plugin install` must still
+// be found, and PATH must be restored afterwards.
+func TestAgentHelpDelegation_FindsManagedInstall(t *testing.T) { //nolint:paralleltest // mutates PATH and ENTIRE_PLUGIN_DIR via t.Setenv
+	pluginDir := t.TempDir()
+	t.Setenv("ENTIRE_PLUGIN_DIR", pluginDir)
+	binDir := filepath.Join(pluginDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argFile := filepath.Join(t.TempDir(), "args.txt")
+	writePluginBinary(t, binDir, "entire-pgr", argFile, 0)
+	pathBefore := os.Getenv("PATH")
+
+	handled, err := maybeDelegateAgentHelpToPlugin(context.Background(), newTestRoot(), []string{"pgr"}, false)
+	if !handled || err != nil {
+		t.Fatalf("handled=%v err=%v, want the managed plugin to answer", handled, err)
+	}
+	if got := readPluginArgv(t, argFile); got != "agent-help" {
+		t.Errorf("plugin argv = %q, want %q", got, "agent-help")
+	}
+	if got := os.Getenv("PATH"); got != pathBefore {
+		t.Errorf("PATH not restored: got %q, want %q", got, pathBefore)
+	}
+}
