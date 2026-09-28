@@ -822,55 +822,71 @@ func TestRun_GitRefsPrimaryDerivesULIDs(t *testing.T) {
 	}
 }
 
-// TestRun_GitRefsPrimarySkipsTurnsImportedAsHex: a turn imported as 12-hex
-// (under git-branch, or before imports followed the backend format) is a skip
-// when re-imported under git-refs, not a duplicate under a new ULID.
-func TestRun_GitRefsPrimarySkipsTurnsImportedAsHex(t *testing.T) {
-	// Not parallel: sets the checkpoint backend via the environment.
-	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", "git-branch")
+// TestRun_SkipsTurnsImportedUnderOtherPrimary: a turn already imported in one
+// ID format is a skip when re-imported after the primary switched to the
+// other backend, not a duplicate in the new format. Covers hex imports (from
+// git-branch, or from before imports followed the backend format) re-run under
+// git-refs, and ULID imports re-run after reverting to git-branch.
+func TestRun_SkipsTurnsImportedUnderOtherPrimary(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second string
+		wantKind            id.Kind
+	}{
+		{name: "hex then git-refs", first: "git-branch", second: "git-refs", wantKind: id.KindLegacy},
+		{name: "ULID then git-branch", first: "git-refs", second: "git-branch", wantKind: id.KindULID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Not parallel: sets the checkpoint backend via the environment.
+			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", tc.first)
 
-	repo, repoDir := initRepoWithCommit(t)
-	claudeDir := t.TempDir()
-	writeFixtureSession(t, claudeDir, "sess-hex.jsonl")
-	opts := Options{
-		LinkCommitSHA: repoHeadSHA(t, repo),
-		RepoRoot:      repoDir,
-		OverridePath:  claudeDir,
-		Now:           time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC),
-	}
+			repo, repoDir := initRepoWithCommit(t)
+			claudeDir := t.TempDir()
+			writeFixtureSession(t, claudeDir, "sess-switch.jsonl")
+			opts := Options{
+				LinkCommitSHA: repoHeadSHA(t, repo),
+				RepoRoot:      repoDir,
+				OverridePath:  claudeDir,
+				Now:           time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC),
+			}
 
-	if res, err := Run(context.Background(), repo, claudeImporter{}, opts); err != nil || res.TurnsImported != 2 {
-		t.Fatalf("git-branch import: %+v, %v", res, err)
-	}
+			if res, err := Run(context.Background(), repo, claudeImporter{}, opts); err != nil || res.TurnsImported != 2 {
+				t.Fatalf("%s import: %+v, %v", tc.first, res, err)
+			}
 
-	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", "git-refs")
-	res, err := Run(context.Background(), repo, claudeImporter{}, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.TurnsImported != 0 || res.TurnsSkipped != 2 {
-		t.Fatalf("hex-imported turns were not skipped under git-refs: %+v", res)
-	}
+			t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", tc.second)
+			res, err := Run(context.Background(), repo, claudeImporter{}, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.TurnsImported != 0 || res.TurnsSkipped != 2 {
+				t.Fatalf("turns imported under %s were not skipped under %s: %+v", tc.first, tc.second, res)
+			}
 
-	stores, err := cp.Open(context.Background(), repo, cp.OpenOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	infos, err := stores.Persistent.List(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(infos) != 2 {
-		t.Fatalf("got %d checkpoints, want the 2 hex imports: %+v", len(infos), infos)
-	}
-	for _, info := range infos {
-		if info.CheckpointID.Kind() != id.KindLegacy {
-			t.Errorf("checkpoint %s: kind %v, want the original 12-hex import", info.CheckpointID, info.CheckpointID.Kind())
-		}
-	}
+			stores, err := cp.Open(context.Background(), repo, cp.OpenOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			infos, err := stores.Persistent.List(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(infos) != 2 {
+				t.Fatalf("got %d checkpoints, want the 2 original imports: %+v", len(infos), infos)
+			}
+			for _, info := range infos {
+				if info.CheckpointID.Kind() != tc.wantKind {
+					t.Errorf("checkpoint %s: kind %v, want the original import's %v", info.CheckpointID, info.CheckpointID.Kind(), tc.wantKind)
+				}
+			}
 
-	if st := loadStateAt(t, repoDir, "sess-hex"); st == nil || st.LastCheckpointID != DeriveCheckpointID("sess-hex", "u2") {
-		t.Fatalf("session state LastCheckpointID = %+v, want the existing hex import", st)
+			last, _, err := turnCheckpointID("sess-switch", Turn{UUID: "u2", CreatedAt: fixtureU2At}, tc.first == "git-refs", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st := loadStateAt(t, repoDir, "sess-switch"); st == nil || st.LastCheckpointID != last {
+				t.Fatalf("session state LastCheckpointID = %+v, want the original import %s", st, last)
+			}
+		})
 	}
 }
 

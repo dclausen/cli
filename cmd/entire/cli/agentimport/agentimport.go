@@ -206,18 +206,25 @@ func DeriveULIDCheckpointID(sessionID, turnUUID string, createdAt time.Time) (id
 
 // turnCheckpointID returns the ID a turn is stored under, in the format of the
 // store it is written to, and whether that checkpoint already exists. A turn
-// imported earlier as 12-hex keeps that ID under a git-refs primary, so a
-// re-import skips it rather than writing a duplicate under a new ULID.
+// already imported in either format keeps that ID, so a re-import after the
+// primary changed (git-branch to git-refs or back) skips it rather than writing
+// a duplicate in the other format.
 func turnCheckpointID(sessionID string, turn Turn, ulids bool, existing map[string]bool) (id.CheckpointID, bool, error) {
 	legacy := DeriveCheckpointID(sessionID, turn.UUID)
-	if !ulids || existing[legacy.String()] {
-		return legacy, existing[legacy.String()], nil
+	if existing[legacy.String()] {
+		return legacy, true, nil
 	}
 	cid, err := DeriveULIDCheckpointID(sessionID, turn.UUID, turn.CreatedAt)
+	if err == nil && existing[cid.String()] {
+		return cid, true, nil
+	}
+	if !ulids {
+		return legacy, false, nil
+	}
 	if err != nil {
 		return id.EmptyCheckpointID, false, err
 	}
-	return cid, existing[cid.String()], nil
+	return cid, false, nil
 }
 
 // Run imports the given agent's transcripts (within the lookback window) as
