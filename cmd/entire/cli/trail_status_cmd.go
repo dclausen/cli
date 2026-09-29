@@ -320,7 +320,7 @@ func (ev *trailStatusEvaluator) monitor(m api.TrailMonitor) {
 		case ev.eval.AllowWarning:
 			ev.add(trailKindMonitor, m.Key, name, trailItemWarning, trailMonitorDetail(m))
 		default:
-			ev.add(trailKindMonitor, m.Key, name, trailItemRed, trailMonitorDetail(m))
+			ev.add(trailKindMonitor, m.Key, name, trailItemRed, "yellow "+trailMonitorDetail(m))
 		}
 	default:
 		ev.add(trailKindMonitor, m.Key, name, trailItemSkipped, "no pass/fail direction")

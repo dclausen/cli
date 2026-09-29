@@ -247,9 +247,11 @@ func writeTrailLoopState(path string, s *trailLoopState) error {
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		_ = os.Remove(tmp) // best-effort cleanup of a partial write
 		return fmt.Errorf("write trail loop setting: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // best-effort cleanup; the rename error is what matters
 		return fmt.Errorf("write trail loop setting: %w", err)
 	}
 	return nil

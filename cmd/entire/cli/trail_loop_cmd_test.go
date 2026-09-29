@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -220,4 +221,18 @@ func TestUpdateTrailLoopStateRoundTrip(t *testing.T) {
 	require.True(t, got.Enabled)
 	require.Equal(t, trailLoopDefaultMax, got.Max)
 	require.Equal(t, "needs a product call", got.Skipped["f1"])
+}
+
+// A failed rename (here: the target is a directory) must not leave the
+// temp file behind.
+func TestWriteTrailLoopStateCleansUpTempOnFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, trailLoopStateFile)
+	require.NoError(t, os.Mkdir(path, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(path, "keep"), []byte("x"), 0o600))
+	require.Error(t, writeTrailLoopState(path, &trailLoopState{Enabled: true}))
+	_, err := os.Stat(path + ".tmp")
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
