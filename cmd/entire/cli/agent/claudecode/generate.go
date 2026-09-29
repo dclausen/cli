@@ -17,9 +17,18 @@ import (
 // flagOutputFormat selects the CLI's response encoding; modelHaiku is the
 // default model for Entire's own generation calls (fast and cheap).
 const (
-	flagOutputFormat = "--output-format"
-	modelHaiku       = "haiku"
+	flagOutputFormat   = "--output-format"
+	flagSettingSources = "--setting-sources"
+	flagTools          = "--tools"
+	modelHaiku         = "haiku"
+	claudeBinary       = "claude"
 )
+
+// isolationFlags are the flags buildGenerateArgs and buildStreamingGenerateArgs
+// rely on to keep a generation run from loading settings or using tools. A CLI
+// that rejects one is reported as too old (agent.UnsupportedFlagError) rather
+// than retried without it.
+var isolationFlags = []string{flagSettingSources, flagTools}
 
 // buildGenerateArgs assembles the claude CLI argv for a --print text-generation
 // call.
@@ -57,8 +66,8 @@ func buildGenerateArgs(model, settingsPath string) []string {
 	args := []string{
 		"--print", flagOutputFormat, "json",
 		"--model", model,
-		"--setting-sources", "",
-		"--tools", "",
+		flagSettingSources, "",
+		flagTools, "",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -78,8 +87,8 @@ func buildStreamingGenerateArgs(model, settingsPath string) []string {
 		"--include-partial-messages",
 		"--verbose",
 		"--model", model,
-		"--setting-sources", "",
-		"--tools", "",
+		flagSettingSources, "",
+		flagTools, "",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -165,7 +174,7 @@ func readUserAPIKeyHelper() string {
 // access to stdout, stderr and the exit code to produce the typed ClaudeError
 // values that formatCheckpointSummaryError maps to actionable messages.
 func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model string) (string, error) {
-	claudePath := "claude"
+	claudePath := claudeBinary
 	if model == "" {
 		model = modelHaiku
 	}
@@ -249,6 +258,9 @@ func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
+		}
+		if flag, ok := agent.RejectedFlag(stderr.String(), isolationFlags); ok {
+			return "", &agent.UnsupportedFlagError{CLI: claudeBinary, Flag: flag, Err: classifyStderrError(stderr.String(), exitCode)}
 		}
 		return "", classifyStderrError(stderr.String(), exitCode)
 	}

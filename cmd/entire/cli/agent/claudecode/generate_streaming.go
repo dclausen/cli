@@ -56,7 +56,7 @@ func (c *ClaudeCodeAgent) GenerateTextStreaming(
 	}
 	defer cleanupDir()
 
-	cmd := commandRunner(ctx, "claude", buildStreamingGenerateArgs(model, settingsPath)...)
+	cmd := commandRunner(ctx, claudeBinary, buildStreamingGenerateArgs(model, settingsPath)...)
 
 	cmd.Dir = workDir
 	cmd.Env = agent.StripGitEnv(os.Environ())
@@ -144,6 +144,9 @@ func (c *ClaudeCodeAgent) GenerateTextStreaming(
 			logging.Warn(ctx, "claude CLI rejected stream-json flags; falling back to non-streaming (no progress output)",
 				slog.String("stderr", strings.TrimSpace(stderrStr)))
 			return c.GenerateText(ctx, prompt, model)
+		}
+		if flag, ok := agent.RejectedFlag(stderrStr, isolationFlags); ok {
+			return "", &agent.UnsupportedFlagError{CLI: claudeBinary, Flag: flag, Err: fmt.Errorf("claude stream failed: %s: %w", strings.TrimSpace(stderrStr), waitErr)}
 		}
 		if stderrStr != "" {
 			return "", fmt.Errorf("claude stream failed: %s: %w", strings.TrimSpace(stderrStr), waitErr)

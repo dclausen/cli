@@ -306,3 +306,28 @@ func TestGenerateText_StderrAuthFallback(t *testing.T) {
 		t.Fatalf("Kind = %v; want %v", ce.Kind, ClaudeErrorAuth)
 	}
 }
+
+// An older claude that does not know --tools must fail with a remedy on both
+// paths; the flag cannot be dropped, and the streaming path must not fall
+// back to a non-streaming call that would fail the same way.
+func TestGenerateText_TooOldCLIReportsUnsupportedFlag(t *testing.T) {
+	t.Parallel()
+	runner := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "cat >/dev/null; echo \"error: unknown option '--tools'\" >&2; exit 1")
+	}
+	ag := &ClaudeCodeAgent{CommandRunner: runner}
+	_, err := ag.GenerateText(context.Background(), "prompt", "")
+	var unsupported *agent.UnsupportedFlagError
+	if !errors.As(err, &unsupported) || unsupported.Flag != "--tools" {
+		t.Fatalf("GenerateText err = %v, want *agent.UnsupportedFlagError for --tools", err)
+	}
+	var ce *ClaudeError
+	if !errors.As(err, &ce) {
+		t.Errorf("GenerateText err = %v, want it to still wrap a *ClaudeError", err)
+	}
+
+	_, err = ag.GenerateTextStreaming(context.Background(), "prompt", "", nil)
+	if !errors.As(err, &unsupported) || unsupported.Flag != "--tools" {
+		t.Fatalf("GenerateTextStreaming err = %v, want *agent.UnsupportedFlagError for --tools", err)
+	}
+}
