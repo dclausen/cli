@@ -17,6 +17,8 @@ import (
 // fetchingAgent is an agent.Agent whose only implemented behaviour is
 // SubagentTranscriptFetcher; every other method panics through the nil
 // embedded interface, which pins that the materializer calls nothing else.
+var _ agent.SubagentTranscriptFetcher = (*fetchingAgent)(nil)
+
 type fetchingAgent struct {
 	agent.Agent
 
@@ -26,7 +28,7 @@ type fetchingAgent struct {
 	fetched []string
 }
 
-func (f *fetchingAgent) FetchSubagentTranscript(_ context.Context, agentID string) (string, error) {
+func (f *fetchingAgent) FetchSubagentTranscript(_ context.Context, agentID, _ string, _ time.Time) (string, error) {
 	f.fetched = append(f.fetched, agentID)
 	if f.err != nil {
 		return "", f.err

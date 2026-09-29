@@ -1629,6 +1629,15 @@ func recordDeferredTaskLaunch(logCtx context.Context, event *agent.Event) error 
 	})
 }
 
+// taskStartedAt is the task record's StartedAt: the agent's own call start when
+// it reports one, else now.
+func taskStartedAt(event *agent.Event) time.Time {
+	if !event.SubagentStartedAt.IsZero() {
+		return event.SubagentStartedAt
+	}
+	return time.Now()
+}
+
 // recordTaskLaunchMarker writes the launch-time task record through mutate.
 // Tolerates strategy.ErrStateNotFound the way the completion producers do: a
 // launch can arrive before session state exists, and the Final capture
@@ -1637,7 +1646,7 @@ func recordTaskLaunchMarker(logCtx context.Context, event *agent.Event, mutate f
 	rec := session.TaskRecord{
 		ToolUseID:       event.ToolUseID,
 		AgentID:         event.SubagentID,
-		StartedAt:       time.Now(),
+		StartedAt:       taskStartedAt(event),
 		SubagentType:    event.SubagentType,
 		TaskDescription: event.TaskDescription,
 	}
@@ -2016,7 +2025,7 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 	rec := session.TaskRecord{
 		ToolUseID:              event.ToolUseID,
 		AgentID:                event.SubagentID,
-		StartedAt:              time.Now(),
+		StartedAt:              taskStartedAt(event),
 		SubagentType:           event.SubagentType,
 		TaskDescription:        event.TaskDescription,
 		DeclaredTranscriptPath: subagentTranscriptPath,

@@ -493,6 +493,12 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		`subagent_id: childID`,
 		`tool_use_id: input.callID`,
 		`if (childSessions.has(input.sessionID)) return`,
+		// call start: recorded before the child exists, sent on both hooks so a
+		// resumed child's export can be cut to this call
+		`"tool.execute.before": async (input) => {`,
+		`taskStartedAt.set(input.callID, Date.now())`,
+		`started_at: taskStartedAt.get(part.callID) ?? 0`,
+		`started_at: startedAt`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("plugin missing %q", want)

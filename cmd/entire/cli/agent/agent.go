@@ -311,9 +311,10 @@ type TranscriptFetcher interface {
 type SubagentTranscriptFetcher interface {
 	Agent
 
-	// FetchSubagentTranscript writes the subagent's transcript to the agent's
-	// cache location and returns its path.
-	FetchSubagentTranscript(ctx context.Context, agentID string) (string, error)
+	// FetchSubagentTranscript writes the transcript of the task call
+	// toolUseID, run by subagent agentID and started at startedAt (zero when
+	// unknown), to the agent's cache location and returns its path.
+	FetchSubagentTranscript(ctx context.Context, agentID, toolUseID string, startedAt time.Time) (string, error)
 }
 
 // SidecarImageProvider is implemented by agents that keep images OUTSIDE the

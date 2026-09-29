@@ -148,3 +148,64 @@ func TestOpenCodeSubagentTaskRecord(t *testing.T) {
 	require.True(t, ok, "the second concurrent child's export must be materialized as its own task transcript")
 	require.Contains(t, stored2, "docs/blue.md")
 }
+
+// TestOpenCodeSubagentResumedChildRecordsEachCall covers a child resumed
+// through the task tool's `task_id`: two task calls back one child session,
+// whose export holds both calls' messages. Each call's record must carry only
+// its own files and tokens, keep its own transcript, and start when the
+// plugin saw the call begin.
+func TestOpenCodeSubagentResumedChildRecordsEachCall(t *testing.T) {
+	t.Parallel()
+
+	env := NewFeatureBranchEnv(t)
+	env.InitEntireWithAgent(agent.AgentNameOpenCode)
+
+	parent := env.NewOpenCodeSession()
+	child := env.NewOpenCodeSession()
+	const firstCall, secondCall = "call_first", "call_second"
+	// CreateOpenCodeTranscript stamps messages 1708300000+n, two per call, so
+	// the first call's messages are n=1,2 and the second's n=3,4.
+	const firstStart, secondStart = int64(1708300001), int64(1708300003)
+
+	require.NoError(t, env.SimulateOpenCodeSessionStart(parent.ID, parent.TranscriptPath))
+	require.NoError(t, env.SimulateOpenCodeTurnStart(parent.ID, parent.TranscriptPath, "red, then blue, with one subagent"))
+
+	require.NoError(t, env.SimulateOpenCodeSubagentStartAt(parent.ID, firstCall, child.ID, "general", "Create docs/red.md", firstStart))
+	env.WriteFile("docs/red.md", "red\n")
+	env.CopyTranscriptToEntireTmp(child.ID, child.CreateOpenCodeTranscript("Create docs/red.md", []FileChange{{Path: "docs/red.md", Content: "red\n"}}))
+	require.NoError(t, env.SimulateOpenCodeSubagentStopAt(parent.ID, firstCall, child.ID, "general", "Create docs/red.md", firstStart))
+
+	require.NoError(t, env.SimulateOpenCodeSubagentStartAt(parent.ID, secondCall, child.ID, "general", "Create docs/blue.md", secondStart))
+	env.WriteFile("docs/blue.md", "blue\n")
+	env.CopyTranscriptToEntireTmp(child.ID, child.CreateOpenCodeTranscript("Create docs/blue.md", []FileChange{{Path: "docs/blue.md", Content: "blue\n"}}))
+	require.NoError(t, env.SimulateOpenCodeSubagentStopAt(parent.ID, secondCall, child.ID, "general", "Create docs/blue.md", secondStart))
+
+	state, err := env.GetSessionState(parent.ID)
+	require.NoError(t, err)
+	first, second := state.FindTaskRecord(firstCall), state.FindTaskRecord(secondCall)
+	require.NotNil(t, first)
+	require.NotNil(t, second)
+	require.Equal(t, child.ID, first.AgentID)
+	require.Equal(t, child.ID, second.AgentID)
+	require.Equal(t, []string{"docs/red.md"}, first.Files)
+	require.Equal(t, []string{"docs/blue.md"}, second.Files, "the first call's file must not be attributed to the resumed call")
+	require.NotNil(t, second.TokenUsage)
+	require.Equal(t, 150, second.TokenUsage.InputTokens, "only the second call's one assistant message counts")
+	require.Equal(t, secondStart, second.StartedAt.UnixMilli(), "StartedAt is the plugin's call start")
+	require.NotEqual(t, first.DeclaredTranscriptPath, second.DeclaredTranscriptPath)
+
+	parent.CreateOpenCodeTranscript("red, then blue, with one subagent", nil)
+	require.NoError(t, env.SimulateOpenCodeTurnEnd(parent.ID, parent.TranscriptPath))
+	env.GitCommitWithShadowHooks("Add red and blue", "docs/red.md", "docs/blue.md")
+	checkpointID := env.TryGetLatestCheckpointID()
+	require.NotEmpty(t, checkpointID)
+
+	storedFirst, ok := env.ReadFileFromBranch(paths.MetadataBranchName, CheckpointTaskFilePath(checkpointID, firstCall, paths.AgentTranscriptFileName(child.ID)))
+	require.True(t, ok)
+	require.Contains(t, storedFirst, "docs/red.md")
+	require.NotContains(t, storedFirst, "docs/blue.md", "the second call must not overwrite the first call's transcript")
+	storedSecond, ok := env.ReadFileFromBranch(paths.MetadataBranchName, CheckpointTaskFilePath(checkpointID, secondCall, paths.AgentTranscriptFileName(child.ID)))
+	require.True(t, ok)
+	require.Contains(t, storedSecond, "docs/blue.md")
+	require.NotContains(t, storedSecond, "docs/red.md")
+}

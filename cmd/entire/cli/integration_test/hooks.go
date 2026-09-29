@@ -1062,15 +1062,17 @@ func (r *OpenCodeHookRunner) SimulateOpenCodeSessionEnd(sessionID, _ string) err
 }
 
 // SimulateOpenCodeSubagentStart simulates the subagent-start hook: the parent's
-// task part bound callID to the child session.
-func (r *OpenCodeHookRunner) SimulateOpenCodeSubagentStart(parentID, toolUseID, childID, subagentType, description string) error {
+// task part bound callID to the child session. startedAtMs is the plugin's
+// tool.execute.before clock for the call; 0 means the plugin did not see it.
+func (r *OpenCodeHookRunner) SimulateOpenCodeSubagentStart(parentID, toolUseID, childID, subagentType, description string, startedAtMs int64) error {
 	r.T.Helper()
-	return r.runOpenCodeHookWithInput("subagent-start", map[string]string{
+	return r.runOpenCodeHookWithInput("subagent-start", map[string]any{
 		"session_id":       parentID,
 		"tool_use_id":      toolUseID,
 		"subagent_id":      childID,
 		"subagent_type":    subagentType,
 		"task_description": description,
+		"started_at":       startedAtMs,
 	})
 }
 
@@ -1080,15 +1082,15 @@ func (r *OpenCodeHookRunner) SimulateOpenCodeSubagentStart(parentID, toolUseID, 
 // transcript there first with env.CopyTranscriptToEntireTmp (the same helper
 // mid-turn tests use for the parent). Omitting that copy exercises the
 // export-failure path.
-func (r *OpenCodeHookRunner) SimulateOpenCodeSubagentStop(parentID, toolUseID, childID, subagentType, description string) error {
+func (r *OpenCodeHookRunner) SimulateOpenCodeSubagentStop(parentID, toolUseID, childID, subagentType, description string, startedAtMs int64) error {
 	r.T.Helper()
-	return r.runOpenCodeHookWithInput("subagent-stop", map[string]string{
+	return r.runOpenCodeHookWithInput("subagent-stop", map[string]any{
 		"session_id":       parentID,
 		"tool_use_id":      toolUseID,
 		"subagent_id":      childID,
 		"subagent_type":    subagentType,
 		"task_description": description,
-		"model":            "test-model",
+		"started_at":       startedAtMs,
 	})
 }
 
@@ -1231,18 +1233,34 @@ func (env *TestEnv) SimulateOpenCodeSessionEnd(sessionID, transcriptPath string)
 	return runner.SimulateOpenCodeSessionEnd(sessionID, transcriptPath)
 }
 
-// SimulateOpenCodeSubagentStart is a convenience method on TestEnv.
+// SimulateOpenCodeSubagentStart is a convenience method on TestEnv, for a
+// call whose start the plugin did not report.
 func (env *TestEnv) SimulateOpenCodeSubagentStart(parentID, toolUseID, childID, subagentType, description string) error {
 	env.T.Helper()
-	runner := NewOpenCodeHookRunner(env.RepoDir, env.OpenCodeProjectDir, env.T)
-	return runner.SimulateOpenCodeSubagentStart(parentID, toolUseID, childID, subagentType, description)
+	return env.SimulateOpenCodeSubagentStartAt(parentID, toolUseID, childID, subagentType, description, 0)
 }
 
-// SimulateOpenCodeSubagentStop is a convenience method on TestEnv.
-func (env *TestEnv) SimulateOpenCodeSubagentStop(parentID, toolUseID, childID, subagentType, description string) error {
+// SimulateOpenCodeSubagentStartAt is SimulateOpenCodeSubagentStart with the
+// plugin's call start, in Unix ms.
+func (env *TestEnv) SimulateOpenCodeSubagentStartAt(parentID, toolUseID, childID, subagentType, description string, startedAtMs int64) error {
 	env.T.Helper()
 	runner := NewOpenCodeHookRunner(env.RepoDir, env.OpenCodeProjectDir, env.T)
-	return runner.SimulateOpenCodeSubagentStop(parentID, toolUseID, childID, subagentType, description)
+	return runner.SimulateOpenCodeSubagentStart(parentID, toolUseID, childID, subagentType, description, startedAtMs)
+}
+
+// SimulateOpenCodeSubagentStop is a convenience method on TestEnv, for a call
+// whose start the plugin did not report.
+func (env *TestEnv) SimulateOpenCodeSubagentStop(parentID, toolUseID, childID, subagentType, description string) error {
+	env.T.Helper()
+	return env.SimulateOpenCodeSubagentStopAt(parentID, toolUseID, childID, subagentType, description, 0)
+}
+
+// SimulateOpenCodeSubagentStopAt is SimulateOpenCodeSubagentStop with the
+// plugin's call start, in Unix ms.
+func (env *TestEnv) SimulateOpenCodeSubagentStopAt(parentID, toolUseID, childID, subagentType, description string, startedAtMs int64) error {
+	env.T.Helper()
+	runner := NewOpenCodeHookRunner(env.RepoDir, env.OpenCodeProjectDir, env.T)
+	return runner.SimulateOpenCodeSubagentStop(parentID, toolUseID, childID, subagentType, description, startedAtMs)
 }
 
 // CopyTranscriptToEntireTmp copies an OpenCode transcript to .entire/tmp/<sessionID>.json.

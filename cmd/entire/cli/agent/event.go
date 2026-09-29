@@ -146,6 +146,12 @@ type Event struct {
 	// child does any work, and completion comes from tool.execute.after.
 	DeferredCompletion bool
 
+	// SubagentStartedAt is when the agent says the task call began, for
+	// SubagentStart/SubagentEnd. It becomes the task record's StartedAt; zero
+	// means unknown and the framework uses the hook's own clock. OpenCode sets
+	// it so a resumed child's export can be cut to the call that produced it.
+	SubagentStartedAt time.Time
+
 	// SubagentTranscriptUnavailable records that no child transcript is
 	// obtainable for this completion — either by contract (Copilot CLI) or
 	// because the fetch failed (OpenCode). It prevents later generic layout

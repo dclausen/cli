@@ -157,6 +157,7 @@ func (a *OpenCodeAgent) ParseHookEvent(ctx context.Context, hookName string, std
 			SubagentID:         raw.SubagentID,
 			SubagentType:       raw.SubagentType,
 			TaskDescription:    raw.TaskDescription,
+			SubagentStartedAt:  raw.startedAt(),
 			DeferredCompletion: true,
 			Timestamp:          time.Now(),
 		}, nil
@@ -167,14 +168,15 @@ func (a *OpenCodeAgent) ParseHookEvent(ctx context.Context, hookName string, std
 			return nil, err
 		}
 		event := &agent.Event{
-			Type:            agent.SubagentEnd,
-			SessionID:       raw.SessionID,
-			SessionRef:      parentRef,
-			ToolUseID:       raw.ToolUseID,
-			SubagentID:      raw.SubagentID,
-			SubagentType:    raw.SubagentType,
-			TaskDescription: raw.TaskDescription,
-			Timestamp:       time.Now(),
+			Type:              agent.SubagentEnd,
+			SessionID:         raw.SessionID,
+			SessionRef:        parentRef,
+			ToolUseID:         raw.ToolUseID,
+			SubagentID:        raw.SubagentID,
+			SubagentType:      raw.SubagentType,
+			TaskDescription:   raw.TaskDescription,
+			SubagentStartedAt: raw.startedAt(),
+			Timestamp:         time.Now(),
 			// Final: tool.execute.after is the one true-completion signal.
 			// CompletionWithoutLaunch: a plugin restarted mid-task never saw the start.
 			Final:                   true,
@@ -233,7 +235,7 @@ func (a *OpenCodeAgent) parseSubagentPayload(ctx context.Context, stdin io.Reade
 // is not lost while it still exists in OpenCode's store.
 func (a *OpenCodeAgent) attachSubagentTranscript(ctx context.Context, event *agent.Event) {
 	logCtx := logging.WithComponent(ctx, "lifecycle")
-	path, err := a.fetchAndCacheExport(ctx, event.SubagentID)
+	path, err := a.exportSubagent(ctx, event.SubagentID, event.ToolUseID, event.SubagentStartedAt)
 	if err != nil {
 		logging.Warn(logCtx, "opencode: could not export subagent transcript; completing task without it",
 			slog.String("session_id", event.SessionID),
@@ -296,10 +298,11 @@ func (a *OpenCodeAgent) FetchTranscript(ctx context.Context, sessionID string) (
 	return a.fetchAndCacheExport(ctx, sessionID)
 }
 
-// FetchSubagentTranscript exports a task record's child session. The record's
-// AgentID is the child session ID, which `opencode export` accepts directly.
-func (a *OpenCodeAgent) FetchSubagentTranscript(ctx context.Context, agentID string) (string, error) {
-	return a.fetchAndCacheExport(ctx, agentID)
+// FetchSubagentTranscript exports a task record's child session, scoped to
+// that call like the stop hook's export. The record's AgentID is the child
+// session ID, which `opencode export` accepts directly.
+func (a *OpenCodeAgent) FetchSubagentTranscript(ctx context.Context, agentID, toolUseID string, startedAt time.Time) (string, error) {
+	return a.exportSubagent(ctx, agentID, toolUseID, startedAt)
 }
 
 // sessionTranscriptPath validates the session ID and returns the expected transcript path.

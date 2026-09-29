@@ -1,5 +1,7 @@
 package opencode
 
+import "time"
+
 // sessionInfoRaw matches the JSON payload piped from the OpenCode plugin for session events.
 // The plugin sends only session_id; Go calls `opencode export` to get the transcript.
 type sessionInfoRaw struct {
@@ -31,6 +33,9 @@ type subagentRaw struct {
 	SubagentID      string `json:"subagent_id"`      // child session ID
 	SubagentType    string `json:"subagent_type"`    // task args.subagent_type
 	TaskDescription string `json:"task_description"` // task args.description
+	// StartedAt is the plugin's clock at tool.execute.before for this call, in
+	// Unix ms; 0 when the plugin did not see the call begin.
+	StartedAt int64 `json:"started_at"`
 }
 
 // --- Export JSON types (from `opencode export`) ---
@@ -136,4 +141,12 @@ var FileModificationTools = []string{
 	"edit",
 	"write",
 	"apply_patch",
+}
+
+// startedAt converts the plugin's call start to a time, zero when unknown.
+func (r *subagentRaw) startedAt() time.Time {
+	if r.StartedAt <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(r.StartedAt)
 }

@@ -155,8 +155,12 @@ not arbitrary session nesting.
   parent. Not exercised. If supported later it needs the two-signal `Final`
   model (Claude Code shape), keyed on the child's own `session.status idle`.
 - **`task_id` resumption** reuses a child session across several `callID`s.
-  A task record per `callID` would share one child transcript; a record per
-  child session would span turns (Droid Worker shape, `UpsertCompletedTaskRecord`).
+  Handled: each call keeps its own task record (`ToolUseID = callID`,
+  `AgentID = child`), and the plugin sends the call's `tool.execute.before`
+  clock as `started_at`, so the stop hook declares only the child messages
+  created at or after it (`.entire/tmp/<child>.<callID>.json`) and the
+  record's files and tokens are this call's alone. A call whose start the
+  plugin never saw (a restart mid-task) declares the full export.
 - **Model-specific `callID` format**: opaque and not globally unique; the child
   session ID is the safe cross-process key.
 - **Nested subagents** are off by default (`subagent_depth: 1`); when enabled,

@@ -31,6 +31,10 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   // task callIDs already announced via subagent-start (the running part
   // update repeats).
   const announcedTasks = new Set<string>()
+  // task callID -> Date.now() at tool.execute.before, sent as started_at. A
+  // child resumed via `task_id` holds every earlier call's messages too; this
+  // is what lets the CLI keep only the ones this call produced.
+  const taskStartedAt = new Map<string, number>()
 
   /**
    * Build the shell command for a hook invocation.
@@ -149,6 +153,17 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
         pendingInjection = null
       }
     },
+    // Subagent call start. No child ID exists yet, so this only records the
+    // time; subagent-start fires from the running task part below.
+    "tool.execute.before": async (input) => {
+      try {
+        if (input.tool !== "task") return
+        if (childSessions.has(input.sessionID)) return
+        taskStartedAt.set(input.callID, Date.now())
+      } catch {
+        // Silently ignore — plugin failures must not crash OpenCode
+      }
+    },
     // Subagent completion. tool.execute.after for the task tool fires once, at
     // true completion, with the child session ID in output.metadata. Background
     // tasks (experimental) return immediately with metadata.background and are
@@ -164,12 +179,15 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
         const childID = output?.metadata?.sessionId
         if (!childID) return
         childSessions.add(childID)
+        const startedAt = taskStartedAt.get(input.callID) ?? 0
+        taskStartedAt.delete(input.callID)
         callHookSync("subagent-stop", {
           session_id: input.sessionID,
           tool_use_id: input.callID,
           subagent_id: childID,
           subagent_type: input.args?.subagent_type ?? "",
           task_description: input.args?.description ?? "",
+          started_at: startedAt,
         })
       } catch {
         // Silently ignore — plugin failures must not crash OpenCode
@@ -267,6 +285,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
                   subagent_id: part.state.metadata.sessionId,
                   subagent_type: part.state?.input?.subagent_type ?? "",
                   task_description: part.state?.input?.description ?? "",
+                  started_at: taskStartedAt.get(part.callID) ?? 0,
                 })
               }
             }
@@ -327,6 +346,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             pendingInjection = null
             childSessions.clear()
             announcedTasks.clear()
+            taskStartedAt.clear()
             // Use sync variant: this is the last event before process exit.
             callHookSync("session-end", {
               session_id: sessionID,

@@ -370,7 +370,11 @@ for task work; the payload is materialized at condensation (below).
   `opencode export`, declares it as the transcript, attaches exact tokens, and
   completes the record through the Final path with `CompletionWithoutLaunch`,
   so a start the plugin never saw still completes. Child sessions fire no
-  lifecycle hooks of their own.
+  lifecycle hooks of their own. A child resumed through the task tool's
+  `task_id` backs one record per call: the plugin's call start
+  (`Event.SubagentStartedAt`, which becomes the record's `StartedAt`) cuts the
+  declared export to that call's messages, so earlier calls' files and tokens
+  are not attributed twice.
 
 **Exactly-once completion.** Completion goes through
 `strategy.CompleteTaskRecord`: one `MutateSessionState` closure marks
