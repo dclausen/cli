@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/spf13/cobra"
 )
 
@@ -214,15 +216,15 @@ func runTrailLoopShow(cmd *cobra.Command) error {
 // trailLoopStatePath is the state file inside the clone's git common dir, so
 // every worktree of the clone shares one setting and it is never committed.
 func trailLoopStatePath(ctx context.Context) (string, error) {
-	out, err := runGitQuiet(ctx, 4096, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	root, err := paths.WorktreeRoot(ctx)
 	if err != nil {
-		return "", fmt.Errorf("find git directory (run this inside a git clone): %w", err)
+		return "", fmt.Errorf("find git clone (run this inside a git clone): %w", err)
 	}
-	dir := strings.TrimSpace(string(out))
-	if dir == "" {
-		return "", errors.New("find git directory: git returned nothing")
+	meta, err := gitrepo.ResolveWorktreeMetadata(root)
+	if err != nil {
+		return "", fmt.Errorf("find git directory: %w", err)
 	}
-	return filepath.Join(dir, trailLoopStateFile), nil
+	return filepath.Join(meta.CommonDir, trailLoopStateFile), nil
 }
 
 func readTrailLoopState(path string) (*trailLoopState, error) {
