@@ -141,3 +141,91 @@ func TestRehomeSessionToCurrentWorktree_NeedsAStrongSignal(t *testing.T) {
 		})
 	}
 }
+
+// The re-home invariant, for every hook-time entry point and every shape of
+// pending work: a session moves only when nothing pending belongs to its old
+// home, and a move never drops, rewrites or relocates the pending work
+// itself. Moving with work left behind would orphan it; moving it along
+// would hand it to the wrong tree.
+func TestRehome_NeverOrphansOrRewritesPendingWork(t *testing.T) {
+	fx := newRehomeFixture(t)
+	repo, err := OpenRepository(context.Background())
+	require.NoError(t, err)
+	defer repo.Close()
+	s := &ManualCommitStrategy{}
+	signalled := WithAgentWorkingTree(context.Background())
+
+	entryPoints := map[string]func(*SessionState) bool{
+		"own commit": func(st *SessionState) bool {
+			return s.rehomeSessionAfterOwnCommit(signalled, repo, st, fx.worktreeDir, fx.head, true, st.SessionID)
+		},
+		"turn boundary": func(st *SessionState) bool {
+			before := st.WorktreePath
+			s.rehomeSessionToCurrentWorktree(signalled, repo, st, false)
+			return st.WorktreePath != before
+		},
+		"turn end without a step": func(st *SessionState) bool {
+			before := st.WorktreePath
+			s.rehomeSessionAtTurnEnd(signalled, st)
+			return st.WorktreePath != before
+		},
+	}
+	task := session.TaskRecord{ToolUseID: "toolu_1", Files: []string{"t.go"}}
+	shapes := map[string]struct {
+		pending func(*SessionState)
+		mayMove bool
+	}{
+		"nothing pending":                {pending: func(*SessionState) {}, mayMove: true},
+		"files recorded in the new tree": {pending: func(st *SessionState) { st.FilesTouched = []string{"a.go"}; st.PendingContentWorktree = fx.worktreeDir }, mayMove: true},
+		"a task recorded in the new tree": {pending: func(st *SessionState) {
+			st.TaskRecords = []session.TaskRecord{task}
+			st.PendingContentWorktree = fx.worktreeDir
+		}, mayMove: true},
+		"files recorded at home": {pending: func(st *SessionState) { st.FilesTouched = []string{"a.go"}; st.PendingContentWorktree = fx.mainDir }},
+		"a task recorded at home": {pending: func(st *SessionState) {
+			st.TaskRecords = []session.TaskRecord{task}
+			st.PendingContentWorktree = fx.mainDir
+		}},
+		"files recorded in several trees": {pending: func(st *SessionState) {
+			st.FilesTouched = []string{"a.go"}
+			st.PendingContentWorktree = session.PendingContentInSeveralWorktrees
+		}},
+		"files from before locations existed": {pending: func(st *SessionState) { st.FilesTouched = []string{"a.go"} }},
+		"shadow steps, even with files located here": {pending: func(st *SessionState) {
+			st.StepCount = 1
+			st.FilesTouched = []string{"a.go"}
+			st.PendingContentWorktree = fx.worktreeDir
+		}},
+	}
+	for entryName, rehome := range entryPoints {
+		for shapeName, shape := range shapes {
+			t.Run(entryName+"/"+shapeName, func(t *testing.T) {
+				state := *fx.state
+				shape.pending(&state)
+				before := state
+				before.FilesTouched = append([]string(nil), state.FilesTouched...)
+				before.TaskRecords = append([]session.TaskRecord(nil), state.TaskRecords...)
+
+				moved := rehome(&state)
+
+				if !shape.mayMove {
+					require.False(t, moved, "pending work belongs to the old home; moving would orphan it")
+					assert.Equal(t, before.WorktreePath, state.WorktreePath)
+					assert.Equal(t, before.WorktreeID, state.WorktreeID)
+					assert.Equal(t, before.BaseCommit, state.BaseCommit)
+				} else {
+					require.True(t, moved, "nothing pending ties the session to its old home")
+					assert.Equal(t, fx.worktreeDir, state.WorktreePath)
+					wantID, err := paths.GetWorktreeID(fx.worktreeDir)
+					require.NoError(t, err)
+					assert.Equal(t, wantID, state.WorktreeID, "WorktreeID moves with WorktreePath")
+					assert.Equal(t, fx.head, state.BaseCommit, "the base is re-derived in the new tree")
+				}
+				assert.Equal(t, before.FilesTouched, state.FilesTouched, "a re-home never drops or rewrites pending files")
+				assert.Equal(t, before.TaskRecords, state.TaskRecords, "a re-home never drops or rewrites task records")
+				assert.Equal(t, before.StepCount, state.StepCount, "a re-home never touches shadow steps")
+				assert.Equal(t, before.PendingContentWorktree, state.PendingContentWorktree, "a re-home never relocates where pending work was recorded")
+			})
+		}
+	}
+}
