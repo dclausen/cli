@@ -187,7 +187,8 @@ func (s *ManualCommitStrategy) rehomeSessionAfterOwnCommit(ctx context.Context, 
 	if worktreePath == "" || isSessionHomeWorktree(worktreePath, state) {
 		return false
 	}
-	if !homeWorktreeRemoved(state) && homeHoldsPendingContent(state, worktreePath) {
+	removed := homeWorktreeRemoved(state)
+	if (removed && removedHomeHoldsSteps(ctx, state)) || (!removed && homeHoldsPendingContent(state, worktreePath)) {
 		logging.Debug(logCtx, "post-commit: session committed outside its home worktree but the home holds pending content; staying guest-linked",
 			slog.String("session_id", state.SessionID),
 			slog.String("home_worktree", state.WorktreePath),
@@ -226,10 +227,15 @@ func (s *ManualCommitStrategy) rehomeSessionToCurrentWorktree(ctx context.Contex
 	why := "its agent's hooks now run there"
 	if homeWorktreeRemoved(state) {
 		// The session's home was deleted (a disposable agent worktree, cleaned
-		// up after its work merged). Nothing there can be committed any more,
-		// so pending work recorded there must not strand the session: every
-		// later commit elsewhere would fail to link it. The state was loaded
-		// from this repository's session store, so current is its repository.
+		// up after its work merged). Files and task records recorded there can
+		// no longer be committed from it, so they must not strand the session:
+		// every later commit elsewhere would fail to link it. The state was
+		// loaded from this repository's session store, so current is its
+		// repository. Shadow-branch steps still hold it (see
+		// removedHomeHoldsSteps).
+		if removedHomeHoldsSteps(ctx, state) {
+			return
+		}
 		why = "its old worktree was removed"
 	} else {
 		if homeHoldsPendingContent(state, current) {
@@ -245,6 +251,21 @@ func (s *ManualCommitStrategy) rehomeSessionToCurrentWorktree(ctx context.Contex
 		return
 	}
 	rehomeSession(ctx, repo, state, current, head.Hash().String(), why)
+}
+
+// removedHomeHoldsSteps reports whether a session whose home was removed still
+// has uncondensed shadow-branch steps. The shadow branch is named from
+// BaseCommit and WorktreeID, which re-homing rewrites without moving the ref,
+// so such a session stays put: moving it would lose track of those steps.
+func removedHomeHoldsSteps(ctx context.Context, state *SessionState) bool {
+	if state.StepCount == 0 {
+		return false
+	}
+	logging.Warn(logging.WithComponent(ctx, "checkpoint"), "session's home worktree was removed with uncondensed checkpoints; it stays homed there",
+		slog.String("session_id", state.SessionID),
+		slog.String("home_worktree", state.WorktreePath),
+		slog.Int("steps", state.StepCount))
+	return true
 }
 
 // homeWorktreeRemoved reports whether the session's recorded home directory no

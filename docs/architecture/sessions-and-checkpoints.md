@@ -211,8 +211,10 @@ process also hosts another live session (the Codex app-server daemon hosts
 them all, #2612): ancestry ties between them, so the match links as before but
 neither re-homes a session nor skips the fallback. A home worktree that no longer
 exists (a disposable agent worktree removed after its work merged) never holds
-a session: nothing there can be committed, so the next strong signal re-homes
-it even when pending work was recorded there, which is left as it was.
+a session for its files and task records: nothing there can be committed, so
+the next strong signal re-homes it and leaves that work as it was. Shadow-branch
+steps still hold it, since the shadow branch is keyed to the home's base commit
+and worktree ID and re-homing does not move the ref; that case is logged.
 
 **The session follows its agent** (`rehomeSessionAfterOwnCommit`). A session
 is homed where its first turn-start hook ran, and agent hooks run where the

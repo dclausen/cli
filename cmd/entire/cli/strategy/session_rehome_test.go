@@ -232,9 +232,11 @@ func TestRehome_NeverOrphansOrRewritesPendingWork(t *testing.T) {
 }
 
 // A home worktree that was removed (a disposable agent worktree, cleaned up
-// after its work merged) cannot hold anything committable, so pending work
-// recorded there must not strand the session: every entry point moves it on a
-// strong signal, and the pending work itself is left as it was.
+// after its work merged) cannot hold anything committable, so files and task
+// records recorded there must not strand the session: every entry point moves
+// it on a strong signal, and the pending work itself is left as it was.
+// Shadow-branch steps still hold it: the shadow branch is keyed to the home's
+// BaseCommit and WorktreeID, and re-homing does not move the ref.
 func TestRehome_LeavesARemovedHomeEvenWithPendingWork(t *testing.T) {
 	fx := newRehomeFixture(t)
 	repo, err := OpenRepository(context.Background())
@@ -254,17 +256,26 @@ func TestRehome_LeavesARemovedHomeEvenWithPendingWork(t *testing.T) {
 		},
 	}
 	for name, rehome := range entryPoints {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name+"/files and tasks", func(t *testing.T) {
 			state := *fx.state
 			state.WorktreePath = removedHome
 			state.FilesTouched = []string{"a.go"}
-			state.StepCount = 1
+			state.TaskRecords = []session.TaskRecord{{ToolUseID: "toolu_1"}}
 			state.PendingContentWorktree = removedHome
 
 			require.True(t, rehome(&state), "a removed home must not strand the session")
 			assert.Equal(t, fx.worktreeDir, state.WorktreePath)
 			assert.Equal(t, []string{"a.go"}, state.FilesTouched, "the pending work is left as it was")
-			assert.Equal(t, 1, state.StepCount)
+			assert.Len(t, state.TaskRecords, 1)
+		})
+		t.Run(name+"/shadow steps", func(t *testing.T) {
+			state := *fx.state
+			state.WorktreePath = removedHome
+			state.StepCount = 1
+
+			require.False(t, rehome(&state), "moving would lose track of the shadow branch keyed to the old home")
+			assert.Equal(t, removedHome, state.WorktreePath)
+			assert.Equal(t, fx.state.BaseCommit, state.BaseCommit)
 		})
 	}
 }
