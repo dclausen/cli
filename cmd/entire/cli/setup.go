@@ -1252,7 +1252,15 @@ func cleanRemoteURLForReport(info *gitremote.Info) string {
 	// Use CanonicalHost, not Host: an entire://cluster/gh/owner/repo origin (an
 	// already-mirrored repo) carries the Entire cluster as Host, so reporting
 	// Host verbatim would point the backend at the cluster instead of github.com.
-	return fmt.Sprintf("https://%s/%s/%s.git", info.CanonicalHost(), info.Owner, info.Repo)
+	cleaned := fmt.Sprintf("https://%s/%s/%s", info.CanonicalHost(), info.Owner, info.Repo)
+	// `.git` is the clone-URL convention of an upstream git host, never part of
+	// a repo name (see gitDirSuffix). A native remote has no upstream host — its
+	// CanonicalHost is the Entire cluster — so appending the suffix there would
+	// spell an Entire path with a decoration Entire never uses.
+	if info.Forge != gitremote.ForgeNative {
+		cleaned += gitDirSuffix
+	}
+	return cleaned
 }
 
 func newDisableCmd() *cobra.Command {

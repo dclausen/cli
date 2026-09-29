@@ -69,17 +69,14 @@ const (
 	// ForgeGitHub is the entire:// path token for a GitHub mirror.
 	ForgeGitHub = "gh"
 
-	// ForgeNative is the entire:// path token for an Entire-native repo. It is
-	// the one forge whose repo names may legitimately end in `.git`: GitHub
-	// rejects such a name outright, so on a /gh/ path the suffix can only be
-	// decoration, while entiredb permits an interior dot and the data plane
-	// resolves /et/ paths verbatim. Exported so callers holding a parsed forge
-	// can ask the question without a bare "et" literal.
+	// ForgeNative is the entire:// path token for an Entire-native repo.
+	// Exported so callers holding a parsed forge can ask the question without a
+	// bare "et" literal.
 	ForgeNative = "et"
 )
 
-// gitDirSuffix is the suffix git tools habitually append to a repo path.
-// Dropped for every forge except ForgeNative — see splitOwnerRepo.
+// gitDirSuffix is the suffix git tools habitually append to a repo path. It is
+// never part of a repo name on any forge — see splitOwnerRepo.
 const gitDirSuffix = ".git"
 
 // pathForges are the forge tokens Entire uses in an entire:// URL path
@@ -245,16 +242,12 @@ func ParseURL(rawURL string) (*Info, error) {
 			host = hostPart
 		}
 
-		// Forge first: splitOwnerRepo needs it to decide whether `.git` is
-		// decoration. An SCP-style URL never names a native repo (the map holds
-		// git hosts only), but reading it here keeps one rule in one place.
-		forge := hostToForge[host]
-		owner, repo, err := splitOwnerRepo(parts[1], forge)
+		owner, repo, err := splitOwnerRepo(parts[1])
 		if err != nil {
 			return nil, err
 		}
 
-		return &Info{Protocol: ProtocolSSH, Host: host, Forge: forge, Owner: owner, Repo: repo}, nil
+		return &Info{Protocol: ProtocolSSH, Host: host, Forge: hostToForge[host], Owner: owner, Repo: repo}, nil
 	}
 
 	u, err := url.Parse(rawURL)
@@ -271,7 +264,7 @@ func ParseURL(rawURL string) (*Info, error) {
 		// entire:// URLs encode the forge as the first path segment.
 		forge, pathPart = splitForgePrefix(pathPart)
 	}
-	owner, repo, err := splitOwnerRepo(pathPart, forge)
+	owner, repo, err := splitOwnerRepo(pathPart)
 	if err != nil {
 		return nil, err
 	}
@@ -363,18 +356,12 @@ func ResolveRemoteRepo(ctx context.Context, remoteName string) (forge, owner, re
 
 // splitOwnerRepo splits a remote path into owner and repo.
 //
-// A trailing `.git` is dropped for every forge except ForgeNative. GitHub
-// rejects a name ending in it, so there the suffix is decoration; a native repo
-// may genuinely be named "foo.git", and trimming it names a different
-// repository. See COR-1892. The forge is known on every ParseURL branch before
-// the split, so the choice needs no lookup and has no fallback.
-//
-// This is the only place the suffix is dropped: trimming again in ParseURL's
-// SCP branch collapsed "repo.git.git" to "repo".
-func splitOwnerRepo(path, forge string) (string, string, error) {
-	if forge != ForgeNative {
-		path = strings.TrimSuffix(path, gitDirSuffix)
-	}
+// A trailing `.git` is decoration on every forge and is dropped unconditionally:
+// it is what git tools append to a clone path, never part of the name Entire
+// stores. This is the only place the suffix is dropped, so it goes exactly once
+// — trimming again in ParseURL's SCP branch collapsed "repo.git.git" to "repo".
+func splitOwnerRepo(path string) (string, string, error) {
+	path = strings.TrimSuffix(path, gitDirSuffix)
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("cannot parse owner/repo from path: %s", path)

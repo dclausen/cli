@@ -5274,6 +5274,19 @@ func TestCleanRemoteURLForReport(t *testing.T) {
 			want:   "https://ghe.corp.example.com/entireio/cli.git",
 		},
 		{
+			// A native origin has no upstream forge, so CanonicalHost is the
+			// Entire cluster. `.git` is a forge clone-URL convention and is
+			// never part of an Entire path, so it must not be appended here.
+			name:   "native origin does not gain a .git suffix",
+			rawURL: "entire://aws-us-east-2.entire.io/et/widgets/web",
+			want:   "https://aws-us-east-2.entire.io/widgets/web",
+		},
+		{
+			name:   "native origin spelled with the .git alias is unchanged",
+			rawURL: "entire://aws-us-east-2.entire.io/et/widgets/web.git",
+			want:   "https://aws-us-east-2.entire.io/widgets/web",
+		},
+		{
 			name:    "unparseable single-segment path errors",
 			rawURL:  "https://github.com/onlyowner.git",
 			wantErr: true,

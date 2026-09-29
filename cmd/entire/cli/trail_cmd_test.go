@@ -939,11 +939,11 @@ func TestDeleteTrailByNumber(t *testing.T) {
 	})
 }
 
-// TestParseTrailRepoShape_GitSuffixIsForgeAware pins that a bare triple keeps
-// `.git` for a native ref and drops it for a mirror ref. `entire trail` refuses
-// native refs downstream (errTrailsNativeUnsupported), so this is about the
-// parser reporting the name it was given rather than a user-visible unlock.
-func TestParseTrailRepoShape_GitSuffixIsForgeAware(t *testing.T) {
+// TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge pins that a bare
+// triple drops `.git` whichever forge it names. `entire trail` refuses native
+// refs downstream (errTrailsNativeUnsupported), so this is about the parser
+// spelling the name one way rather than a user-visible unlock.
+func TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string
@@ -952,7 +952,7 @@ func TestParseTrailRepoShape_GitSuffixIsForgeAware(t *testing.T) {
 		wantOwner string
 		wantRepo  string
 	}{
-		{name: "native keeps the suffix", raw: "et/audit1/foo.git", wantForge: "et", wantOwner: "audit1", wantRepo: "foo.git"},
+		{name: "native drops the suffix", raw: "et/audit1/foo.git", wantForge: "et", wantOwner: "audit1", wantRepo: "foo"},
 		{name: "native without a suffix", raw: "et/audit1/foo", wantForge: "et", wantOwner: "audit1", wantRepo: "foo"},
 		{name: "mirror drops the suffix", raw: "gh/acme/app.git", wantForge: "gh", wantOwner: "acme", wantRepo: "app"},
 	} {
