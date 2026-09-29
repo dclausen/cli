@@ -102,10 +102,13 @@ type trailMergeResultJSON struct {
 	ConflictStatus string                  `json:"conflictStatus"`
 	BypassPolicy   string                  `json:"bypassPolicy"`
 	Blockers       []trailMergeBlockerJSON `json:"blockers"`
-	DryRun         bool                    `json:"dryRun"`
-	Merged         bool                    `json:"merged"`
-	Bypassed       bool                    `json:"bypassed"`
-	MergeCommitSha string                  `json:"mergeCommitSha,omitempty"`
+	// Reasons explains a blocked trail that reports no blocking gates, the
+	// same fallback the human-readable report prints.
+	Reasons        []string `json:"reasons,omitempty"`
+	DryRun         bool     `json:"dryRun"`
+	Merged         bool     `json:"merged"`
+	Bypassed       bool     `json:"bypassed"`
+	MergeCommitSha string   `json:"mergeCommitSha,omitempty"`
 }
 
 type trailMergeBlockerJSON struct {
@@ -128,6 +131,9 @@ func newTrailMergeResultJSON(t *api.TrailResource, m *api.TrailMergeabilityRespo
 			b.Rationale = strings.TrimSpace(*g.Rationale)
 		}
 		out.Blockers = append(out.Blockers, b)
+	}
+	if !m.Mergeable && len(gates) == 0 {
+		out.Reasons = describeMergeabilityBlockers(m)
 	}
 	return out
 }
@@ -271,7 +277,8 @@ var (
 // confirmTrailMergeBypass decides whether a --force bypass should proceed,
 // mirroring confirmTrailDeletion: --yes proceeds silently; otherwise it needs
 // an interactive terminal, and without one it refuses rather than bypassing
-// unprompted. A declined or aborted prompt is a clean cancel.
+// unprompted. A declined or aborted prompt is a clean cancel; a cancelled
+// context is an interruption, returned as an error wrapping ctx.Err().
 func confirmTrailMergeBypass(ctx context.Context, w io.Writer, t *api.TrailResource, gates []api.TrailGateResult, yes, canPrompt bool) (bool, error) {
 	if yes {
 		return true, nil
@@ -280,17 +287,24 @@ func confirmTrailMergeBypass(ctx context.Context, w io.Writer, t *api.TrailResou
 	if !canPrompt {
 		return false, fmt.Errorf("refusing to bypass %d blocking %s on trail #%d without confirmation; pass --yes", n, pluralize("gate", n), t.Number)
 	}
+	// huh opens the TTY during form startup regardless of context state.
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("trail merge confirmation cancelled: %w", err)
+	}
 	base := tuiutil.SanitizeDisplayText(strings.TrimSpace(t.Base))
 	if base == "" {
 		base = "its base"
 	}
-	title := fmt.Sprintf("Bypass %d blocking %s and merge trail #%d into %s?", n, pluralize("gate", n), t.Number, base)
-	lines := make([]string, 0, n+1)
-	lines = append(lines, "The bypass is recorded on the trail. Gates bypassed:")
+	// The gates go in the title, not a description: accessible mode renders
+	// only a field's title and options.
+	lines := make([]string, 0, n+2)
+	lines = append(lines,
+		fmt.Sprintf("Bypass %d blocking %s and merge trail #%d into %s?", n, pluralize("gate", n), t.Number, base),
+		"The bypass is recorded on the trail. Gates bypassed:")
 	for _, g := range gates {
 		lines = append(lines, "  - "+describeGateFailure(g))
 	}
-	confirmed, err := trailMergeBypassPrompt(ctx, title, strings.Join(lines, "\n"))
+	confirmed, err := trailMergeBypassPrompt(ctx, strings.Join(lines, "\n"))
 	if err != nil {
 		return false, err
 	}
@@ -301,13 +315,19 @@ func confirmTrailMergeBypass(ctx context.Context, w io.Writer, t *api.TrailResou
 	return true, nil
 }
 
-func promptTrailMergeBypass(ctx context.Context, title, description string) (bool, error) {
+func promptTrailMergeBypass(ctx context.Context, title string) (bool, error) {
 	confirmed := false
 	form := NewAccessibleForm(
-		huh.NewGroup(huh.NewConfirm().Title(title).Description(description).Value(&confirmed)),
+		huh.NewGroup(huh.NewConfirm().Title(title).Value(&confirmed)),
 	)
-	if err := form.RunWithContext(ctx); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) || errors.Is(err, context.Canceled) {
+	err := form.RunWithContext(ctx)
+	// Before inspecting err: a cancelled context surfaces as a form error too,
+	// and it is an interruption, not an answer.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, fmt.Errorf("trail merge confirmation cancelled: %w", ctxErr)
+	}
+	if err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
 			return false, nil
 		}
 		return false, fmt.Errorf("trail merge prompt: %w", err)
