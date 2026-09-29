@@ -444,16 +444,14 @@ func runNativeRepoView(cmd *cobra.Command, ref, clusterHost string, authoritativ
 			return err
 		}
 		// The name is the server's, never a ref rebuilt from what the user
-		// typed: `repo view` also takes a ULID and a bare name, neither of which
-		// spells the /et/<project>/<repo> form the other verbs want back, and
-		// echoing the typed path beside whatever ULID resolved reads as success
-		// even when the two disagree (COR-1892).
+		// typed: echoing the path a caller typed beside whatever ULID resolved
+		// reads as success even when the two disagree (COR-1892).
 		//
 		// Two server answers, most specific first. The repo's own path is
 		// absent in the seconds after create, before the coordinates the create
 		// response already carried reach the registry; the resolution that
 		// found this repo carries the server's full name for it and covers that
-		// window. A ULID ref looked nothing up, so neither exists and the bare
+		// window. When the resolution carried no name either, the repo's own
 		// name is all there is.
 		name := strings.TrimSpace(repo.Path.Or(""))
 		if name == "" {
@@ -478,6 +476,12 @@ func runNativeRepoView(cmd *cobra.Command, ref, clusterHost string, authoritativ
 			RepoId:        repo.ID,
 			Authoritative: coreapi.NewOptBool(true),
 		})
+		// Before the switch, because a cancellation can land while the read is
+		// in flight and still let it SUCCEED: deciding on aerr alone would take
+		// the nil arm and print a table for work the user had already stopped.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		switch {
 		case aerr == nil:
 			auth := &fresh.Response
@@ -499,17 +503,6 @@ func runNativeRepoView(cmd *cobra.Command, ref, clusterHost string, authoritativ
 				// words when `repo create` waits for readiness.
 				return errors.New("repository readiness unconfirmed: the server did not return repository readiness information")
 			}
-		case ctx.Err() != nil:
-			// Whether the command was stopped is the context's answer, not
-			// something to infer from the read's error: that inference relied on
-			// every wrapper between here and the transport preserving the chain,
-			// and it missed the case where the read SUCCEEDS just as the
-			// cancellation lands — printing a table for work the user had
-			// already interrupted, at exit 0.
-			//
-			// An interrupted read is never swallowed the way a server that
-			// cannot answer is, which is what the arms below do.
-			return ctx.Err()
 		case authoritative && readinessCheckUnavailable(aerr):
 			// --authoritative is the caller saying the readiness answer is the
 			// point of the command, so a registry-only fallback that cannot give
@@ -555,10 +548,18 @@ func runNativeRepoView(cmd *cobra.Command, ref, clusterHost string, authoritativ
 // `placements`. A GitHub upstream simply has no record to carry the rest, which
 // is the truth rather than an omission.
 //
-// Nothing here overwrites a server value: `repo`/`private` are this view's
+// One key IS overwritten, deliberately: `placements`. The record carries its
+// own list in the server's shape (id, cell, mirror, apiBaseUrl), and this view
+// answers with the per-cluster rows it built — host, role, clone URL, and the
+// seed stage — which is the shape `mirror list --json` uses and the E2E reads.
+// Two shapes under one key, chosen by whether the row happened to have
+// placements, is the one outcome that helps nobody, so the server's list is
+// replaced when there is a row list and REMOVED when there is not.
+//
+// Nothing else overwrites a server value: `repo`/`private` are this view's
 // spellings of `path`/`visibility` under the keys `mirror list --json` uses,
 // `project` is the project NAME where the record carries only its ULID, and
-// `status`/`placements` come from reads the record knows nothing about.
+// `status` comes from reads the record knows nothing about.
 func nativeRepoViewJSON(repo *coreapi.Repo, row repoDirRow) (map[string]json.RawMessage, error) {
 	obj, err := wireObject(repo)
 	if err != nil {
@@ -570,9 +571,13 @@ func nativeRepoViewJSON(repo *coreapi.Repo, row repoDirRow) (map[string]json.Raw
 	}
 	// Omitted when empty, as repoDirRow tags it: a repo nothing holds and a
 	// GitHub candidate are the same answer, and they must not differ by which
-	// path built the JSON. There is no third state for the key to distinguish.
+	// path built the JSON. There is no third state for the key to distinguish —
+	// and the record's own list is dropped rather than left to surface in the
+	// server's shape under the same name.
 	if len(row.Placements) > 0 {
 		fields["placements"] = row.Placements
+	} else {
+		delete(obj, "placements")
 	}
 	// Absent, never null: an unstated visibility is not a claim, and `null`
 	// reads as false to jq on the question asked to confirm a repo is
@@ -731,14 +736,9 @@ func reportNativeMirrorNotes(w io.Writer, repo *coreapi.Repo, mirrors []coreapi.
 	// there is no table for it to dirty.
 	if reason := strings.TrimSpace(repo.ProvisionReason.Or("")); reason != "" &&
 		repo.State.Or("") == repoStateFailed && repo.ClusterSlug.Or("") != "" {
-		// A repo that never got placed has no cluster to name, and prefixing
-		// the one line carrying the failure reason with ": " loses its subject
-		// without gaining one.
-		if cluster := placementCluster(hostBySlug, repo.ClusterSlug.Or("")); cluster != "" {
-			fmt.Fprintf(w, "%s: %s\n", cluster, reason)
-		} else {
-			fmt.Fprintln(w, reason)
-		}
+		// The cluster is always nameable here: the guard above requires a slug,
+		// and placementCluster falls back to it when the catalog has no host.
+		fmt.Fprintf(w, "%s: %s\n", placementCluster(hostBySlug, repo.ClusterSlug.Or("")), reason)
 	}
 	for _, m := range mirrors {
 		if detail := strings.TrimSpace(m.LastError.Or("")); detail != "" {

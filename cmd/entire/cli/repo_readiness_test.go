@@ -359,6 +359,46 @@ func TestRepoView_JSONIsTheRecordPlusTheView(t *testing.T) {
 		require.Equal(t, "/et/acme/web", got["path"], "the server's key too, so create and view agree")
 	})
 
+	// The record carries a `placements` list of its own, in the server's shape
+	// (id, cell, mirror, apiBaseUrl). One key cannot hold two shapes, so the
+	// view's rows replace it — and when the view has none, the record's list is
+	// dropped rather than surfacing under the same name in a different shape.
+	t.Run("the record's own placements never surface in the server's shape", func(t *testing.T) {
+		serverList := `,"placements":[{"id":"01PLACEMENT","cell":"cell-a","clusterSlug":"us","jurisdiction":"us","mirror":false,"status":"ready"}]`
+		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","path":"/et/acme/web","clusterSlug":"us","state":"active","visibility":"private"%s}`,
+			testDeleteULID, testProjectULID, serverList)
+		srv, _ := serveRepoView(t, body, nil)
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		list, ok := got["placements"].([]any)
+		require.True(t, ok, "the view's own list must be there")
+		require.Len(t, list, 1)
+		first, isObject := list[0].(map[string]any)
+		require.True(t, isObject, "each placement is an object")
+		require.Contains(t, first, "role", "the view's shape, which the record's list has no notion of")
+		require.Contains(t, first, "cluster", "and its host-named cluster key")
+		require.NotContains(t, first, "cell", "the record's shape must not leak through")
+		require.NotContains(t, first, "mirror", "nor its boolean for what the view spells as a role")
+	})
+
+	t.Run("the record's placements are dropped when the view has none", func(t *testing.T) {
+		// No clusterSlug, so the view builds no rows — but the record still
+		// carries a list, which must not be what a consumer reads.
+		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","state":"provisioning","placements":[{"id":"01PLACEMENT","cell":"cell-a","clusterSlug":"us","jurisdiction":"us","mirror":false,"status":"ready"}]}`,
+			testDeleteULID, testProjectULID)
+		srv, _ := serveRepoView(t, body, nil)
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		require.NotContains(t, got, "placements",
+			"the key is absent for a repo nothing holds, in either forge and from either source")
+	})
+
 	t.Run("placements is omitted when nothing holds the repo", func(t *testing.T) {
 		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","state":"provisioning"}`,
 			testDeleteULID, testProjectULID)
@@ -398,6 +438,56 @@ func TestRepoView_AuthoritativeRefusesAStatelessAnswer(t *testing.T) {
 	out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 	require.NoError(t, err, "without the flag an unreadable state dashes the cell, it does not sink the view")
 	require.Contains(t, out, testNativeRepoPath)
+}
+
+// TestRepoView_ACancelledCommandDoesNotPrintAWonRace pins the half the error
+// check could never cover: a cancellation that lands while the authoritative
+// read is in flight, where the read still SUCCEEDS. Deciding on the read's
+// error alone takes the nil arm, prints a full table and exits 0 — reporting
+// work the user had already stopped. Only the context knows.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoView_ACancelledCommandDoesNotPrintAWonRace(t *testing.T) {
+	body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","path":"/et/acme/web","clusterSlug":"us","state":"active","visibility":"private"}`,
+		testDeleteULID, testProjectULID)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/repos/resolve":
+			assert.NoError(t, printJSON(w, nativeResolution("acme/web", testDeleteULID)))
+		case strings.HasSuffix(r.URL.Path, "/native-mirrors"):
+			fmt.Fprint(w, `{"nativeMirrors":[]}`)
+		case r.URL.Path == "/api/v1/clusters":
+			fmt.Fprint(w, `{"clusters":[]}`)
+		case r.URL.Query().Get("authoritative") == "true":
+			// Ctrl-C lands, and this read answers anyway — the race the error
+			// check cannot see, because there is no error to inspect.
+			cancel()
+			fmt.Fprint(w, body)
+		default:
+			fmt.Fprint(w, body)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	prev := activeCoreClient
+	activeCoreClient = func(context.Context) (*coreapi.Client, error) {
+		return coreapi.NewWithBearer(srv.URL, "tok")
+	}
+	t.Cleanup(func() { activeCoreClient = prev })
+
+	cmd := newRepoViewCmd()
+	var out, errW bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errW)
+	cmd.SetArgs([]string{testNativeRepoPath})
+	err := cmd.ExecuteContext(ctx)
+
+	require.Error(t, err, "an interrupted command must not report success, however the read fared")
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotContains(t, out.String(), "CLUSTER", "no table for work the user stopped")
 }
 
 func TestRepoCreateReadinessFlags(t *testing.T) {

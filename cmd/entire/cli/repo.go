@@ -524,11 +524,10 @@ func bindRepoProjectFlag(cmd *cobra.Command, project *string) {
 // unconditional --project has been accepted since the flag shipped (ece9fb3dc,
 // June 2026) and is plausibly scripted; breaking that to report a flag that was
 // already being ignored is a poor trade. It does not VALIDATE because that
-// needs GetRepo's owningProjectId, an extra round trip on every command here
-// except `repo view` — which alone already fetches the repo, and carries its
-// owningProjectId in `--json`. Not in the human view: that header is the two
-// things which identify a repo, and the project is already spelled inside the
-// name.
+// needs GetRepo's owningProjectId, an extra round trip on every command that
+// binds this flag. `repo view` used to be the exemption, since it fetches the
+// repo anyway — it no longer binds the flag at all, taking the
+// /et/<project>/<repo> path that names its own project instead.
 //
 // Wired as a PreRunE because the answer needs only the flag and args[0]: no
 // resolution, no network, and every command binding this flag takes the repo
@@ -552,19 +551,20 @@ func warnRedundantProjectFlag(cmd *cobra.Command, project *string) {
 	}
 }
 
-// warnFlagsGitHubViewIgnores reports the flags that mean nothing on the GitHub
-// half of `repo view`. Entire holds no repo record for an upstream, so there is
-// no owning project to agree with and no provisioning state to confirm: the
-// directory lookup takes neither value.
+// warnFlagsGitHubViewIgnores reports --authoritative reaching the GitHub half of
+// `repo view`, where it means nothing: Entire holds no repo record for an
+// upstream, so there is no provisioning state to confirm and the directory
+// lookup takes no such value.
 //
-// --authoritative matters most. Its help promises to fail if the server cannot
-// confirm provisioning state, so a script gating on that guarantee otherwise
-// gets exit 0 with no check performed. Warning rather than erroring keeps a
+// It matters because the flag's help promises to FAIL if the server cannot
+// confirm that state, so a script gating on the guarantee would otherwise get
+// exit 0 with no check performed. Warning rather than erroring keeps a
 // `for repo in ...` loop over mixed forges working.
+//
+// --project is not checked: `repo view` does not register it, so Changed()
+// could only ever answer false.
 func warnFlagsGitHubViewIgnores(cmd *cobra.Command) {
-	for _, name := range []string{"authoritative", projectFlagName} {
-		if cmd.Flags().Changed(name) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Note: --%s is ignored for a GitHub repository; Entire holds no repository record for an upstream, only the mirrors of it.\n", name)
-		}
+	if cmd.Flags().Changed("authoritative") {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Note: --authoritative is ignored for a GitHub repository; Entire holds no repository record for an upstream, only the mirrors of it.")
 	}
 }

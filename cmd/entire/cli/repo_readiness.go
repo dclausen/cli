@@ -250,15 +250,13 @@ func retainRepoCreation(result, snapshot *coreapi.Repo) {
 // server's own /et/<project>/<repo> path. A recovery hint has to name a ref the
 // command accepts, and a ULID is no longer one.
 //
-// The create response carries the path, so this is normally exact. When it does
-// not — the same window in which readiness goes unconfirmed — the bare name is
-// all there is; it is not a working ref, but it names the repo, and the ID on
-// the line above is what support is asked for.
+// Empty when the create response carries no path — the same window in which
+// readiness goes unconfirmed. The bare name is NOT offered there: `repo view`
+// refuses it, so printing it would hand someone already stuck a command that
+// fails on its own terms. The caller drops the command lines instead and keeps
+// the repository ID, which is what support is asked for.
 func repoViewRef(r *coreapi.Repo) string {
-	if path := strings.TrimSpace(r.Path.Or("")); path != "" {
-		return path
-	}
-	return r.Name
+	return strings.TrimSpace(r.Path.Or(""))
 }
 
 // reportRepoCreation reports the successful POST even when waiting failed,
@@ -291,14 +289,22 @@ func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, noWait bool, w
 	if waitErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Repository creation succeeded: %s (%s). Readiness was not confirmed: %v\n", result.Name, result.ID, renderRepoReadError(waitErr))
 		// The PATH, because that is what `repo view` takes — a ULID is not a
-		// repository's name and the verb no longer accepts one. The repo ID
-		// still appears above, which is what support is asked for.
-		ref := repoViewRef(result)
-		fmt.Fprintf(cmd.ErrOrStderr(), "Inspect repository details with: entire repo view %s\nCheck readiness with: entire repo view %s --authoritative\nWhen that command reports the primary as ready, retry the intended push or mirror creation. If readiness remains unavailable, contact support with this repository ID. Do not create the repository again. For future creates, --no-wait skips readiness checks.\n", ref, ref)
+		// repository's name and the verb no longer accepts one. With no path
+		// yet there is no ref to offer, so the inspection lines are dropped
+		// rather than naming a command that would fail; the rest of the advice
+		// does not depend on them.
+		if ref := repoViewRef(result); ref != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Inspect repository details with: entire repo view %s\nCheck readiness with: entire repo view %s --authoritative\nWhen that command reports the primary as ready, retry the intended push or mirror creation.\n", ref, ref)
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "If readiness remains unavailable, contact support with this repository ID (%s). Do not create the repository again. For future creates, --no-wait skips readiness checks.\n", result.ID)
 		return NewSilentError(errors.Join(waitErr, outputErr))
 	}
 	if noWait && (result.State.Or("") != repoStateActive || result.Foreign.Or(false)) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait). Check readiness with: entire repo view %s --authoritative\n", repoViewRef(result))
+		if ref := repoViewRef(result); ref != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait). Check readiness with: entire repo view %s --authoritative\n", ref)
+		} else {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait), and the server has not returned this repository's path yet, so there is no reference to check it by. Repository ID: %s\n", result.ID)
+		}
 	}
 	return outputErr
 }
