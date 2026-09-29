@@ -99,7 +99,9 @@ func remoteTrailBranchState(ctx context.Context, forge, owner, repo, branch stri
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		// git echoes the remote URL in its errors, and a URL can carry
+		// credentials, so stderr is redacted per URL before it is surfaced.
+		if msg := redactGitStderr(stderr.String()); msg != "" {
 			return trailBranchUnknown, fmt.Errorf("git ls-remote: %s", msg)
 		}
 		return trailBranchUnknown, fmt.Errorf("git ls-remote: %w", err)
