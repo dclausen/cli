@@ -365,7 +365,7 @@ func TestParseURL_EncodedControlCharIsRejectedOnEveryForge(t *testing.T) {
 // which addresses a repo and both of which are path-traversal shapes if a
 // caller ever joins them. The trim runs on every forge, so every forge can
 // manufacture one. The /gh/ ref grammar guards this case already
-// (parseMirrorCloneRef's gitHubDotOnlyRe); this is the URL half, which
+// (parseMirrorCloneRef's dotOnlyRe); this is the URL half, which
 // ResolveRemoteRepo actually uses.
 func TestParseURL_RejectsDotOnlySegments(t *testing.T) {
 	t.Parallel()

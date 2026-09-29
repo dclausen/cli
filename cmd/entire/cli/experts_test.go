@@ -749,6 +749,12 @@ func TestParseExpertsRepo(t *testing.T) {
 		{name: "surrounding slashes are ignored", in: "/gh/acme/widget.git/", want: "acme/widget"},
 		{name: "a gh name that is only the suffix is refused", in: "gh/acme/.git", wantErr: true},
 		{name: "a bare name that is only the suffix is refused", in: "acme/.git", wantErr: true},
+		// The trim can MANUFACTURE a dot-only name out of one that was not, and
+		// the result reaches placement resolution. Refused on both spellings.
+		{name: "a name the trim turns dot-only is refused", in: "acme/..git", wantErr: true},
+		{name: "a gh name the trim turns dot-only is refused", in: "gh/acme/..git", wantErr: true},
+		{name: "a name the trim turns double-dot is refused", in: "acme/...git", wantErr: true},
+		{name: "a dot-only name as typed is refused", in: "acme/..", wantErr: true},
 		{name: "a non-gh triple is not a pair", in: "et/audit1/foo", wantErr: true},
 		{name: "one segment is not a pair", in: "widget", wantErr: true},
 		{name: "empty is refused", in: "", wantErr: true},

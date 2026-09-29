@@ -967,6 +967,28 @@ func TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge(t *testing.T) {
 	}
 }
 
+// TestParseTrailRepoShape_RefusesNamesTheTrimManufactures pins that the segment
+// check runs again AFTER the suffix is dropped. The emptiness check ahead of the
+// trim sees the name as typed, so ".git" and "..git" both passed it and then
+// became "" and "." — coordinates the trim invented, forwarded to a trails
+// route. Neither forge is exempt.
+func TestParseTrailRepoShape_RefusesNamesTheTrimManufactures(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"et/acme/.git",   // empties
+		"et/acme/..git",  // becomes "."
+		"et/acme/...git", // becomes ".."
+		"gh/acme/.git",
+		"gh/acme/..git",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			_, _, _, err := parseTrailRepoShape(raw)
+			require.Error(t, err)
+		})
+	}
+}
+
 // Not parallel: uses t.Chdir() to point ResolveRemoteRepo at a fake repo.
 func TestResolveTrailRemote_RejectsUnsupportedForge(t *testing.T) {
 	repoDir := t.TempDir()

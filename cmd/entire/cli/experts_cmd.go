@@ -411,10 +411,11 @@ func parseExpertsRepo(value string) (string, error) {
 	if len(parts) != 2 {
 		return "", fmt.Errorf("invalid --repo %q (use owner/repo)", value)
 	}
-	// Trimmed before the emptiness check, so a name that was nothing but the
-	// suffix is refused rather than sent on as an empty repo.
+	// Trimmed before the checks below, so a name the trim empties (".git") or
+	// turns dot-only ("..git" → ".") is refused here rather than forwarded to
+	// placement resolution. See dotOnlyRe.
 	owner, repo := parts[0], strings.TrimSuffix(parts[1], gitDirSuffix)
-	if owner == "" || repo == "" {
+	if owner == "" || repo == "" || dotOnlyRe.MatchString(owner) || dotOnlyRe.MatchString(repo) {
 		return "", fmt.Errorf("invalid --repo %q (use owner/repo)", value)
 	}
 	return owner + "/" + repo, nil

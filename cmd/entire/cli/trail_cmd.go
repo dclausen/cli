@@ -2375,7 +2375,15 @@ func parseTrailRepoShape(raw string) (forge, owner, repo string, err error) {
 		if !gitremote.IsForgePathToken(parts[0]) {
 			return "", "", "", fmt.Errorf("invalid --repo %q: %q is not a supported forge id (use a forge id like \"gh\", or pass a clone URL such as https://github.com/%s/%s)", raw, parts[0], parts[1], parts[2])
 		}
-		return parts[0], parts[1], strings.TrimSuffix(parts[2], gitDirSuffix), nil
+		// Re-check the repo AFTER the trim: the emptiness check above ran on the
+		// name as typed, and dropping the suffix can empty it (".git") or turn
+		// it dot-only ("..git" → "."). Either would otherwise be forwarded as a
+		// repo coordinate the suffix manufactured. See dotOnlyRe.
+		repo := strings.TrimSuffix(parts[2], gitDirSuffix)
+		if repo == "" || dotOnlyRe.MatchString(repo) {
+			return "", "", "", fmt.Errorf("invalid --repo %q: %q is not a repo name once the %s suffix is dropped", raw, parts[2], gitDirSuffix)
+		}
+		return parts[0], parts[1], repo, nil
 	}
 	info, perr := gitremote.ParseURL(raw)
 	if perr != nil {

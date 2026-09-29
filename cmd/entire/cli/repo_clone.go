@@ -424,7 +424,7 @@ func parseMirrorCloneRef(ref string) (provider, owner, repo string, err error) {
 	if repo == "" {
 		return "", "", "", fmt.Errorf("repo name is empty once the %s suffix is dropped: %s", gitDirSuffix, ref)
 	}
-	if gitHubDotOnlyRe.MatchString(repo) {
+	if dotOnlyRe.MatchString(repo) {
 		return "", "", "", fmt.Errorf("repo cannot be dot-only: %s", ref)
 	}
 	return mirrorCloneProviderGitHub, owner, repo, nil
