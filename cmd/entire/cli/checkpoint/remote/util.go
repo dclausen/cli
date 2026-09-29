@@ -669,6 +669,21 @@ func checkpointRemoteIsInherited(ctx context.Context, config *settings.Checkpoin
 			}
 			continue
 		}
+		// An owner name means nothing across forges: "alice" on github.com and
+		// "alice" on gitlab.com are unrelated accounts, and since the checkpoint
+		// URL is built on the CONFIGURED provider's host, a matching name here
+		// would vouch for a namespace this identity says nothing about. Only
+		// public forges are known to belong to one provider; an enterprise or
+		// self-managed host is the user's own installation and is trusted to
+		// serve whatever provider they configured.
+		if forge, ok := checkpointPublicForgeProviders[strings.ToLower(info.Host)]; ok &&
+			!strings.EqualFold(forge, config.Provider) {
+			if unprovable == "" {
+				unprovable = fmt.Sprintf("%s is on %s, which cannot establish ownership of a %s store",
+					id.source, info.Host, config.Provider)
+			}
+			continue
+		}
 		if !strings.EqualFold(info.Owner, checkpointOwner) {
 			return OwnershipDisproved, fmt.Sprintf("%s owner %q differs from checkpoint owner %q", id.source, info.Owner, checkpointOwner)
 		}
