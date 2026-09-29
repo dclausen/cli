@@ -222,7 +222,18 @@ the commands are always runnable in every build.
 - `project`: control-plane project management — `create`, `list`, `get`, `delete`,
   plus `grant` (`add`/`list`/`remove`): project access for a `provider:handle`
   grantee, roles reader/writer/admin; both `add` and `remove` take the grantee
-  optionally (see the grant-subtree notes below)
+  optionally (see the grant-subtree notes below). `create <name> --owner <ref>`
+  creates without prompting even in a terminal, leaving an omitted `--region`
+  to the server. Missing either, a terminal gets one paged wizard (owner →
+  name → region → summary; Shift+Tab goes back) seeded from whatever was
+  given, and no terminal is refused before any request. Owners are shown and
+  echoed by org name or `provider:handle`, never by ULID (a ULID `--owner` is
+  still accepted, undocumented). The personal account is listed first, then
+  only orgs whose `canCreateProject` is set; the region defaults to the
+  owner's, and the name is checked against the caller's visible projects,
+  fetched once up front because huh validates on the UI loop. Accessible mode
+  runs each stage as its own form, since huh's accessible runner evaluates
+  neither `OptionsFunc` nor `DescriptionFunc`
 - `repo`: control-plane repository lifecycle — `create`, `list --project`,
   `view`, `edit`, `delete`, `clone`, plus the `mirror`, `remote`,
   `visibility`, `protection` and `grant` subtrees (`repo grant` mirrors
