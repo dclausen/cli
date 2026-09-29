@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -470,36 +471,71 @@ func TestCharToByteOffset(t *testing.T) {
 	}
 }
 
-func TestPartitionIndex(t *testing.T) {
+func TestSplitBatchSpan(t *testing.T) {
 	t.Parallel()
-	// Three inputs joined by 1-byte separator: starts = [0, 11, 23]
+	// Three inputs joined by 1-byte separator: starts = [0, 12, 24]
 	//   "hello world"   bytes 0..11
 	//   "\x1e"          byte  11
 	//   "foo bar baz"   bytes 12..23
 	//   "\x1e"          byte  23
 	//   "the cat sat"   bytes 24..35
 	starts := []int{0, 12, 24}
+	const batchedLen = 35
 	cases := []struct {
 		name      string
 		spanStart int
 		spanEnd   int
-		want      int
+		want      []batchSpanPiece
 	}{
-		{"first_input", 0, 5, 0},
-		{"second_input", 12, 15, 1},
-		{"third_input", 24, 30, 2},
-		{"crosses_first_boundary", 5, 15, -1},
-		{"crosses_second_boundary", 15, 25, -1},
-		{"negative_start", -1, 5, -1},
-		{"zero_length", 5, 5, -1},
+		{"first_input", 0, 5, []batchSpanPiece{{input: 0, start: 0, end: 5}}},
+		{"second_input", 12, 15, []batchSpanPiece{{input: 1, start: 0, end: 3}}},
+		{"third_input", 24, 30, []batchSpanPiece{{input: 2, start: 0, end: 6}}},
+		{"crosses_first_boundary", 5, 15, []batchSpanPiece{{input: 0, start: 5, end: 11}, {input: 1, start: 0, end: 3}}},
+		{"crosses_second_boundary", 15, 25, []batchSpanPiece{{input: 1, start: 3, end: 11}, {input: 2, start: 0, end: 1}}},
+		{"crosses_every_boundary", 6, 30, []batchSpanPiece{
+			{input: 0, start: 6, end: 11}, {input: 1, start: 0, end: 11}, {input: 2, start: 0, end: 6},
+		}},
+		{"separator_only", 11, 12, nil},
+		{"runs_past_last_input", 30, 40, []batchSpanPiece{{input: 2, start: 6, end: 11}}},
+		{"negative_start", -1, 5, nil},
+		{"zero_length", 5, 5, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := partitionIndex(starts, tc.spanStart, tc.spanEnd, "\x1e"); got != tc.want {
-				t.Errorf("partitionIndex(%d,%d) = %d, want %d", tc.spanStart, tc.spanEnd, got, tc.want)
+			got := splitBatchSpan(starts, batchedLen, tc.spanStart, tc.spanEnd, len(opfBatchSeparator))
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("splitBatchSpan(%d,%d) = %+v, want %+v", tc.spanStart, tc.spanEnd, got, tc.want)
 			}
 		})
+	}
+}
+
+// Regression: the model can join the end of one leaf and the start of the next
+// into a single span ("Claude Code" + "Alice Johnson ..." read as the name
+// "Code Alice Johnson"). Dropping that span left BOTH leaves unredacted under
+// an Entire-OPF-Applied trailer. Each input must receive its own piece.
+func TestShellOut_RedactBatchSplitsSpanAcrossSeparator(t *testing.T) {
+	t.Parallel()
+	// Batched text: "Claude Code\x1eAlice Johnson approved". The span covers
+	// "Code\x1eAlice Johnson": runes 7..25.
+	rt := &shellOut{
+		command:        "opf",
+		timeoutSeconds: 5,
+		commandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			return shCmd(ctx, `cat >/dev/null; printf '{"detected_spans":[{"label":"private_person","start":7,"end":25}]}'`)
+		},
+	}
+	got, err := rt.RedactBatch(context.Background(), []string{"Claude Code", "Alice Johnson approved"}, []string{"private_person"})
+	if err != nil {
+		t.Fatalf("RedactBatch: %v", err)
+	}
+	want := [][]Span{
+		{{Start: 7, End: 11, Label: "private_person"}},
+		{{Start: 0, End: 13, Label: "private_person"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RedactBatch spans = %+v, want %+v", got, want)
 	}
 }
 
