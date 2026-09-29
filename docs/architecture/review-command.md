@@ -128,7 +128,7 @@ staged fails the review before launch — a reviewer started without its skill
 reports `Unknown command` and reviews nothing.
 
 The `--settings` file carries Entire's own lifecycle hooks — the same inventory
-`entire enable` installs, composed from `entireHookSpecs()` — so reviews are still captured
+`entire enable` installs, produced by running the installer (`installHookEntries`) against an empty document — so reviews are still captured
 as sessions with transcripts, without reading those hooks back out of the reviewed
 checkout. It deliberately does **not** carry the user's `apiKeyHelper`: Claude runs that
 helper as a shell command with the reviewed checkout as its working directory,

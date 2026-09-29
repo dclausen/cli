@@ -12,6 +12,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -100,22 +101,42 @@ func TestReviewArgv_CarriesTrustBoundaryPrompt(t *testing.T) {
 }
 
 // TestTrustedReviewSettings_CarriesFullHookInventory is the capture guarantee:
-// the trusted file must carry every hook the project installer writes, or the
-// review runs isolated but unrecorded. Deriving both from entireHookSpecs is
-// what makes this hold; the test fails if a future hook is added to one path
-// only.
+// the trusted file must carry exactly the hooks `entire enable` writes, or the
+// review runs isolated but unrecorded. Compared against a real install into a
+// .claude/settings.json on disk, so it holds however the composition is done.
+//
+// Not parallel: InstallHooks resolves the repo from CWD.
 func TestTrustedReviewSettings_CarriesFullHookInventory(t *testing.T) {
-	t.Parallel()
-	got := buildTrustedReviewSettings()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if _, err := (&ClaudeCodeAgent{}).InstallHooks(context.Background(), false); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".claude", ClaudeSettingsFileName))
+	if err != nil {
+		t.Fatalf("read installed settings: %v", err)
+	}
+	var installed struct {
+		Hooks map[string][]ClaudeHookMatcher `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &installed); err != nil {
+		t.Fatalf("parse installed settings: %v", err)
+	}
+	if len(installed.Hooks) == 0 {
+		t.Fatal("installer wrote no hooks; the comparison would prove nothing")
+	}
 
-	for _, spec := range entireHookSpecs() {
-		matchers, ok := got.Hooks[spec.hookType]
-		if !ok {
-			t.Errorf("hook type %q missing from trusted settings", spec.hookType)
-			continue
-		}
-		if !hookCommandExistsWithMatcher(matchers, spec.matcher, spec.command) {
-			t.Errorf("hook %q (matcher %q) missing from trusted settings", spec.hookType, spec.matcher)
+	got := buildTrustedReviewSettings()
+	if !reflect.DeepEqual(got.Hooks, installed.Hooks) {
+		t.Errorf("trusted review hooks differ from what `entire enable` installs\n got: %+v\nwant: %+v", got.Hooks, installed.Hooks)
+	}
+	for hookType, matchers := range got.Hooks {
+		for _, m := range matchers {
+			for _, h := range m.Hooks {
+				if strings.TrimSpace(h.Command) == "" {
+					t.Errorf("%s hook (matcher %q) has an empty command", hookType, m.Matcher)
+				}
+			}
 		}
 	}
 }

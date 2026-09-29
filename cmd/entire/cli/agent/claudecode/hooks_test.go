@@ -1258,32 +1258,3 @@ func TestPermissionConfigOwner_UnparseableConfig(t *testing.T) {
 		t.Error("RepairRetiredMetadataDenyRule() error = nil, want a parse error")
 	}
 }
-
-// TestInstallHookEntries_InstallsFullHookInventory restores what the tool-hook
-// lookup took away from the compiler: every spec in entireHookSpecs must land
-// in a fresh settings file, and no hook may be written with an empty command
-// (a hook that runs nothing, captures nothing, and reports no error).
-func TestInstallHookEntries_InstallsFullHookInventory(t *testing.T) {
-	t.Parallel()
-	rawHooks := map[string]json.RawMessage{}
-	count, _ := installHookEntries(rawHooks, false)
-
-	specs := entireHookSpecs()
-	if count != len(specs) {
-		t.Errorf("installed %d hooks, want %d (one per spec)", count, len(specs))
-	}
-	for _, spec := range specs {
-		var matchers []ClaudeHookMatcher
-		parseHookType(rawHooks, spec.hookType, &matchers)
-		if !hookCommandExistsWithMatcher(matchers, spec.matcher, spec.command) {
-			t.Errorf("hook %q (matcher %q) not installed", spec.hookType, spec.matcher)
-		}
-		for _, m := range matchers {
-			for _, h := range m.Hooks {
-				if strings.TrimSpace(h.Command) == "" {
-					t.Errorf("hook %q (matcher %q) installed with an empty command", spec.hookType, m.Matcher)
-				}
-			}
-		}
-	}
-}

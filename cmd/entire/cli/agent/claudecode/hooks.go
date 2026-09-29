@@ -167,52 +167,6 @@ func loadRawClaudeSettingsForInstall(cfg *agent.HookConfigFile) (rawSettings, ra
 // set, any current Entire hook) first. Returns the number of hooks newly
 // added and whether any stale entry was dropped (see the staleDropped comment
 // at its InstallHooks call site for why that forces a write on its own).
-// entireHookSpec is one hook Entire owns: the Claude hook type, the matcher it
-// is registered under ("" for the hook types that take a single untargeted
-// entry), and the fully wrapped command.
-type entireHookSpec struct {
-	hookType string
-	matcher  string
-	command  string
-}
-
-// entireHookSpecs is the single definition of the lifecycle hooks Entire
-// installs for Claude Code.
-//
-// Two consumers must agree on this set: installHookEntries, which writes them
-// into the repo's .claude/settings.json, and the review launch, which composes
-// the same set into a settings file the CLI owns (see review_launch.go) because
-// a reviewed checkout's copy of that file is attacker-controlled. Defining the
-// inventory in two places is how the two drift, and a review launched with a
-// short set silently captures no session.
-func entireHookSpecs() []entireHookSpec {
-	return []entireHookSpec{
-		{hookType: "SessionStart", command: agent.WrapProductionJSONWarningHookCommand("entire hooks claude-code session-start", agent.WarningFormatMultiLine)},
-		{hookType: "SessionEnd", command: agent.WrapProductionSilentHookCommand("entire hooks claude-code session-end")},
-		{hookType: "Stop", command: agent.WrapProductionSilentHookCommand("entire hooks claude-code stop")},
-		{hookType: "SubagentStop", command: agent.WrapProductionSilentHookCommand("entire hooks claude-code subagent-stop")},
-		{hookType: "UserPromptSubmit", command: agent.WrapProductionSilentHookCommand("entire hooks claude-code user-prompt-submit")},
-		{hookType: "PreToolUse", matcher: subagentToolMatcher, command: agent.WrapProductionSilentHookCommand("entire hooks claude-code pre-task")},
-		{hookType: "PostToolUse", matcher: subagentToolMatcher, command: agent.WrapProductionSilentHookCommand("entire hooks claude-code post-task")},
-		{hookType: "PostToolUse", matcher: taskToolMatcher, command: agent.WrapProductionSilentHookCommand("entire hooks claude-code post-todo")},
-	}
-}
-
-// specCommand returns the command for one hook type + matcher. A miss is a
-// programmer error (the caller named a spec that entireHookSpecs does not
-// define), so it returns "" rather than panicking inside hook installation.
-// Callers must not write an empty command: installHookEntries skips it, and
-// validateTrustedReviewSettings fails the review on it.
-// TestInstallHookEntries_InstallsFullHookInventory catches the miss itself.
-func specCommand(specs []entireHookSpec, hookType, matcher string) string {
-	for _, spec := range specs {
-		if spec.hookType == hookType && spec.matcher == matcher {
-			return spec.command
-		}
-	}
-	return ""
-}
-
 func installHookEntries(rawHooks map[string]json.RawMessage, force bool) (count int, staleDropped bool) {
 	var preToolUse, postToolUse []ClaudeHookMatcher
 	parseHookType(rawHooks, "PreToolUse", &preToolUse)
@@ -223,21 +177,15 @@ func installHookEntries(rawHooks map[string]json.RawMessage, force bool) (count 
 	// data-driven (rather than one parse/strip/add/marshal block per type)
 	// keeps this function's complexity from growing linearly with each new
 	// simple hook type Entire registers.
-	//
-	// The inventory itself comes from entireHookSpecs so this installer and the
-	// review launch cannot disagree about it.
-	specs := entireHookSpecs()
-	simpleHooks := make([]struct {
+	simpleHooks := []struct {
 		hookType string
 		command  string
-	}, 0, len(specs))
-	for _, spec := range specs {
-		if spec.matcher == "" {
-			simpleHooks = append(simpleHooks, struct {
-				hookType string
-				command  string
-			}{spec.hookType, spec.command})
-		}
+	}{
+		{"SessionStart", agent.WrapProductionJSONWarningHookCommand("entire hooks claude-code session-start", agent.WarningFormatMultiLine)},
+		{"SessionEnd", agent.WrapProductionSilentHookCommand("entire hooks claude-code session-end")},
+		{"Stop", agent.WrapProductionSilentHookCommand("entire hooks claude-code stop")},
+		{"SubagentStop", agent.WrapProductionSilentHookCommand("entire hooks claude-code subagent-stop")},
+		{"UserPromptSubmit", agent.WrapProductionSilentHookCommand("entire hooks claude-code user-prompt-submit")},
 	}
 	simpleMatchers := make(map[string][]ClaudeHookMatcher, len(simpleHooks))
 	for _, h := range simpleHooks {
@@ -255,11 +203,11 @@ func installHookEntries(rawHooks map[string]json.RawMessage, force bool) (count 
 		postToolUse = removeEntireHooksFromMatchers(postToolUse)
 	}
 
-	// Tool-use hook commands (the simple hooks' commands live in simpleHooks
-	// above). Same inventory, looked up by hook type + matcher.
-	preTaskCmd := specCommand(specs, "PreToolUse", subagentToolMatcher)
-	postTaskCmd := specCommand(specs, "PostToolUse", subagentToolMatcher)
-	postTodoCmd := specCommand(specs, "PostToolUse", taskToolMatcher)
+	// Define tool-use hook commands (the simple hooks' commands live in
+	// simpleHooks above).
+	preTaskCmd := agent.WrapProductionSilentHookCommand("entire hooks claude-code pre-task")
+	postTaskCmd := agent.WrapProductionSilentHookCommand("entire hooks claude-code post-task")
+	postTodoCmd := agent.WrapProductionSilentHookCommand("entire hooks claude-code post-todo")
 
 	// Drop Entire hooks left by older versions before adding the current ones,
 	// so a stale command (e.g. the removed local-dev launcher, which ran a
@@ -281,20 +229,20 @@ func installHookEntries(rawHooks map[string]json.RawMessage, force bool) (count 
 	// Add hooks if they don't exist
 	for _, h := range simpleHooks {
 		m := simpleMatchers[h.hookType]
-		if h.command != "" && !hookCommandExists(m, h.command) {
+		if !hookCommandExists(m, h.command) {
 			simpleMatchers[h.hookType] = addHookToMatcher(m, "", h.command)
 			count++
 		}
 	}
-	if preTaskCmd != "" && !hookCommandExistsWithMatcher(preToolUse, subagentToolMatcher, preTaskCmd) {
+	if !hookCommandExistsWithMatcher(preToolUse, subagentToolMatcher, preTaskCmd) {
 		preToolUse = addHookToMatcher(preToolUse, subagentToolMatcher, preTaskCmd)
 		count++
 	}
-	if postTaskCmd != "" && !hookCommandExistsWithMatcher(postToolUse, subagentToolMatcher, postTaskCmd) {
+	if !hookCommandExistsWithMatcher(postToolUse, subagentToolMatcher, postTaskCmd) {
 		postToolUse = addHookToMatcher(postToolUse, subagentToolMatcher, postTaskCmd)
 		count++
 	}
-	if postTodoCmd != "" && !hookCommandExistsWithMatcher(postToolUse, taskToolMatcher, postTodoCmd) {
+	if !hookCommandExistsWithMatcher(postToolUse, taskToolMatcher, postTodoCmd) {
 		postToolUse = addHookToMatcher(postToolUse, taskToolMatcher, postTodoCmd)
 		count++
 	}

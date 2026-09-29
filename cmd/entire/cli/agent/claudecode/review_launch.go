@@ -38,8 +38,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -184,16 +186,30 @@ type trustedReviewSettings struct {
 	Hooks map[string][]ClaudeHookMatcher `json:"hooks"`
 }
 
-// buildTrustedReviewSettings composes the settings document from the same hook
-// inventory the project installer writes (entireHookSpecs), so the reviewer
-// runs Entire's real lifecycle hooks without reading them back out of the
-// reviewed checkout.
+// buildTrustedReviewSettings composes the settings document from the hooks
+// `entire enable` installs, so the reviewer runs Entire's real lifecycle hooks
+// without reading them back out of the reviewed checkout.
+//
+// They come from running the installer itself against an empty document rather
+// than from a second list of the same hooks: installHookEntries only transforms
+// the map it is handed (no file, settings or process access), so this reads
+// nothing from the checkout and cannot drift from what the installer writes.
 func buildTrustedReviewSettings() trustedReviewSettings {
-	hooks := map[string][]ClaudeHookMatcher{}
-	for _, spec := range entireHookSpecs() {
-		hooks[spec.hookType] = addHookToMatcher(hooks[spec.hookType], spec.matcher, spec.command)
+	return trustedReviewSettings{Hooks: installedEntireHooks()}
+}
+
+// installedEntireHooks returns the hooks a fresh `entire enable` writes, keyed
+// by Claude hook type.
+func installedEntireHooks() map[string][]ClaudeHookMatcher {
+	raw := map[string]json.RawMessage{}
+	installHookEntries(raw, false)
+	hooks := make(map[string][]ClaudeHookMatcher, len(raw))
+	for hookType := range raw {
+		var matchers []ClaudeHookMatcher
+		parseHookType(raw, hookType, &matchers)
+		hooks[hookType] = matchers
 	}
-	return trustedReviewSettings{Hooks: hooks}
+	return hooks
 }
 
 // warnIfAuthHelperUnavailable tells the user, before launch, that their
@@ -215,28 +231,32 @@ func warnIfAuthHelperUnavailable() {
 // way that stays visible.
 var errReviewCaptureUnavailable = errors.New("review session capture cannot be established")
 
-// validateTrustedReviewSettings checks the composed settings actually carry the
-// hooks the review depends on, before anything is launched.
+// validateTrustedReviewSettings checks the composed settings actually carry
+// every hook the installer writes, each with a command, before anything is
+// launched.
 //
-// buildTrustedReviewSettings derives from entireHookSpecs, so in a healthy tree
-// this always passes. It is not therefore redundant: specCommand returns "" for
-// a spec it cannot resolve, which would compose a hook entry with an empty
-// command — a hook that runs nothing, captures nothing, and reports no error.
-// This turns that class of mistake into a failed review instead of a silently
-// unrecorded one.
+// buildTrustedReviewSettings derives from the installer, so in a healthy tree
+// this always passes. It is not therefore redundant: it is what turns a
+// composition mistake — a hook type dropped, a command left empty (a hook that
+// runs nothing, captures nothing, and reports no error) — into a failed review
+// instead of a silently unrecorded one.
 func validateTrustedReviewSettings(settings trustedReviewSettings) error {
-	specs := entireHookSpecs()
-	if len(specs) == 0 {
+	want := installedEntireHooks()
+	if len(want) == 0 {
 		return fmt.Errorf("%w: no lifecycle hooks are defined", errReviewCaptureUnavailable)
 	}
-	for _, spec := range specs {
-		if strings.TrimSpace(spec.command) == "" {
-			return fmt.Errorf("%w: %s hook (matcher %q) has an empty command",
-				errReviewCaptureUnavailable, spec.hookType, spec.matcher)
-		}
-		if !hookCommandExistsWithMatcher(settings.Hooks[spec.hookType], spec.matcher, spec.command) {
-			return fmt.Errorf("%w: %s hook (matcher %q) is missing from the trusted settings",
-				errReviewCaptureUnavailable, spec.hookType, spec.matcher)
+	for _, hookType := range slices.Sorted(maps.Keys(want)) {
+		for _, m := range want[hookType] {
+			for _, h := range m.Hooks {
+				if strings.TrimSpace(h.Command) == "" {
+					return fmt.Errorf("%w: %s hook (matcher %q) has an empty command",
+						errReviewCaptureUnavailable, hookType, m.Matcher)
+				}
+				if !hookCommandExistsWithMatcher(settings.Hooks[hookType], m.Matcher, h.Command) {
+					return fmt.Errorf("%w: %s hook (matcher %q) is missing from the trusted settings",
+						errReviewCaptureUnavailable, hookType, m.Matcher)
+				}
+			}
 		}
 	}
 	return nil
