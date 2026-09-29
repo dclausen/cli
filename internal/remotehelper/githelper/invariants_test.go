@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -344,6 +345,51 @@ func TestInvariant_HelperStatusSurfacedOnSendPackError(t *testing.T) {
 	if !strings.Contains(stdout.String(), helperStatusLine) {
 		t.Errorf("stdout missing helper-status line; got %q, want substring %q",
 			stdout.String(), helperStatusLine)
+	}
+}
+
+// TestInvariant_PushDeclaresSize pins that the protocol-v2 push path, like
+// handleConnect on v0/v1, declares X-Entire-Push-Size. Without it the server
+// cannot refuse an over-limit push before the body uploads; it cuts the body
+// off at the limit instead and its size message never reaches the user.
+func TestInvariant_PushDeclaresSize(t *testing.T) {
+	// No t.Parallel(): t.Setenv("PATH", ...) mutates process-global state.
+	if runtime.GOOS == goosWindows {
+		t.Skip("shell-script PATH stub is POSIX-only")
+	}
+
+	ref := testRefMain
+	oldSHA := strings.Repeat("a", 40)
+	newSHA := strings.Repeat("b", 40)
+
+	// Stub git: emits a wrapped one-command request + outer flush, drains
+	// stdin, then the trailing flush and a success status line.
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "git")
+	stub := "#!/bin/sh\n" +
+		"printf '%s' '" + wrappedSendPackRequest(oldSHA, newSHA, ref) + "'\n" +
+		"cat > /dev/null\n" +
+		"printf '0000ok " + ref + "\\n'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+		t.Fatalf("writing stub git: %v", err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ft := pushFakeTransport(oldSHA)
+	firstLine := "push " + newSHA + ":" + ref
+	stdin := bufio.NewReader(strings.NewReader("\n"))
+
+	var stdout bytes.Buffer
+	if err := handlePush(context.Background(), ft, &refAdvCache{}, firstLine, &Options{}, stdin, &stdout); err != nil {
+		t.Fatalf("handlePush: %v", err)
+	}
+	if len(ft.rpcCalls) != 1 {
+		t.Fatalf("want 1 receive-pack call, got %d", len(ft.rpcCalls))
+	}
+	call := ft.rpcCalls[0]
+	if got, want := call.Headers.Get("X-Entire-Push-Size"), strconv.Itoa(len(call.Body)); got != want {
+		t.Errorf("X-Entire-Push-Size = %q, want %q (the POSTed body length)", got, want)
 	}
 }
 
