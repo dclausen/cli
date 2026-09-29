@@ -390,7 +390,10 @@ still reaches a permanent checkpoint.
 
 **Materialization (condensation).** `materializeTaskRecords`
 (`manual_commit_condensation.go`) resolves each record's transcript — declared
-path first, agent-layout fallback — runs the same sanitize → externalize →
+path first, agent-layout fallback, and last an agent re-export through
+`agent.SubagentTranscriptFetcher` for agents whose subagents are fetchable
+sessions (OpenCode: an in-flight task, or a stop hook whose export failed) —
+runs the same sanitize → externalize →
 redact pipeline the session transcript gets
 (`prepareTaskTranscriptForStorage`), and writes
 `tasks/<tool-use-id>/{agent-<agent-id>.jsonl, task.json}` inside the parent

@@ -300,6 +300,22 @@ type TranscriptFetcher interface {
 	FetchTranscript(ctx context.Context, sessionID string) (string, error)
 }
 
+// SubagentTranscriptFetcher is implemented by agents whose subagents are
+// sessions the agent can still export after the fact, keyed by the task
+// record's AgentID (OpenCode: the child session ID). Condensation calls it for
+// a task record whose transcript was never declared or can no longer be read —
+// an in-flight task at a mid-task commit, or a subagent-stop whose export
+// failed — so a transcript that still exists in the agent's store is not
+// recorded as unavailable. Agents whose AgentID is not a fetchable session
+// (Claude Code's agent IDs) must not implement it.
+type SubagentTranscriptFetcher interface {
+	Agent
+
+	// FetchSubagentTranscript writes the subagent's transcript to the agent's
+	// cache location and returns its path.
+	FetchSubagentTranscript(ctx context.Context, agentID string) (string, error)
+}
+
 // SidecarImageProvider is implemented by agents that keep images OUTSIDE the
 // transcript Entire condenses — e.g. Cursor stores pasted images in a per-session
 // SQLite blob store, not the JSONL transcript. The strategy layer calls this

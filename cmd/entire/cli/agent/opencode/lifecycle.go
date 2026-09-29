@@ -23,7 +23,10 @@ import (
 var runOpenCodeExportToFileFn = runOpenCodeExportToFile
 
 // Compile-time assertion that OpenCode can inject context into the model.
-var _ agent.ContextInjector = (*OpenCodeAgent)(nil)
+var (
+	_ agent.ContextInjector           = (*OpenCodeAgent)(nil)
+	_ agent.SubagentTranscriptFetcher = (*OpenCodeAgent)(nil)
+)
 
 // InjectionEvent reports that OpenCode injects model context at TurnStart. The
 // embedded plugin reads the turn-start hook's stdout and applies the injection
@@ -225,14 +228,9 @@ func (a *OpenCodeAgent) parseSubagentPayload(ctx context.Context, stdin io.Reade
 
 // attachSubagentTranscript exports the child session and declares it on the
 // event with its exact token usage. On failure the event is left marked
-// transcript-unavailable: OpenCode does implement TranscriptFetcher, but
-// neither the SessionEnd sweep nor condensation calls it — condensation reads
-// only DeclaredTranscriptPath candidates — so a failed export here permanently
-// loses a transcript that still exists in OpenCode's store. Degrading to a
-// completed, transcript-unavailable record is still better than an error that
-// leaves the marker live until SessionEnd completes it transcriptless anyway.
-// Follow-up: a lazy FetchTranscript at condensation for a declared-but-missing
-// OpenCode path.
+// transcript-unavailable and the record completes without it; condensation
+// then re-exports the child through FetchSubagentTranscript, so the transcript
+// is not lost while it still exists in OpenCode's store.
 func (a *OpenCodeAgent) attachSubagentTranscript(ctx context.Context, event *agent.Event) {
 	logCtx := logging.WithComponent(ctx, "lifecycle")
 	path, err := a.fetchAndCacheExport(ctx, event.SubagentID)
@@ -296,6 +294,12 @@ func (a *OpenCodeAgent) PrepareTranscript(ctx context.Context, sessionRef string
 // sessions spawned by an external host, where no hook ever cached an export.
 func (a *OpenCodeAgent) FetchTranscript(ctx context.Context, sessionID string) (string, error) {
 	return a.fetchAndCacheExport(ctx, sessionID)
+}
+
+// FetchSubagentTranscript exports a task record's child session. The record's
+// AgentID is the child session ID, which `opencode export` accepts directly.
+func (a *OpenCodeAgent) FetchSubagentTranscript(ctx context.Context, agentID string) (string, error) {
+	return a.fetchAndCacheExport(ctx, agentID)
 }
 
 // sessionTranscriptPath validates the session ID and returns the expected transcript path.
