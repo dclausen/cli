@@ -128,8 +128,9 @@ top-level session.
 | Native signal | Entire EventType | Notes |
 |---------------|------------------|-------|
 | `session.created` / `session.updated` with `info.parentID` set, and any task-tool metadata naming a child | (suppressed plugin-side) | These populate `childSessions`. `session.idle` / `session.status` carry only `properties.sessionID` (no `info.parentID` to check) and are instead suppressed by membership in that same `childSessions` set; no `session-start`/`turn-start`/`turn-end` is ever fired for a child. |
-| parent `message.part.updated`, task part `status: running` with `metadata.sessionId` | `SubagentStart` (`subagent-start` hook) | First moment the child ID is bound to the `callID`. `ToolUseID = callID`, `SessionID = parent`, `SubagentID = metadata.sessionId`, `SubagentType`/`TaskDescription` from `args`. `DeferredCompletion: true`, since completion arrives separately from `subagent-stop`. |
-| `tool.execute.after` with `tool == "task"` on the parent | `SubagentEnd` (`subagent-stop` hook) | `ToolUseID = callID`, `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The child is exported via `opencode export` and declared via `SubagentTranscriptPath` (`.entire/tmp/<childID>.json`); `ModifiedFiles` are extracted from that transcript at capture time rather than placed on the event, and token usage is computed from the same export. |
+| `tool.execute.before` with `tool == "task"` | (plugin-side only) | Records `Date.now()` per `callID`, sent as `started_at` on both subagent hooks (see `task_id` resumption below). |
+| `message.part.updated`, task part `status: running` with `metadata.sessionId` | `SubagentStart` (`subagent-start` hook) | First moment the child ID is bound to the `callID`. `ToolUseID = callID`, `SessionID = top-level session` (the parent, or for a nested call the session the chain descends from), `SubagentID = metadata.sessionId`, `SubagentType`/`TaskDescription` from `args`. `DeferredCompletion: true`, since completion arrives separately from `subagent-stop`. |
+| `tool.execute.after` with `tool == "task"` | `SubagentEnd` (`subagent-stop` hook) | `SessionID = top-level session`, `ToolUseID = callID`, `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The child is exported via `opencode export` and declared via `SubagentTranscriptPath` (`.entire/tmp/<childID>.<callID>.json`, cut to this call's messages; `<childID>.json` when `started_at` is unknown); `ModifiedFiles` are extracted from that transcript at capture time rather than placed on the event, and token usage is computed from the same export. |
 
 The suppression decision is made entirely on the plugin side, from the events
 and metadata it already observes — the Go side never sees a `session-start`,
@@ -140,6 +141,15 @@ task tool) is fully suppressed the same way: it still carries `parentID`, so
 its lifecycle events never reach Entire and no session or task record is
 created for it. That is deliberate — Entire tracks the task tool's children,
 not arbitrary session nesting.
+
+**Nested subagents** (`subagent_depth > 1`): a child's own task call is
+announced and completed on the **top-level** session, since the child has no
+Entire session to hold it. The plugin keeps `rootOf` (child → top-level
+session), learned from `parentID` and from each bound task part, and task
+parts are announced before the child-event guard so a child's task part is
+not dropped. Each nested call is its own task record keyed by its `callID`;
+it is not joined to a tool call in the parent's transcript, because the call
+lives in the child's.
 
 ## Gaps & Limitations
 
@@ -164,7 +174,7 @@ not arbitrary session nesting.
 - **Model-specific `callID` format**: opaque and not globally unique; the child
   session ID is the safe cross-process key.
 - **Nested subagents** are off by default (`subagent_depth: 1`); when enabled,
-  `parentID` chains and the same mapping applies recursively.
+  each nested call is recorded on the top-level session (see above).
 - **Plugin runs in-process with OpenCode**: hook processes spawned from
   `tool.execute.after` should stay short. `opencode export` of the child at
   that point is a local DB read (tens of ms observed).

@@ -446,7 +446,7 @@ func TestInstallHooks_ChildSessionsNeverFireLifecycleHooks(t *testing.T) {
 	content := string(data)
 
 	// The child set is learned from parentID and consulted before the event switch.
-	learn := `if (event.type.startsWith("session.") && info?.parentID && info?.id) childSessions.add(info.id)`
+	learn := `if (event.type.startsWith("session.") && info?.parentID && info?.id) trackChild(info.id, info.parentID)`
 	guard := "if (eventSessionID && childSessions.has(eventSessionID)) return"
 	sw := "switch (event.type) {"
 	learnIdx, guardIdx, swIdx := strings.Index(content, learn), strings.Index(content, guard), strings.Index(content, sw)
@@ -455,6 +455,11 @@ func TestInstallHooks_ChildSessionsNeverFireLifecycleHooks(t *testing.T) {
 	}
 	if learnIdx >= guardIdx || guardIdx >= swIdx {
 		t.Fatalf("child guard must run before the event switch: learn=%d guard=%d switch=%d", learnIdx, guardIdx, swIdx)
+	}
+	// A nested subagent's task part arrives on a child session, so it must be
+	// announced before the guard drops the child's events.
+	if announceIdx := strings.Index(content, "announceTask(props?.part)"); announceIdx == -1 || announceIdx >= guardIdx {
+		t.Fatalf("task parts must be announced before the child guard: announce=%d guard=%d", announceIdx, guardIdx)
 	}
 	// The one-time context injection is for the user's session only.
 	if !strings.Contains(content, "if (input?.sessionID && childSessions.has(input.sessionID)) return") {
@@ -475,15 +480,20 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
-		// start: parent task part, running, with the child ID bound, once per callID
-		`part.type === "tool" && part.tool === "task"`,
+		// start: a task part, running, with the child ID bound, once per callID
+		`part?.type === "tool" && part.tool === "task"`,
 		`part.state?.status === "running"`,
 		`part.state?.metadata?.sessionId`,
 		`announcedTasks.has(part.callID)`,
 		// the child is learned here too, so a subagent-start we never saw
 		// session.created for is still suppressed
-		`childSessions.add(part.state.metadata.sessionId)`,
+		`trackChild(part.state.metadata.sessionId, sessionID)`,
 		`callHookSync("subagent-start", {`,
+		// nested: task parts in child sessions are announced before the child
+		// guard, and every task is reported on the top-level session
+		`if (event.type === "message.part.updated") announceTask(props?.part)`,
+		`session_id: topLevelSession(sessionID)`,
+		`session_id: topLevelSession(input.sessionID)`,
 		// stop: tool.execute.after for the task tool, foreground only, synchronous
 		`"tool.execute.after": async (input, output) => {`,
 		`if (input.tool !== "task") return`,
@@ -492,7 +502,7 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		`callHookSync("subagent-stop", {`,
 		`subagent_id: childID`,
 		`tool_use_id: input.callID`,
-		`if (childSessions.has(input.sessionID)) return`,
+		`trackChild(childID, input.sessionID)`,
 		// call start: recorded before the child exists, sent on both hooks so a
 		// resumed child's export can be cut to this call
 		`"tool.execute.before": async (input) => {`,

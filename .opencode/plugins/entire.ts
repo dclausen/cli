@@ -28,6 +28,11 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   // process, whose own session.created predates this plugin instance. These
   // sets live for the process and are cleared only on server.instance.disposed.
   const childSessions = new Set<string>()
+  // child session ID -> the top-level (user's) session it descends from. With
+  // subagent_depth > 1 a child can itself call the task tool; that
+  // grandchild's task is recorded on the top-level session, the only one
+  // Entire tracks, keyed by its own callID like any other task.
+  const rootOf = new Map<string, string>()
   // task callIDs already announced via subagent-start (the running part
   // update repeats).
   const announcedTasks = new Set<string>()
@@ -129,6 +134,41 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     }
   }
 
+  // trackChild records a child and the top-level session it descends from.
+  function trackChild(childID: string, parentID: string) {
+    childSessions.add(childID)
+    if (!rootOf.has(childID)) rootOf.set(childID, rootOf.get(parentID) ?? parentID)
+  }
+
+  // topLevelSession maps a session to the top-level session it belongs to.
+  function topLevelSession(sessionID: string): string {
+    return rootOf.get(sessionID) ?? sessionID
+  }
+
+  // announceTask fires subagent-start the first time a task part is running
+  // with its child bound (state.metadata.sessionId). tool.execute.before fires
+  // earlier but has no child ID yet, and session.created for the child can
+  // interleave with a sibling's, so neither is a safe join. The running update
+  // repeats, hence once per callID. Called for task parts in child sessions
+  // too, so a nested subagent is announced on the top-level session.
+  function announceTask(part: any) {
+    if (!(part?.type === "tool" && part.tool === "task" && part.callID &&
+          part.state?.status === "running" && part.state?.metadata?.sessionId)) return
+    if (announcedTasks.has(part.callID)) return
+    const sessionID = part.sessionID ?? currentSessionID
+    if (!sessionID) return
+    announcedTasks.add(part.callID)
+    trackChild(part.state.metadata.sessionId, sessionID)
+    callHookSync("subagent-start", {
+      session_id: topLevelSession(sessionID),
+      tool_use_id: part.callID,
+      subagent_id: part.state.metadata.sessionId,
+      subagent_type: part.state?.input?.subagent_type ?? "",
+      task_description: part.state?.input?.description ?? "",
+      started_at: taskStartedAt.get(part.callID) ?? 0,
+    })
+  }
+
   function resetSessionTracking(sessionID: string) {
     if (currentSessionID === sessionID) {
       return false
@@ -158,7 +198,6 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     "tool.execute.before": async (input) => {
       try {
         if (input.tool !== "task") return
-        if (childSessions.has(input.sessionID)) return
         taskStartedAt.set(input.callID, Date.now())
       } catch {
         // Silently ignore — plugin failures must not crash OpenCode
@@ -172,17 +211,16 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     "tool.execute.after": async (input, output) => {
       try {
         if (input.tool !== "task") return
-        // A child's own task call (subagent_depth > 1) belongs to a session we do
-        // not track; report only the user's session's tasks.
-        if (childSessions.has(input.sessionID)) return
         if (output?.metadata?.background === true) return
         const childID = output?.metadata?.sessionId
         if (!childID) return
-        childSessions.add(childID)
+        trackChild(childID, input.sessionID)
         const startedAt = taskStartedAt.get(input.callID) ?? 0
         taskStartedAt.delete(input.callID)
+        // A child's own task call (subagent_depth > 1) is recorded on the
+        // top-level session: the child has no Entire session of its own.
         callHookSync("subagent-stop", {
-          session_id: input.sessionID,
+          session_id: topLevelSession(input.sessionID),
           tool_use_id: input.callID,
           subagent_id: childID,
           subagent_type: input.args?.subagent_type ?? "",
@@ -197,7 +235,8 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
       try {
         const props = (event as any).properties
         const info = props?.info
-        if (event.type.startsWith("session.") && info?.parentID && info?.id) childSessions.add(info.id)
+        if (event.type.startsWith("session.") && info?.parentID && info?.id) trackChild(info.id, info.parentID)
+        if (event.type === "message.part.updated") announceTask(props?.part)
         const eventSessionID: string | undefined =
           props?.sessionID ?? info?.sessionID ?? info?.id ?? props?.part?.sessionID
         if (eventSessionID && childSessions.has(eventSessionID)) return
@@ -266,29 +305,6 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
               }
             }
 
-            // Subagent launch: the parent's task part is the first signal that
-            // binds the tool call to the child session (state.metadata.sessionId).
-            // tool.execute.before fires earlier but has no child ID yet, and
-            // session.created for the child can interleave with a sibling's, so
-            // neither is a safe join. Announce once per callID; the running
-            // update repeats.
-            if (part.type === "tool" && part.tool === "task" && part.callID &&
-                part.state?.status === "running" && part.state?.metadata?.sessionId &&
-                !announcedTasks.has(part.callID)) {
-              announcedTasks.add(part.callID)
-              childSessions.add(part.state.metadata.sessionId)
-              const sessionID = part.sessionID ?? currentSessionID
-              if (sessionID) {
-                callHookSync("subagent-start", {
-                  session_id: sessionID,
-                  tool_use_id: part.callID,
-                  subagent_id: part.state.metadata.sessionId,
-                  subagent_type: part.state?.input?.subagent_type ?? "",
-                  task_description: part.state?.input?.description ?? "",
-                  started_at: taskStartedAt.get(part.callID) ?? 0,
-                })
-              }
-            }
             break
           }
 
@@ -345,6 +361,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             currentSessionID = null
             pendingInjection = null
             childSessions.clear()
+            rootOf.clear()
             announcedTasks.clear()
             taskStartedAt.clear()
             // Use sync variant: this is the last event before process exit.
