@@ -309,7 +309,7 @@ func TestParseHookEvent_SubagentStop_ExportsChildAndDeclaresTranscript(t *testin
 	})
 
 	ag := &OpenCodeAgent{}
-	input := `{"session_id":"ses_parent","tool_use_id":"call_red","subagent_id":"ses_child","subagent_type":"general","task_description":"Create docs/red.md","model":"gemini-2.5-flash"}`
+	input := `{"session_id":"ses_parent","tool_use_id":"call_red","subagent_id":"ses_child","subagent_type":"general","task_description":"Create docs/red.md"}`
 	event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(input))
 	require.NoError(t, err)
 	require.NotNil(t, event)
@@ -324,7 +324,7 @@ func TestParseHookEvent_SubagentStop_ExportsChildAndDeclaresTranscript(t *testin
 	assert.Equal(t, "ses_child", event.SubagentID)
 	assert.Equal(t, "general", event.SubagentType)
 	assert.Equal(t, "Create docs/red.md", event.TaskDescription)
-	assert.Equal(t, "gemini-2.5-flash", event.Model)
+	assert.Empty(t, event.Model, "task records have no model field; the child export carries it")
 	assert.True(t, strings.HasSuffix(event.SubagentTranscriptPath, filepath.Join(paths.EntireTmpDir, "ses_child.json")), event.SubagentTranscriptPath)
 	assert.FileExists(t, event.SubagentTranscriptPath)
 	require.NotNil(t, event.TokenUsage)

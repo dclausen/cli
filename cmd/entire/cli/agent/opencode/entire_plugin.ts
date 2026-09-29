@@ -170,7 +170,6 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
           subagent_id: childID,
           subagent_type: input.args?.subagent_type ?? "",
           task_description: input.args?.description ?? "",
-          model: output?.metadata?.model?.modelID ?? currentModel ?? "",
         })
       } catch {
         // Silently ignore — plugin failures must not crash OpenCode

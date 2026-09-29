@@ -171,7 +171,6 @@ func (a *OpenCodeAgent) ParseHookEvent(ctx context.Context, hookName string, std
 			SubagentID:      raw.SubagentID,
 			SubagentType:    raw.SubagentType,
 			TaskDescription: raw.TaskDescription,
-			Model:           raw.Model,
 			Timestamp:       time.Now(),
 			// Final: tool.execute.after is the one true-completion signal.
 			// CompletionWithoutLaunch: a plugin restarted mid-task never saw the start.
