@@ -21,7 +21,7 @@ import (
 )
 
 // The trail loop is strictly opt-in. Nothing happens until the user runs
-// `entire trail loop on` in a clone; the setting lives inside that clone's
+// `entire trail loop` in a clone; the setting lives inside that clone's
 // git directory, so it is never committed and a repository cannot turn it on
 // for anyone. While it is on, the Claude Code Stop hook keeps the agent
 // working while the current branch's trail is red: fix, push, wait for the
@@ -34,6 +34,8 @@ const (
 	trailLoopDisableEnvVar  = "ENTIRE_TRAIL_LOOP"
 	trailLoopMaxReasonItems = 15
 	trailLoopDecisionBlock  = "block"
+	trailLoopLockWait       = 3 * time.Second
+	trailLoopStaleLock      = 30 * time.Second
 )
 
 type trailLoopState struct {
@@ -66,8 +68,11 @@ type trailLoopYellow struct {
 func newTrailLoopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "loop",
-		Short: "Opt in to having your agent keep fixing a trail until it's green",
-		Long: `Off by default. When you turn it on for this clone, your coding agent
+		Short: "Turn on: your agent keeps fixing the trail until it's green (off: trail loop off)",
+		Long: `Off by default. Run 'entire trail loop' to turn it on for this clone;
+'entire trail loop off' turns it off, 'entire trail loop status' shows it.
+
+While it's on, your coding agent
 (Claude Code) will not stop while the current branch's trail is red. It fixes
 findings and red monitors, pushes, waits for the reviewers, and repeats until
 'entire trail status' is green.
@@ -85,40 +90,32 @@ aside with 'entire trail loop skip <finding-id> --reason "..."'.
 The setting is stored in this clone's .git directory and is never committed.
 Set ENTIRE_TRAIL_LOOP=0 to pause it for one shell.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runTrailLoopShow(cmd)
-		},
 	}
 
 	var maxRounds int
 	var minSeverity string
 	var allowWarning bool
-	on := &cobra.Command{
-		Use:   "on",
-		Short: "Turn the trail loop on for this clone",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if maxRounds < 1 {
-				return errors.New("--max must be at least 1")
-			}
-			if _, ok := trailSeverityRank[minSeverity]; !ok {
-				return fmt.Errorf("--min-severity must be low, medium, or high, got %q", minSeverity)
-			}
-			return updateTrailLoopState(cmd.Context(), func(s *trailLoopState) error {
-				s.Enabled = true
-				s.Max = maxRounds
-				s.MinSeverity = minSeverity
-				s.AllowWarning = allowWarning
-				s.Sessions = nil
-				fmt.Fprintf(cmd.OutOrStdout(), "Trail loop is on for this clone (up to %d rounds, findings %s and above).\n", maxRounds, minSeverity)
-				fmt.Fprintln(cmd.OutOrStdout(), "Your agent will keep fixing the current branch's trail until it's green. Turn it off with 'entire trail loop off'.")
-				return nil
-			})
-		},
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		if maxRounds < 1 {
+			return errors.New("--max must be at least 1")
+		}
+		if _, ok := trailSeverityRank[minSeverity]; !ok {
+			return fmt.Errorf("--min-severity must be low, medium, or high, got %q", minSeverity)
+		}
+		return updateTrailLoopState(cmd.Context(), func(s *trailLoopState) error {
+			s.Enabled = true
+			s.Max = maxRounds
+			s.MinSeverity = minSeverity
+			s.AllowWarning = allowWarning
+			s.Sessions = nil
+			fmt.Fprintf(cmd.OutOrStdout(), "Trail loop is on for this clone (up to %d rounds, findings %s and above).\n", maxRounds, minSeverity)
+			fmt.Fprintln(cmd.OutOrStdout(), "Your agent will keep fixing the current branch's trail until it's green. Turn it off with 'entire trail loop off'.")
+			return nil
+		})
 	}
-	on.Flags().IntVar(&maxRounds, "max", trailLoopDefaultMax, "Most fix rounds per agent session")
-	on.Flags().StringVar(&minSeverity, "min-severity", trailReviewSeverityLow, "Lowest finding severity that counts: low, medium, or high")
-	on.Flags().BoolVar(&allowWarning, "allow-warning", false, "Treat yellow monitors as passing")
+	cmd.Flags().IntVar(&maxRounds, "max", trailLoopDefaultMax, "Most fix rounds per agent session")
+	cmd.Flags().StringVar(&minSeverity, "min-severity", trailReviewSeverityLow, "Lowest finding severity that counts: low, medium, or high")
+	cmd.Flags().BoolVar(&allowWarning, "allow-warning", false, "Treat yellow monitors as passing")
 
 	off := &cobra.Command{
 		Use:   "off",
@@ -168,7 +165,16 @@ Set ENTIRE_TRAIL_LOOP=0 to pause it for one shell.`,
 		},
 	}
 
-	cmd.AddCommand(on, off, skip, unskip)
+	status := &cobra.Command{
+		Use:   "status",
+		Short: "Show whether the trail loop is on for this clone",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runTrailLoopShow(cmd)
+		},
+	}
+
+	cmd.AddCommand(off, status, skip, unskip)
 	return cmd
 }
 
@@ -183,7 +189,7 @@ func runTrailLoopShow(cmd *cobra.Command) error {
 	}
 	w := cmd.OutOrStdout()
 	if !s.Enabled {
-		fmt.Fprintln(w, "Trail loop: off (turn it on with 'entire trail loop on')")
+		fmt.Fprintln(w, "Trail loop: off (turn it on with 'entire trail loop')")
 		return nil
 	}
 	fmt.Fprintf(w, "Trail loop: on (up to %d rounds, findings %s and above", s.Max, s.MinSeverity)
@@ -262,14 +268,74 @@ func updateTrailLoopState(ctx context.Context, fn func(*trailLoopState) error) e
 	if err != nil {
 		return err
 	}
-	s, err := readTrailLoopState(path)
-	if err != nil {
-		return err
+	return withTrailLoopLock(path, func() error {
+		s, err := readTrailLoopState(path)
+		if err != nil {
+			return err
+		}
+		if err := fn(s); err != nil {
+			return err
+		}
+		return writeTrailLoopState(path, s)
+	})
+}
+
+func trailLoopSessionKey(sessionID string) string {
+	if sessionID == "" {
+		return "default"
 	}
-	if err := fn(s); err != nil {
-		return err
+	return sessionID
+}
+
+// saveTrailLoopSession writes back one session's entry (nil removes it) on
+// top of the latest state on disk, under the lock. The hook evaluates the
+// trail without holding the lock, so two sessions stopping at once each save
+// only their own progress and never overwrite the other's, or a setting the
+// user changed meanwhile.
+func saveTrailLoopSession(path, sessionID string, sess *trailLoopSession) error {
+	return withTrailLoopLock(path, func() error {
+		fresh, err := readTrailLoopState(path)
+		if err != nil {
+			return err
+		}
+		if fresh.Sessions == nil {
+			fresh.Sessions = map[string]*trailLoopSession{}
+		}
+		if sess == nil {
+			delete(fresh.Sessions, sessionID)
+		} else {
+			fresh.Sessions[sessionID] = sess
+		}
+		pruneTrailLoopSessions(fresh, sessionID)
+		return writeTrailLoopState(path, fresh)
+	})
+}
+
+// withTrailLoopLock runs fn while holding an exclusive lock file next to the
+// state file. A lock older than trailLoopStaleLock is from a crashed process
+// and is taken over.
+func withTrailLoopLock(path string, fn func() error) error {
+	lock := path + ".lock"
+	deadline := time.Now().Add(trailLoopLockWait)
+	for {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // lock lives in the clone's own git dir
+		if err == nil {
+			_ = f.Close()
+			defer func() { _ = os.Remove(lock) }()
+			return fn()
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("lock trail loop setting: %w", err)
+		}
+		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > trailLoopStaleLock {
+			_ = os.Remove(lock)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return errors.New("trail loop setting is busy; try again")
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	return writeTrailLoopState(path, s)
 }
 
 // trailLoopHookResponse is the Claude Code Stop hook output. Decision "block"
@@ -309,7 +375,7 @@ func maybeBlockStopForTrailLoop(ctx context.Context, w io.Writer, sessionID stri
 	defer cancel()
 
 	resp := decideTrailLoopStop(ctx, state, sessionID, deps)
-	if err := writeTrailLoopState(path, state); err != nil {
+	if err := saveTrailLoopSession(path, trailLoopSessionKey(sessionID), state.Sessions[trailLoopSessionKey(sessionID)]); err != nil {
 		logging.Debug(ctx, "trail loop: could not save state", slog.String("error", err.Error()))
 	}
 	if resp == nil {
@@ -323,9 +389,7 @@ func maybeBlockStopForTrailLoop(ctx context.Context, w io.Writer, sessionID stri
 // decideTrailLoopStop returns the hook response, or nil to let the agent
 // stop quietly. It updates state in place.
 func decideTrailLoopStop(ctx context.Context, state *trailLoopState, sessionID string, deps trailLoopDeps) *trailLoopHookResponse {
-	if sessionID == "" {
-		sessionID = "default"
-	}
+	sessionID = trailLoopSessionKey(sessionID)
 	if state.Sessions == nil {
 		state.Sessions = map[string]*trailLoopSession{}
 	}

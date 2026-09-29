@@ -171,7 +171,7 @@ func executeAgentHook(cmd *cobra.Command, agentName types.AgentName, hookName st
 		}
 		// Lifecycle event — use the generic dispatcher
 		hookErr = DispatchLifecycleEvent(ctx, ag, event)
-		// Opt-in only: a no-op unless the user ran `entire trail loop on`.
+		// Opt-in only: a no-op unless the user ran `entire trail loop`.
 		if agentName == agent.AgentNameClaudeCode && hookName == claudecode.HookNameStop {
 			maybeBlockStopForTrailLoop(ctx, cmd.OutOrStdout(), event.SessionID, defaultTrailLoopDeps())
 		}

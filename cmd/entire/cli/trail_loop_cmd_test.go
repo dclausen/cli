@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
 	"github.com/stretchr/testify/require"
@@ -235,4 +236,39 @@ func TestWriteTrailLoopStateCleansUpTempOnFailure(t *testing.T) {
 	require.Error(t, writeTrailLoopState(path, &trailLoopState{Enabled: true}))
 	_, err := os.Stat(path + ".tmp")
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// Two sessions stopping at once must each keep their own progress.
+func TestSaveTrailLoopSessionKeepsOtherSessions(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), trailLoopStateFile)
+	require.NoError(t, writeTrailLoopState(path, &trailLoopState{Enabled: true, Max: 5, MinSeverity: "low"}))
+
+	done := make(chan error, 2)
+	for _, id := range []string{"a", "b"} {
+		go func() { done <- saveTrailLoopSession(path, id, &trailLoopSession{Rounds: 1, UpdatedAt: time.Now()}) }()
+	}
+	require.NoError(t, <-done)
+	require.NoError(t, <-done)
+
+	got, err := readTrailLoopState(path)
+	require.NoError(t, err)
+	require.True(t, got.Enabled)
+	require.Contains(t, got.Sessions, "a")
+	require.Contains(t, got.Sessions, "b")
+	_, err = os.Stat(path + ".lock")
+	require.ErrorIs(t, err, os.ErrNotExist, "the lock is released")
+}
+
+func TestWithTrailLoopLockTakesOverStaleLock(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), trailLoopStateFile)
+	require.NoError(t, os.WriteFile(path+".lock", nil, 0o600))
+	old := time.Now().Add(-2 * trailLoopStaleLock)
+	require.NoError(t, os.Chtimes(path+".lock", old, old))
+	ran := false
+	require.NoError(t, withTrailLoopLock(path, func() error { ran = true; return nil }))
+	require.True(t, ran)
 }

@@ -136,8 +136,9 @@ var agentHelpClassification = map[string]agentHelpFacts{
 	"trail update":          {agentHelpAudienceTaskDriven, false},
 	// The loop is the user's choice: an agent must never turn it on or off.
 	// Setting a finding aside for a person is part of working the loop.
-	"trail loop":      {agentHelpAudienceUserOwned, false},
-	"trail loop skip": {agentHelpAudienceTaskDriven, false},
+	"trail loop":        {agentHelpAudienceUserOwned, false},
+	"trail loop skip":   {agentHelpAudienceTaskDriven, false},
+	"trail loop status": {agentHelpAudienceReadOnly, false},
 
 	// ---- Unlisted: real commands, just not the default view. ---------------
 	"activity": {agentHelpAudienceReadOnly, false},
