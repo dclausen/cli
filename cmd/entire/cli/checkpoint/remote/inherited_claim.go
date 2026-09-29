@@ -16,6 +16,13 @@ import (
 // later.
 var claimRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 
+// claimNestedRepoPattern is claimRepoPattern for GitLab, whose projects can sit
+// in nested groups (group/subgroup/project). The alphabet is the same, so the
+// shell-safety argument above holds unchanged; only the segment count differs.
+// The owner compared by the ownership vote is the first segment on both sides
+// (CheckpointRemoteConfig.Owner, gitremote's splitOwnerRepo).
+var claimNestedRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$`)
+
 // ClaimCheckpointRemoteFlagValue returns the validated `provider:repo` value for
 // `entire enable --checkpoint-remote`, or empty when the configured entry is not
 // something that flag would accept. The single source of truth for both the
@@ -23,22 +30,30 @@ var claimRepoPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 // them separately let a field with surrounding whitespace pass the check and
 // fail the write.
 //
-// The provider is pinned to the one value parseCheckpointRemoteFlag takes. The
-// resolver is wider — providerHost maps gitlab, GetCheckpointRemote validates
-// nothing — so a hand-written gitlab store resolves while the command naming it
-// is rejected. Do not widen this without widening the flag first.
+// The providers are exactly the ones parseCheckpointRemoteFlag accepts (github
+// and gitlab); GetCheckpointRemote validates no provider at all, so anything
+// else would print a command that fails when pasted. Keep the two in step:
+// TestClaimCommandParsesAsACheckpointRemoteFlag runs every offered value
+// through the real parser.
 func ClaimCheckpointRemoteFlagValue(config *settings.CheckpointRemoteConfig) string {
 	if config == nil {
 		return ""
 	}
-	if strings.TrimSpace(config.Provider) != "github" {
-		return ""
-	}
 	repo := strings.TrimSpace(config.Repo)
-	if !claimRepoPattern.MatchString(repo) {
+	switch provider := strings.ToLower(strings.TrimSpace(config.Provider)); provider {
+	case "github":
+		if !claimRepoPattern.MatchString(repo) {
+			return ""
+		}
+		return provider + ":" + repo
+	case "gitlab":
+		if !claimNestedRepoPattern.MatchString(repo) {
+			return ""
+		}
+		return provider + ":" + repo
+	default:
 		return ""
 	}
-	return "github:" + repo
 }
 
 // ClaimCheckpointRemoteCommand returns the command that claims a refused

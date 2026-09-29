@@ -34,10 +34,17 @@ func TestClaimCommandParsesAsACheckpointRemoteFlag(t *testing.T) {
 		{"empty repo", settings.CheckpointRemoteConfig{Provider: "github", Repo: ""}, ""},
 		{"empty provider", settings.CheckpointRemoteConfig{Provider: "", Repo: "acme/checkpoints"}, ""},
 		{"provider carrying the separator", settings.CheckpointRemoteConfig{Provider: "git:hub", Repo: "acme/checkpoints"}, ""},
-		// The resolver maps gitlab (providerHost) but the flag rejects it, so a
-		// command naming it would fail when pasted. Offer none until the flag
-		// is widened.
-		{"provider the flag rejects", settings.CheckpointRemoteConfig{Provider: "gitlab", Repo: "acme/checkpoints"}, ""},
+		{"gitlab", settings.CheckpointRemoteConfig{Provider: "gitlab", Repo: "acme/checkpoints"}, "gitlab:acme/checkpoints"},
+		// GitLab projects can live in nested groups; GitHub repos cannot.
+		{"gitlab nested group", settings.CheckpointRemoteConfig{Provider: "gitlab", Repo: "acme/platform/checkpoints"}, "gitlab:acme/platform/checkpoints"},
+		{"gitlab shell separator", settings.CheckpointRemoteConfig{Provider: "gitlab", Repo: "acme/platform;id/checkpoints"}, ""},
+		{"gitlab trailing slash", settings.CheckpointRemoteConfig{Provider: "gitlab", Repo: "acme/checkpoints/"}, ""},
+		// The parser lowercases the provider, so the command may too.
+		{"provider in another case", settings.CheckpointRemoteConfig{Provider: "GitLab", Repo: "acme/checkpoints"}, "gitlab:acme/checkpoints"},
+		// GetCheckpointRemote validates no provider, and the flag takes only
+		// github and gitlab, so a command naming anything else would fail when
+		// pasted.
+		{"provider the flag rejects", settings.CheckpointRemoteConfig{Provider: "bitbucket", Repo: "acme/checkpoints"}, ""},
 		// The repo field is read from the COMMITTED settings.json — the
 		// inherited-from-upstream case this feature is about — and the output
 		// is a command a human is told to run. A hostile repository must not be
@@ -77,7 +84,7 @@ func TestClaimCommandParsesAsACheckpointRemoteFlag(t *testing.T) {
 			require.NoError(t, err, "the offered command must parse")
 			// Trimmed, because that is what the value carries and what gets
 			// written — the padded case exists to pin exactly that.
-			assert.Equal(t, strings.TrimSpace(tc.config.Provider), provider)
+			assert.Equal(t, strings.ToLower(strings.TrimSpace(tc.config.Provider)), provider)
 			assert.Equal(t, strings.TrimSpace(tc.config.Repo), repo)
 		})
 	}
