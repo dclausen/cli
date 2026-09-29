@@ -231,9 +231,9 @@ the commands are always runnable in every build.
   exits 0 and otherwise reads exactly like a mirror with no collaborators. The
   reason decides the next step, because only one of them has one that can
   answer: placements that resolved but named no dialable host point at `repo
-  mirror get`, while a placement no login of yours can see points at
-  `--context`, since `mirror get` reads the affiliation-scoped directory and is
-  narrower than the pull-gated lookup that just came back empty. There is no region flag either: every placement
+  view`, while a placement no login of yours can see points at `--context`,
+  since `repo view` reads the affiliation-scoped directory and is narrower than
+  the pull-gated lookup that just came back empty. There is no region flag either: every placement
   materializes the same upstream collaborators, so the caller has nothing to
   choose. What the removed `--cluster` named was the cell — `clusterHost` is a
   required parameter of that endpoint — and the cell is now read from the

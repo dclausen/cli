@@ -433,16 +433,13 @@ func flushThroughPager(cmd *cobra.Command, noPager bool, run func() error) error
 // runCoreObject fetches a single value via fn and renders it as a vertical
 // field/value list (default) or raw JSON (--json), reusing the same column
 // definition as the matching list view.
+// The rendering is inline rather than split out as the list side is
+// (renderCoreListShaped, which runCoreListForCluster reuses): the object view
+// had such a caller and no longer does, so a layer whose only reason was
+// sharing now has one caller. Splitting it again is a two-line change if a
+// cluster-addressed object view returns.
 func runCoreObject[T any](cmd *cobra.Command, headers []string, row func(T) []string, fn func(ctx context.Context, c *coreapi.Client) (*T, error)) error {
-	return runCore(cmd, renderCoreObject(cmd, headers, row, fn))
-}
-
-// renderCoreObject builds the run-function runCoreObject uses: fetch via fn,
-// then render as a field/value list (default) or raw JSON (--json). Kept
-// separate from the client-selection so a caller that must dial a specific
-// cluster's core can reuse the rendering (mirroring renderCoreList).
-func renderCoreObject[T any](cmd *cobra.Command, headers []string, row func(T) []string, fn func(ctx context.Context, c *coreapi.Client) (*T, error)) func(context.Context, *coreapi.Client) error {
-	return func(ctx context.Context, c *coreapi.Client) error {
+	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
 		item, err := fn(ctx, c)
 		if err != nil {
 			return err
@@ -451,7 +448,7 @@ func renderCoreObject[T any](cmd *cobra.Command, headers []string, row func(T) [
 			return printJSON(cmd.OutOrStdout(), item)
 		}
 		return printFields(cmd.OutOrStdout(), headers, row(*item))
-	}
+	})
 }
 
 // tableStyles holds the foreground styles for the human table/field views,

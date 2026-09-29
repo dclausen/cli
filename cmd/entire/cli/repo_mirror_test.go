@@ -1406,26 +1406,44 @@ func TestSharedPlacementStatus(t *testing.T) {
 // that genuinely has no mirror there.
 func TestValidateClusterFilter(t *testing.T) {
 	t.Parallel()
-	hosts := map[string]string{"us": "aws-us-east-2.entire.io", "eu": "eu-west-1.entire.io"}
+	catalog := []coreapi.Cluster{
+		{Slug: "us", PublicUrl: "https://aws-us-east-2.entire.io"},
+		{Slug: "eu", PublicUrl: "https://eu-west-1.entire.io"},
+		// A publicUrl that smuggles a host via userinfo: clusterHostBySlug
+		// drops it, so this cluster has a slug and no usable host.
+		{Slug: "bad", PublicUrl: "https://aws-us-east-2.entire.io@evil.com"},
+	}
+	hosts := clusterHostBySlug(catalog)
+	require.NotContains(t, hosts, "bad", "the fixture only works if the unsafe host is dropped")
 
-	require.NoError(t, validateClusterFilter("", hosts), "no filter is not a bad filter")
-	require.NoError(t, validateClusterFilter("aws-us-east-2.entire.io", hosts))
-	require.NoError(t, validateClusterFilter("AWS-US-EAST-2.entire.io", hosts), "hosts compare case-insensitively")
+	require.NoError(t, validateClusterFilter("", hosts, catalog), "no filter is not a bad filter")
+	require.NoError(t, validateClusterFilter("aws-us-east-2.entire.io", hosts, catalog))
+	require.NoError(t, validateClusterFilter("AWS-US-EAST-2.entire.io", hosts, catalog), "hosts compare case-insensitively")
 
 	// A slug is the likely mistake, because `entire cluster list` still heads
 	// its own column CLUSTER while printing slugs.
-	err := validateClusterFilter("us", hosts)
+	err := validateClusterFilter("us", hosts, catalog)
 	require.ErrorContains(t, err, "is a cluster slug")
 	require.ErrorContains(t, err, "aws-us-east-2.entire.io", "the message names the spelling that works")
 
-	require.ErrorContains(t, validateClusterFilter("nope.entire.io", hosts), "names no cluster in the catalog")
+	// The cluster with no usable host renders under its SLUG (placementCluster's
+	// fallback), so that slug is the only value its rows ever show — refusing it
+	// refused the exact string the column prints, and sent the reader to a HOST
+	// column showing `-`.
+	require.NoError(t, validateClusterFilter("bad", hosts, catalog),
+		"a slug the catalog has but the host map cannot resolve is what the CLUSTER column prints")
+
+	require.ErrorContains(t, validateClusterFilter("nope.entire.io", hosts, catalog), "names no cluster in the catalog")
 
 	// A value that is one cluster's slug AND another's host must always be
 	// accepted: it names a cluster. Resolving it in a single pass let Go's
 	// randomised map order decide, so the same input passed or failed by run.
-	collide := map[string]string{"aws-us-east-2.entire.io": "eu-west-1.entire.io", "eu": "aws-us-east-2.entire.io"}
+	collide := []coreapi.Cluster{
+		{Slug: "aws-us-east-2.entire.io", PublicUrl: "https://eu-west-1.entire.io"},
+		{Slug: "eu", PublicUrl: "https://aws-us-east-2.entire.io"},
+	}
 	for range 50 {
-		require.NoError(t, validateClusterFilter("aws-us-east-2.entire.io", collide))
+		require.NoError(t, validateClusterFilter("aws-us-east-2.entire.io", clusterHostBySlug(collide), collide))
 	}
 }
 

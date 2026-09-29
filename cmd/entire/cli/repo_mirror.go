@@ -630,7 +630,7 @@ func validateClusterHost(host string) error {
 }
 
 // newRepoMirrorCmd is the `entire repo mirror` subtree: manage EntireDB
-// GitHub-mirror placements on a cluster (add / list / get / remove). The
+// GitHub-mirror placements on a cluster (add / list / remove). The
 // local-clone rewrite lives at `repo remote add` (repo_remote.go) and the
 // collaborator view at `repo grant list` (repo_grant.go).
 func newRepoMirrorCmd() *cobra.Command {
@@ -977,7 +977,7 @@ func applyRepoDirLocal(f repoDirLocalFilters, rows []repoDirRow) ([]repoDirRow, 
 // A slug is the likely mistake and gets its own message, because `entire
 // cluster list` still heads its own column CLUSTER while printing slugs, so
 // copy-pasting from the catalog is the natural way to get here.
-func validateClusterFilter(cluster string, hostBySlug map[string]string) error {
+func validateClusterFilter(cluster string, hostBySlug map[string]string, clusters []coreapi.Cluster) error {
 	if cluster == "" {
 		return nil
 	}
@@ -989,10 +989,19 @@ func validateClusterFilter(cluster string, hostBySlug map[string]string) error {
 			return nil
 		}
 	}
-	for slug, host := range hostBySlug {
-		if strings.EqualFold(slug, cluster) {
+	// Then the slugs, from the CATALOG rather than the map: a cluster whose
+	// publicUrl is unsafe has no entry in the map, but placementCluster still
+	// renders its placements under the slug. Refusing that slug would refuse the
+	// only spelling the CLUSTER column ever prints for it — and send the reader
+	// to a HOST column showing `-`.
+	for _, cl := range clusters {
+		if !strings.EqualFold(cl.Slug, cluster) {
+			continue
+		}
+		if host := hostBySlug[cl.Slug]; host != "" {
 			return fmt.Errorf("--cluster %q is a cluster slug; this filter takes the public host, so pass --cluster %s (the HOST column of `entire cluster list`)", cluster, host)
 		}
+		return nil // no usable host, so the slug is what the column prints
 	}
 	return fmt.Errorf("--cluster %q names no cluster in the catalog; pass a public host as the HOST column of `entire cluster list` prints it", cluster)
 }
@@ -1011,15 +1020,19 @@ func validateClusterFilter(cluster string, hostBySlug map[string]string) error {
 // payload of a mirror listing, and --json suppresses the stderr banner, so a
 // degraded run would hand a script row-complete data with silently empty
 // clone URLs and a zero exit.
-func fetchRepoDirCatalog(ctx context.Context, cmd *cobra.Command, c *coreapi.Client) (map[string]string, error) {
+func fetchRepoDirCatalog(ctx context.Context, cmd *cobra.Command, c *coreapi.Client) (map[string]string, []coreapi.Cluster, error) {
 	if !jsonRequested(cmd) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Listing repos on %s\n", c.CoreOrigin())
 	}
 	clusters, err := c.ListClusters(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return clusterHostBySlug(clusters.Clusters), nil
+	// The catalog comes back whole alongside the slug→host map, because the map
+	// deliberately omits a cluster whose publicUrl is unsafe. Anything deciding
+	// whether a cluster EXISTS has to ask the catalog; only something building a
+	// URL should ask the map.
+	return clusterHostBySlug(clusters.Clusters), clusters.Clusters, nil
 }
 
 // warnRepoDirTruncated discloses a server-side truncation with no cursor to
@@ -1102,11 +1115,11 @@ func runRepoMirrorList(cmd *cobra.Command, o repoMirrorListOpts) error {
 // applies to just this page; the cursor survives filtering.
 func runRepoMirrorListPage(cmd *cobra.Command, o repoMirrorListOpts, headers []string, cells func(repoDirRow) []string, applyLocal func([]repoDirRow) ([]repoDirRow, error)) error {
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
-		hostBySlug, err := fetchRepoDirCatalog(ctx, cmd, c)
+		hostBySlug, clusters, err := fetchRepoDirCatalog(ctx, cmd, c)
 		if err != nil {
 			return err
 		}
-		if err := validateClusterFilter(o.filters.cluster, hostBySlug); err != nil {
+		if err := validateClusterFilter(o.filters.cluster, hostBySlug, clusters); err != nil {
 			return err
 		}
 		params := coreapi.ListReposParams{Scope: coreapi.NewOptListReposScope(coreapi.ListReposScopeAll)}
@@ -1140,11 +1153,11 @@ func runRepoMirrorListPage(cmd *cobra.Command, o repoMirrorListOpts, headers []s
 // disclosure on stderr.
 func runRepoMirrorListWalk(cmd *cobra.Command, o repoMirrorListOpts, headers []string, cells func(repoDirRow) []string, applyLocal func([]repoDirRow) ([]repoDirRow, error)) error {
 	return runCoreList(cmd, "No repos found.", headers, cells, func(ctx context.Context, c *coreapi.Client) ([]repoDirRow, error) {
-		hostBySlug, err := fetchRepoDirCatalog(ctx, cmd, c)
+		hostBySlug, clusters, err := fetchRepoDirCatalog(ctx, cmd, c)
 		if err != nil {
 			return nil, err
 		}
-		if err := validateClusterFilter(o.filters.cluster, hostBySlug); err != nil {
+		if err := validateClusterFilter(o.filters.cluster, hostBySlug, clusters); err != nil {
 			return nil, err
 		}
 		// The server cannot filter or sort this directory, so the whole

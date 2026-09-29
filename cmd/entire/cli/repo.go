@@ -534,8 +534,10 @@ func bindRepoProjectFlag(cmd *cobra.Command, project *string) {
 // June 2026) and is plausibly scripted; breaking that to report a flag that was
 // already being ignored is a poor trade. It does not VALIDATE because that
 // needs GetRepo's owningProjectId, an extra round trip on every command here
-// except `repo view` — which alone already fetches the repo and prints its
-// project.
+// except `repo view` — which alone already fetches the repo, and carries its
+// owningProjectId in `--json`. Not in the human view: that header is the two
+// things which identify a repo, and the project is already spelled inside the
+// name.
 //
 // Wired as a PreRunE because the answer needs only the flag and args[0]: no
 // resolution, no network, and every command binding this flag takes the repo
