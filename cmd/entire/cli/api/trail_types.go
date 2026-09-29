@@ -49,6 +49,11 @@ type TrailResource struct {
 	// review-target resolution, ...) does not depend on the snapshot's shape;
 	// only `trail show` reads it, through DecodeMergeability.
 	Mergeability json.RawMessage `json:"mergeability,omitempty"`
+	// Monitors and Runners are also detail-only and stay raw for the same
+	// reason; only `trail show` reads them, through DecodeMonitors and
+	// DecodeRunners.
+	Monitors json.RawMessage `json:"monitors,omitempty"`
+	Runners  json.RawMessage `json:"runners,omitempty"`
 	// FromDetail reports that the resource was decoded from the detail route
 	// rather than a list page. It is the reliable marker: body_document can be
 	// absent from a valid detail response.
