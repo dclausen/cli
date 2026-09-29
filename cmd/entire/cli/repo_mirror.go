@@ -1503,7 +1503,20 @@ func parseEntireCloneURL(raw string) (clusterHost string, ref mirrorRepoRef, err
 	if rerr != nil {
 		return "", mirrorRepoRef{}, fmt.Errorf("invalid clone URL %q: %w", raw, rerr)
 	}
-	if verr := validateClusterHost(u.Host); verr != nil {
+	// Validated against the RAW authority, not u.Host: url.Parse strips any
+	// userinfo off before filling Host, so `entire://real-cluster.entire.io@evil.com/gh/a/b`
+	// presents evil.com as a clean host and would be dialled — the CLI fetching
+	// /.well-known/entire-cluster.json from a host the URL never appeared to
+	// name. Cutting the authority out of the literal text is what puts the
+	// userinfo in front of validateClusterHost, whose own u.User check then
+	// refuses it. Split on "//" rather than the scheme constant so a
+	// differently-cased scheme, which url.Parse accepts, cannot slip past.
+	_, afterScheme, ok := strings.Cut(strings.TrimSpace(raw), "//")
+	if !ok {
+		return "", mirrorRepoRef{}, fmt.Errorf("%q is not an entire:// clone URL", raw)
+	}
+	authority, _, _ := strings.Cut(afterScheme, "/")
+	if verr := validateClusterHost(authority); verr != nil {
 		return "", mirrorRepoRef{}, verr
 	}
 	return u.Host, ref, nil
@@ -1515,7 +1528,7 @@ func parseEntireCloneURL(raw string) (clusterHost string, ref mirrorRepoRef, err
 // accepted — the parser reports what was wrong inside the URL and this says
 // what the verb takes.
 func badRepoRefErr(err error) error {
-	return fmt.Errorf("%w; pass /%s/<project>/<repo>, /%s/<owner>/<repo>, a repo ULID, or a clone URL (entire://<cluster>/<forge>/<a>/<b>)",
+	return fmt.Errorf("%w; pass /%s/<project>/<repo>, /%s/<owner>/<repo>, or a clone URL (entire://<cluster>/<forge>/<a>/<b>)",
 		err, nativeCloneForge, mirrorCloneForge)
 }
 

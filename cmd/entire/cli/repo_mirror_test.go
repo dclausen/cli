@@ -1155,6 +1155,12 @@ func TestParseEntireCloneURL(t *testing.T) {
 		{name: "extra path segment", raw: "entire://c.entire.io/gh/a/b/c", wantErr: true},
 		{name: "not a URL", raw: "not-a-url", wantErr: true},
 		{name: "host with a URL metacharacter", raw: "entire://c.entire.io:8080:9090/gh/a/b", wantErr: true},
+		// url.Parse splits userinfo off before filling Host, so validating
+		// u.Host saw a clean "evil.com" and the CLI would dial it — from a URL
+		// that reads as naming the real cluster.
+		{name: "userinfo smuggling another host", raw: "entire://real-cluster.entire.io@evil.com/gh/a/b", wantErr: true},
+		{name: "userinfo on a native URL", raw: "entire://real-cluster.entire.io@evil.com/et/acme/web", wantErr: true},
+		{name: "a differently-cased scheme is still checked", raw: "ENTIRE://real-cluster.entire.io@evil.com/gh/a/b", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -386,10 +386,13 @@ the commands are always runnable in every build.
   and branch on what they get, and `repo grant list` serves both as well, so
   `unsupportedForgeErr` is reached only by the tests that pin the refusal — the
   parser keeps the narrowing because it is its contract, not because a caller
-  exercises it. `repo view` takes a repo ULID, a bare name with `--project`, and
-  an `entire://` clone URL besides — the URL because it is the only form naming
-  its own cluster, so it is the only one that reaches a repo in another
-  federation.
+  exercises it. `repo view` takes an `entire://` clone URL besides, because it is
+  the only form naming its own cluster and so the only one that reaches a repo
+  in another federation. It takes nothing else: a repo ULID and a bare name with
+  `--project` both FIND a repository without NAMING one, so neither is a
+  spelling this verb accepts, and `--project` left with the bare name it scoped.
+  The other repo verbs still take both, since narrowing the shared resolver is
+  its own change.
   `clone`
   accepts a native `/et/<project>/<repo>` ref, a mirror `/gh/<owner>/<repo>`
   ref, or a full `entire://` URL passed through verbatim. **Every ref names its
