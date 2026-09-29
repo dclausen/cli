@@ -1456,21 +1456,6 @@ func (s *ManualCommitStrategy) updateCombinedAttributionForCheckpoint(
 	return nil
 }
 
-// postCommitProcessSessionLocked handles a single session within the PostCommit loop.
-// Pre-resolved git objects (headTree, parentTree) are shared across all sessions;
-// per-session shadow ref/tree are resolved once here and threaded through sub-calls.
-//
-// The third result reports whether this session condensed into checkpointID.
-// It is distinct from the second (the telemetry signal, which is nil for an
-// amend re-condensing an already-reported checkpoint) and cannot be inferred
-// from state afterwards: carry-forward on a partial commit clears
-// LastCheckpointID that condenseAndUpdateState had just set, so the post-loop
-// state of a successful partial condensation is indistinguishable from never
-// having condensed.
-//
-// MUST be called from inside MutateSessionState. Mutations to state are persisted
-// by the caller's outer save — calling this function standalone silently loses
-// every field change (StepCount, FilesTouched, CheckpointTranscriptStart, …).
 // liveTaskFilesInCommit reports whether any of state's in-flight task records
 // modified a committed file, per the subagent's own transcript. A running
 // subagent's edits reach FilesTouched only at completion, so this is the only
@@ -1513,7 +1498,8 @@ func (s *ManualCommitStrategy) liveTaskFilesInCommit(ctx context.Context, state 
 // collectCommittedFileClaims computes the union of all sessions' FilesTouched
 // for cross-session attribution, and counts sessions whose tracked files
 // overlap with committed files. When no persisted FilesTouched claims the
-// commit, it falls back to countMidTurnClaimants.
+// commit, it falls back to hasMidTurnClaimant; the read-only gate only asks
+// whether any claimant exists, so that fallback reports at most one.
 func (s *ManualCommitStrategy) collectCommittedFileClaims(ctx context.Context, sessions []*SessionState, committedFileSet map[string]struct{}) (map[string]struct{}, int) {
 	allAgentFiles := make(map[string]struct{})
 	claimants := 0
@@ -1529,22 +1515,22 @@ func (s *ManualCommitStrategy) collectCommittedFileClaims(ctx context.Context, s
 			}
 		}
 	}
-	if claimants == 0 {
-		claimants = s.countMidTurnClaimants(ctx, sessions, committedFileSet)
+	if claimants == 0 && s.hasMidTurnClaimant(ctx, sessions, committedFileSet) {
+		claimants = 1
 	}
 	return allAgentFiles, claimants
 }
 
-// countMidTurnClaimants counts ACTIVE sessions whose live transcript modified a
-// committed file. A session committing mid-turn has not run SaveStep yet, so its
+// hasMidTurnClaimant reports whether any ACTIVE session's live transcript
+// modified a committed file. A session committing mid-turn has not run SaveStep yet, so its
 // claim on the commit exists only in its transcript; its persisted FilesTouched
-// is empty or left over from an earlier turn. Without this count, the read-only
+// is empty or left over from an earlier turn. Without this check, the read-only
 // gate in shouldCondenseWithOverlapCheck sees no claimant and lets a file-less
 // session (a reviewer running a background subagent) condense into the commit.
 // Callers invoke it only when persisted FilesTouched found no claimant, so an
-// ordinary commit pays no transcript parse.
-func (s *ManualCommitStrategy) countMidTurnClaimants(ctx context.Context, sessions []*SessionState, committedFileSet map[string]struct{}) int {
-	claimants := 0
+// ordinary commit pays no transcript parse, and it stops at the first claimant
+// because each scan can reread a large transcript.
+func (s *ManualCommitStrategy) hasMidTurnClaimant(ctx context.Context, sessions []*SessionState, committedFileSet map[string]struct{}) bool {
 	for _, state := range sessions {
 		if !state.Phase.IsActive() {
 			continue
@@ -1552,12 +1538,11 @@ func (s *ManualCommitStrategy) countMidTurnClaimants(ctx context.Context, sessio
 		prepareTranscriptForState(ctx, state)
 		for _, f := range s.extractModifiedFilesFromLiveTranscript(ctx, state, state.CheckpointTranscriptStart) {
 			if _, ok := committedFileSet[f]; ok {
-				claimants++
-				break // count each session at most once
+				return true
 			}
 		}
 	}
-	return claimants
+	return false
 }
 
 // resolveShadowRefAndTree pre-resolves a session's shadow branch ref and tree.
@@ -1580,6 +1565,21 @@ func resolveShadowRefAndTree(ctx context.Context, repo *git.Repository, shadowBr
 	return shadowRef, shadowTree
 }
 
+// postCommitProcessSessionLocked handles a single session within the PostCommit loop.
+// Pre-resolved git objects (headTree, parentTree) are shared across all sessions;
+// per-session shadow ref/tree are resolved once here and threaded through sub-calls.
+//
+// The third result reports whether this session condensed into checkpointID.
+// It is distinct from the second (the telemetry signal, which is nil for an
+// amend re-condensing an already-reported checkpoint) and cannot be inferred
+// from state afterwards: carry-forward on a partial commit clears
+// LastCheckpointID that condenseAndUpdateState had just set, so the post-loop
+// state of a successful partial condensation is indistinguishable from never
+// having condensed.
+//
+// MUST be called from inside MutateSessionState. Mutations to state are persisted
+// by the caller's outer save — calling this function standalone silently loses
+// every field change (StepCount, FilesTouched, CheckpointTranscriptStart, …).
 func (s *ManualCommitStrategy) postCommitProcessSessionLocked(
 	ctx context.Context,
 	repo *git.Repository,
