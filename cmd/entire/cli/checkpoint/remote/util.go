@@ -677,9 +677,9 @@ func checkpointRemoteIsInherited(ctx context.Context, config *settings.Checkpoin
 		// self-managed host is the user's own installation and is trusted to
 		// serve whatever provider they configured.
 		if forge, ok := checkpointPublicForgeProviders[strings.ToLower(info.Host)]; ok &&
-			!strings.EqualFold(forge, config.Provider) {
+			!strings.EqualFold(forge, strings.TrimSpace(config.Provider)) {
 			if unprovable == "" {
-				unprovable = fmt.Sprintf("%s is on %s, which cannot establish ownership of a %s store",
+				unprovable = fmt.Sprintf("%s is on %s, which cannot establish ownership of a %q store",
 					id.source, info.Host, config.Provider)
 			}
 			continue

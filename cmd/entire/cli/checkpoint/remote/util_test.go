@@ -1191,6 +1191,35 @@ func TestDeriveCheckpointURLFromInfo(t *testing.T) {
 // names across forges would approve a namespace the identity says nothing
 // about. Unprovable, not Disproved: a real owner still reaches the enable
 // claim prompt.
+// TestCheckpointRemoteIsInherited_CrossForgeNormalizesProvider pins that the
+// cross-forge check normalizes the provider the same way providerHost and
+// checkPublicForgeMatchesProvider do, so a stray space cannot flip the verdict,
+// and that the reason quotes it — the provider is committed-settings text and
+// the reason reaches a terminal through the pre-push warning.
+func TestCheckpointRemoteIsInherited_CrossForgeNormalizesProvider(t *testing.T) {
+	repoDir := t.TempDir()
+	testutil.InitRepo(t, repoDir)
+	writeSettings(t, repoDir, `{"enabled":true}`)
+	t.Chdir(repoDir)
+
+	config := &settings.CheckpointRemoteConfig{Provider: " github ", Repo: "alice/checkpoints"}
+	verdict, reason := checkpointRemoteIsInherited(context.Background(), config,
+		"https://github.com/alice/app.git", nil)
+	if verdict != OwnershipOurs {
+		t.Fatalf("verdict = %v (%q), want OwnershipOurs: a padded provider is still github", verdict, reason)
+	}
+
+	esc := &settings.CheckpointRemoteConfig{Provider: "gitlab\x1b[31m", Repo: "alice/checkpoints"}
+	verdict, reason = checkpointRemoteIsInherited(context.Background(), esc,
+		"https://github.com/alice/app.git", nil)
+	if verdict != OwnershipUnprovable {
+		t.Fatalf("verdict = %v, want OwnershipUnprovable", verdict)
+	}
+	if strings.Contains(reason, "\x1b[") {
+		t.Fatalf("reason carries a raw escape sequence: %q", reason)
+	}
+}
+
 func TestCheckpointRemoteIsInherited_CrossForgeOwnerProvesNothing(t *testing.T) {
 	repoDir := t.TempDir()
 	testutil.InitRepo(t, repoDir)

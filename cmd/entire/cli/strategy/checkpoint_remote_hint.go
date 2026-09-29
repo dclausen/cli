@@ -62,9 +62,10 @@ func warnIgnoredCheckpointRemote(ctx context.Context, ps pushSettings) {
 	}
 	repo := cr.Repo
 
-	// repo comes from the committed settings file; strip escape sequences
-	// before it reaches the terminal.
+	// repo and reason both carry committed-settings text — reason now quotes the
+	// provider — so strip escape sequences before either reaches the terminal.
 	shown := tuiutil.SanitizeDisplayText(repo)
+	reason = tuiutil.SanitizeDisplayText(reason)
 	fmt.Fprintf(stderrWriter,
 		"[entire] Checkpoints are going to %q, not to the configured checkpoint_remote %s: %s.\n",
 		ps.remote, shown, reason)
