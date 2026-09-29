@@ -75,7 +75,7 @@ type TrailBodyDocument struct {
 // DecodeMergeability decodes the detail resource's mergeability snapshot. It
 // returns nil, nil when the snapshot is absent or null.
 func (r *TrailResource) DecodeMergeability() (*TrailMergeability, error) {
-	if len(r.Mergeability) == 0 || string(r.Mergeability) == "null" {
+	if len(r.Mergeability) == 0 || isJSONNull(r.Mergeability) {
 		return nil, nil //nolint:nilnil // nil, nil means "no snapshot served"
 	}
 	var m TrailMergeability

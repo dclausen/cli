@@ -38,11 +38,11 @@ func printTrailMonitors(w io.Writer, styles statusStyles, label func(string) str
 		icon, style := trailMonitorIcon(styles, quality)
 		var notes []string
 		switch {
-		case m.Evaluating || m.State == "running":
+		case m.Evaluating || m.State == api.TrailAutomationRunning:
 			notes = append(notes, "evaluating")
-		case m.State == "stale":
+		case m.State == api.TrailAutomationStale:
 			notes = append(notes, "stale")
-		case m.State == "configuration_error":
+		case m.State == api.TrailAutomationConfigurationError:
 			notes = append(notes, "configuration error")
 		}
 		detail := quality
@@ -55,6 +55,11 @@ func printTrailMonitors(w io.Writer, styles statusStyles, label func(string) str
 	}
 }
 
+const (
+	trailMonitorYes = "yes"
+	trailMonitorNo  = "no"
+)
+
 func trailMonitorValueDisplay(m api.TrailMonitor) string {
 	switch {
 	case m.ValueType == "percent" && m.PercentValue != nil:
@@ -63,9 +68,9 @@ func trailMonitorValueDisplay(m api.TrailMonitor) string {
 		return tuiutil.SanitizeDisplayText(*m.SizeValue)
 	case m.ValueType == "boolean" && m.BooleanValue != nil:
 		if *m.BooleanValue {
-			return "yes"
+			return trailMonitorYes
 		}
-		return "no"
+		return trailMonitorNo
 	}
 	return "-"
 }

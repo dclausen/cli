@@ -45,6 +45,18 @@ type TrailRunner struct {
 	StaleReason    *string `json:"stale_reason"`
 }
 
+// Automation states shared by monitors, runners, and gates.
+const (
+	TrailAutomationRunning            = "running"
+	TrailAutomationNotRun             = "not_run"
+	TrailAutomationStale              = "stale"
+	TrailAutomationConfigurationError = "configuration_error"
+	TrailAutomationDisabled           = "disabled"
+	TrailAutomationNotApplicable      = "not_applicable"
+	TrailAutomationEvaluated          = "evaluated"
+	TrailAutomationErrored            = "errored"
+)
+
 // Monitor quality values, matching the web app's monitor badges.
 const (
 	TrailMonitorQualitySuccess = "success"
@@ -122,7 +134,7 @@ func (m TrailMonitor) Quality() string {
 // DecodeMonitors decodes the detail resource's monitors. It returns nil, nil
 // when the field is absent or null.
 func (r *TrailResource) DecodeMonitors() ([]TrailMonitor, error) {
-	if len(r.Monitors) == 0 || string(r.Monitors) == "null" {
+	if len(r.Monitors) == 0 || isJSONNull(r.Monitors) {
 		return nil, nil
 	}
 	var out []TrailMonitor
@@ -135,7 +147,7 @@ func (r *TrailResource) DecodeMonitors() ([]TrailMonitor, error) {
 // DecodeRunners decodes the detail resource's runners. It returns nil, nil
 // when the field is absent or null.
 func (r *TrailResource) DecodeRunners() ([]TrailRunner, error) {
-	if len(r.Runners) == 0 || string(r.Runners) == "null" {
+	if len(r.Runners) == 0 || isJSONNull(r.Runners) {
 		return nil, nil
 	}
 	var out []TrailRunner
@@ -144,3 +156,5 @@ func (r *TrailResource) DecodeRunners() ([]TrailRunner, error) {
 	}
 	return out, nil
 }
+
+func isJSONNull(raw json.RawMessage) bool { return string(raw) == "null" }
