@@ -2,14 +2,11 @@ package copilotcli
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/entireio/cli/cmd/entire/cli/agent"
 )
 
 // TestGenerateText_PinsMinimalToolSurface pins the exact argv handed to the
@@ -91,22 +88,5 @@ func TestGenerateText_SmokeRealCLI(t *testing.T) {
 	}
 	if strings.TrimSpace(got) == "" {
 		t.Fatal("text generation under the minimal tool surface returned an empty response")
-	}
-}
-
-// An older Copilot that does not know one of the isolation flags must fail
-// with a remedy, not with a bare exit status: the flag cannot be dropped.
-func TestGenerateText_TooOldCLIReportsUnsupportedFlag(t *testing.T) {
-	t.Parallel()
-	ag := &CopilotCLIAgent{CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "sh", "-c", "echo \"error: unexpected argument '--available-tools' found\" >&2; exit 2")
-	}}
-	_, err := ag.GenerateText(context.Background(), "prompt", "")
-	var unsupported *agent.UnsupportedFlagError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("err = %v, want *agent.UnsupportedFlagError", err)
-	}
-	if unsupported.Flag != "--available-tools" {
-		t.Errorf("Flag = %q, want --available-tools", unsupported.Flag)
 	}
 }

@@ -88,9 +88,6 @@ func (c *CopilotCLIAgent) GenerateText(ctx context.Context, prompt string, model
 
 	result, capturedStderr, stdoutBytes, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "copilot", "copilot", args, prompt)
 	if err != nil {
-		if flag, ok := agent.RejectedFlag(capturedStderr, agent.FlagNames(generateTextArgs)); ok {
-			err = &agent.UnsupportedFlagError{CLI: "copilot", Flag: flag, Err: err}
-		}
 		return "", &agent.TextGenerationError{
 			Err:         fmt.Errorf("copilot text generation failed: %w", err),
 			Stderr:      capturedStderr,
