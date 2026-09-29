@@ -77,7 +77,7 @@ type trailMergeStub struct {
 
 	canPrompt bool     // what the TTY probe reports
 	confirm   bool     // the answer to the bypass prompt
-	prompts   []string // title + description of each bypass prompt shown
+	prompts   []string // title of each bypass prompt shown
 
 	mu    sync.Mutex
 	posts []string
@@ -137,8 +137,8 @@ func runTrailMergeTestArgs(t *testing.T, stub *trailMergeStub, args ...string) (
 	t.Cleanup(func() { newTrailAPIClient = previous })
 	previousCanPrompt, previousPrompt := trailMergeCanPrompt, trailMergeBypassPrompt
 	trailMergeCanPrompt = func() bool { return stub.canPrompt }
-	trailMergeBypassPrompt = func(_ context.Context, title, description string) (bool, error) {
-		stub.prompts = append(stub.prompts, title+"\n"+description)
+	trailMergeBypassPrompt = func(_ context.Context, title string) (bool, error) {
+		stub.prompts = append(stub.prompts, title)
 		return stub.confirm, nil
 	}
 	t.Cleanup(func() { trailMergeCanPrompt, trailMergeBypassPrompt = previousCanPrompt, previousPrompt })
@@ -482,6 +482,17 @@ func TestTrailMerge_JSON(t *testing.T) {
 			"dryRun":true,"merged":false,"bypassed":false}`, out)
 		require.Empty(t, stub.mergePosts())
 	})
+	t.Run("blocked without gates carries reasons", func(t *testing.T) {
+		stub := &trailMergeStub{t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t, blocked,
+			withField("gates", []any{}), withField("approval_gate_passed", false), withField("behind_by", 2))}
+		out, err := runTrailMergeTest(t, stub, "et/acme/widget", "--json", "--dry-run")
+
+		require.Error(t, err)
+		var got trailMergeResultJSON
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		require.Empty(t, got.Blockers)
+		require.Equal(t, []string{"required approvals are missing", "branch is 2 commits behind its base"}, got.Reasons)
+	})
 }
 
 func TestTrailMerge_ConfirmsBeforeBypass(t *testing.T) {
@@ -539,29 +550,25 @@ func TestTrailMerge_MergeableForceDoesNotPrompt(t *testing.T) {
 	require.JSONEq(t, `{"expectedHeadSha":"`+trailMergeTestHead+`"}`, stub.mergePosts()[0])
 }
 
-// A cancelled context still reaches the prompt, which lists the gates and
-// handles the cancellation itself, so the user sees what would have been
-// bypassed and a "cancelled" line instead of a silent exit.
-func TestConfirmTrailMergeBypassCancelledContextStillPrompts(t *testing.T) {
+// A cancelled context is an interruption, not a decline: it must come back as
+// an error wrapping context.Canceled so main.go re-raises the signal, rather
+// than (false, nil), which exits 0 as if the user had said no.
+func TestConfirmTrailMergeBypassCancelledContextIsAnError(t *testing.T) {
 	previous := trailMergeBypassPrompt
 	t.Cleanup(func() { trailMergeBypassPrompt = previous })
-	var gotDescription string
-	trailMergeBypassPrompt = func(ctx context.Context, _, description string) (bool, error) {
-		gotDescription = description
-		require.Error(t, ctx.Err())
+	trailMergeBypassPrompt = func(context.Context, string) (bool, error) {
+		t.Fatal("the prompt must not open on a cancelled context")
 		return false, nil
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var out bytes.Buffer
-	status := "failed"
 	rationale := "main is red: acme/app build #1 failed"
-	gates := []api.TrailGateResult{{GateType: "base_checks", Status: status, Rationale: &rationale}}
+	gates := []api.TrailGateResult{{GateType: "base_checks", Status: "failed", Rationale: &rationale}}
 
 	ok, err := confirmTrailMergeBypass(ctx, &out, &api.TrailResource{Number: 7, Base: "main"}, gates, false, true)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, ok)
-	require.Contains(t, gotDescription, "main is red")
-	require.Contains(t, out.String(), "Trail merge cancelled.")
+	require.NotContains(t, out.String(), "Trail merge cancelled.", "an interruption is not reported as a decline")
 }
