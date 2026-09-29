@@ -2073,3 +2073,28 @@ func TestAttach_OpenCodeFetchesTranscriptForUntrackedSession(t *testing.T) {
 		t.Errorf("expected 'Created checkpoint' in output, got: %s", output)
 	}
 }
+
+// The refuse error names where the checkpoint actually lives: a ULID is always
+// its own ref, even under the git-branch primary, so it must not blame (or
+// suggest fetching) the v1 branch.
+func TestMissingCheckpointError_NamesCheckpointStorage(t *testing.T) {
+	setupAttachTestRepo(t)
+
+	const ulid = "01M3PWG7BKWYH0XJKS810J0XEX"
+	const ref = "refs/entire/checkpoints/EX/" + ulid
+	msg := missingCheckpointError(context.Background(), id.MustCheckpointID(ulid)).Error()
+	if !strings.Contains(msg, "missing from the local checkpoint ref "+ref) {
+		t.Errorf("error should name the checkpoint ref; got: %v", msg)
+	}
+	if !strings.Contains(msg, ref+":"+ref) {
+		t.Errorf("error should suggest fetching the checkpoint ref; got: %v", msg)
+	}
+	if strings.Contains(msg, "entire/checkpoints/v1") {
+		t.Errorf("error must not mention the v1 branch for a ULID checkpoint; got: %v", msg)
+	}
+
+	msg = missingCheckpointError(context.Background(), id.MustCheckpointID("ffffffffeeee")).Error()
+	if !strings.Contains(msg, "missing from the local entire/checkpoints/v1 branch") {
+		t.Errorf("hex checkpoint under the branch primary should name the v1 branch; got: %v", msg)
+	}
+}

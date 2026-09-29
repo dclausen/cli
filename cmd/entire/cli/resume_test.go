@@ -1820,3 +1820,64 @@ func TestRestoreResumeSessions_EmptyStoredSessionIDIsNotTampering(t *testing.T) 
 		t.Fatalf("stdout = %q, want the fallback's missing-log message", stdout.String())
 	}
 }
+
+// The unavailable-checkpoint message must name where the checkpoint actually
+// lives. A git-refs checkpoint is its own ref, so blaming (and suggesting a
+// fetch of) the v1 branch is wrong — the branch may well exist.
+func TestCheckRemoteMetadata_MessageNamesCheckpointStorage(t *testing.T) {
+	const ulid = "01M3PWG7BKWYH0XJKS810J0XEX"
+	tests := []struct {
+		name        string
+		refsPrimary bool
+		checkpoint  string
+		wantRef     string
+		wantPhrase  string
+	}{
+		{
+			name:       "ulid under branch primary is its own ref",
+			checkpoint: ulid,
+			wantRef:    "refs/entire/checkpoints/EX/" + ulid,
+			wantPhrase: "its checkpoint ref refs/entire/checkpoints/EX/" + ulid + " is not available",
+		},
+		{
+			name:        "hex under refs primary is its own ref",
+			refsPrimary: true,
+			checkpoint:  "aaa111bbb222",
+			wantRef:     "refs/entire/checkpoints/22/aaa111bbb222",
+			wantPhrase:  "its checkpoint ref refs/entire/checkpoints/22/aaa111bbb222 is not available",
+		},
+		{
+			name:       "hex under branch primary is the v1 branch",
+			checkpoint: "aaa111bbb222",
+			wantRef:    paths.MetadataBranchName,
+			wantPhrase: "the " + paths.MetadataBranchName + " branch is not available",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.refsPrimary {
+				t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", "git-refs")
+			}
+			tmpDir := t.TempDir()
+			t.Chdir(tmpDir)
+			setupResumeTestRepo(t, tmpDir, false)
+			bare := t.TempDir()
+			runGitInDir(t, bare, "init", "--bare")
+			runGitInDir(t, tmpDir, "remote", "add", "origin", bare)
+
+			var errW bytes.Buffer
+			_, err := checkRemoteMetadata(context.Background(), io.Discard, &errW, id.MustCheckpointID(tt.checkpoint), checkpoint.DefaultV1Refs())
+			if err != nil {
+				t.Fatalf("checkRemoteMetadata() error = %v", err)
+			}
+			out := errW.String()
+			if !strings.Contains(out, tt.wantPhrase) {
+				t.Errorf("message should contain %q; got:\n%s", tt.wantPhrase, out)
+			}
+			wantFetch := "git fetch origin " + tt.wantRef + ":" + tt.wantRef
+			if !strings.Contains(out, wantFetch) {
+				t.Errorf("message should suggest %q; got:\n%s", wantFetch, out)
+			}
+		})
+	}
+}

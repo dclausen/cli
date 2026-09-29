@@ -17,6 +17,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
@@ -535,7 +536,7 @@ func ensureCheckpointAvailable(ctx, logCtx context.Context, repo *git.Repository
 		}
 	}
 
-	return repo, missingCheckpointError(logCtx, checkpointID, primaryIsRefs)
+	return repo, missingCheckpointError(logCtx, checkpointID)
 }
 
 // refreshCheckpoint fetches the checkpoint referenced by HEAD from the remote and
@@ -592,35 +593,42 @@ func checkpointPresentLocally(ctx context.Context, repo *git.Repository, refs cp
 
 // missingCheckpointError builds the refuse error shown when a HEAD-referenced
 // checkpoint is still absent locally after a refresh attempt. The storage it
-// names and the fetch command it suggests are backend-aware.
-func missingCheckpointError(ctx context.Context, checkpointID id.CheckpointID, primaryIsRefs bool) error {
-	location := "entire/checkpoints/v1 branch"
-	fetchCmd := suggestCheckpointFetchCommand(ctx)
-	if primaryIsRefs {
-		location = "checkpoint refs"
-		fetchCmd = suggestCheckpointRefFetchCommand(ctx, checkpointID)
+// names and the fetch command it suggests follow checkpointStorageRef.
+func missingCheckpointError(ctx context.Context, checkpointID id.CheckpointID) error {
+	location := paths.MetadataBranchName + " branch"
+	if ref, perCheckpointRef := checkpointStorageRef(ctx, checkpointID); perCheckpointRef {
+		location = "checkpoint ref " + ref
 	}
 	return fmt.Errorf(
 		"checkpoint %s referenced by HEAD is missing from the local %s after a refresh attempt. Creating a fresh checkpoint here would overwrite the original session data on push. Run:\n\n    %s\n\nthen re-run attach. If the colleague who made this commit hasn't pushed their checkpoint metadata yet, ask them to do so first",
-		checkpointID.String(), location, fetchCmd,
+		checkpointID.String(), location, suggestCheckpointStorageFetchCommand(ctx, checkpointID),
 	)
 }
 
-// suggestCheckpointFetchCommand returns a git fetch command the user can paste to
-// pull the missing v1 metadata branch (git-branch backend).
-func suggestCheckpointFetchCommand(ctx context.Context) string {
-	return suggestFetchCommand(ctx, "entire/checkpoints/v1:entire/checkpoints/v1")
+// checkpointStorageRef returns the ref that holds checkpointID's committed data
+// and whether it is the checkpoint's own per-checkpoint ref rather than the
+// shared v1 branch. It follows the store's kind routing: a ULID only ever lives
+// in its own ref, and a hex ID is read from its ref first under a git-refs
+// primary. An ID that cannot form a ref (e.g. empty) names the v1 branch.
+func checkpointStorageRef(ctx context.Context, checkpointID id.CheckpointID) (string, bool) {
+	inRef := checkpointID.Kind() == id.KindULID
+	if !inRef {
+		cfg, err := settings.LoadCheckpointsConfig(ctx)
+		inRef = err == nil && cpkg.PrimaryIsRefs(cfg)
+	}
+	if inRef {
+		if refName, err := cpkg.RefName(checkpointID); err == nil {
+			return refName.String(), true
+		}
+	}
+	return paths.MetadataBranchName, false
 }
 
-// suggestCheckpointRefFetchCommand returns a git fetch command the user can paste
-// to pull one missing checkpoint ref (git-refs backend), falling back to the v1
-// branch form when the ID cannot be turned into a ref.
-func suggestCheckpointRefFetchCommand(ctx context.Context, checkpointID id.CheckpointID) string {
-	refName, err := cpkg.RefName(checkpointID)
-	if err != nil {
-		return suggestCheckpointFetchCommand(ctx)
-	}
-	return suggestFetchCommand(ctx, refName.String()+":"+refName.String())
+// suggestCheckpointStorageFetchCommand returns a git fetch command that pulls
+// the ref checkpointStorageRef names for checkpointID.
+func suggestCheckpointStorageFetchCommand(ctx context.Context, checkpointID id.CheckpointID) string {
+	ref, _ := checkpointStorageRef(ctx, checkpointID)
+	return suggestFetchCommand(ctx, ref+":"+ref)
 }
 
 // suggestFetchCommand builds a "git fetch <target> <refspec>" hint via

@@ -202,9 +202,7 @@ func restoreByCheckpointID(ctx context.Context, w, errW io.Writer, checkpointID 
 	}
 	store := stores.Persistent
 	refs := stores.Refs()
-	if refs.ReadBootstrappableFromRemote() {
-		promoteRemoteTrackingPrimary(ctx, repo, refs)
-	}
+	promoteRemoteTrackingPrimary(ctx, repo, refs)
 
 	metadata, err := readCheckpointInfoFromStore(ctx, store, checkpointID)
 	if err != nil {
@@ -288,9 +286,7 @@ func restoreFromCurrentBranch(ctx context.Context, w, errW io.Writer, branchName
 	store := stores.Persistent
 
 	refs := stores.Refs()
-	if refs.ReadBootstrappableFromRemote() {
-		promoteRemoteTrackingPrimary(ctx, repo, refs)
-	}
+	promoteRemoteTrackingPrimary(ctx, repo, refs)
 
 	// Multiple checkpoints (squash merge): resolve latest by CreatedAt timestamp.
 	if len(result.checkpointIDs) > 1 {
@@ -742,7 +738,7 @@ func promptResumeFromOlderCheckpoint() (bool, error) {
 }
 
 // checkRemoteMetadata checks if checkpoint metadata exists on a remote and
-// fetches it if available. Skips when reads don't target a remote-tracked ref.
+// fetches it if available.
 func checkRemoteMetadata(
 	ctx context.Context,
 	w, errW io.Writer,
@@ -750,12 +746,6 @@ func checkRemoteMetadata(
 	refs checkpoint.PersistentRefs,
 ) ([]strategy.RestoredSession, error) {
 	logCtx := logging.WithComponent(ctx, "resume.checkRemoteMetadata")
-
-	if !refs.ReadBootstrappableFromRemote() {
-		fmt.Fprintf(errW, "Checkpoint '%s' found in commit but metadata is not available in %s.\n", checkpointID, refs.Read)
-		fmt.Fprintf(errW, "This ref is local-only. Try: entire checkpoint explain %s\n", checkpointID)
-		return nil, nil
-	}
 
 	// Open a fresh repo to avoid stale packfile index issues
 	repo, repoErr := openRepository(ctx)
@@ -850,14 +840,22 @@ func checkRemoteMetadata(
 		}
 		fmt.Fprintf(errW, "Ensure you have access to the checkpoint remote configured in .entire/settings.json.\n")
 	} else {
-		fmt.Fprintf(errW, "Checkpoint '%s' found in commit but the %s branch is not available locally or on the remote.\n", checkpointID, paths.MetadataBranchName)
-		fmt.Fprintf(errW, "This can happen if the metadata branch was not pushed.\n")
+		// Name where this checkpoint actually lives: a git-refs checkpoint is
+		// its own ref, and the v1 branch existing says nothing about it.
+		ref, perCheckpointRef := checkpointStorageRef(ctx, checkpointID)
+		if perCheckpointRef {
+			fmt.Fprintf(errW, "Checkpoint '%s' found in commit but its checkpoint ref %s is not available locally or on the remote.\n", checkpointID, ref)
+			fmt.Fprintf(errW, "This can happen if the checkpoint ref was not pushed.\n")
+		} else {
+			fmt.Fprintf(errW, "Checkpoint '%s' found in commit but the %s branch is not available locally or on the remote.\n", checkpointID, ref)
+			fmt.Fprintf(errW, "This can happen if the metadata branch was not pushed.\n")
+		}
 		// The pasteable hint names the first read candidate — the elected
 		// sync remote, or the fail-open origin when the election errored
 		// (then origin is also the only place left to fetch from). A
 		// remoteless repo has nothing to fetch from, so no hint is printed.
 		if candidates := strategy.CheckpointReadRemotes(ctx); len(candidates) > 0 {
-			fmt.Fprintf(errW, "Try:\n  git fetch %s %s:%s\n", candidates[0], paths.MetadataBranchName, paths.MetadataBranchName)
+			fmt.Fprintf(errW, "Try:\n  git fetch %s %s:%s\n", candidates[0], ref, ref)
 		}
 	}
 	return nil, nil
