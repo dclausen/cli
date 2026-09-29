@@ -435,7 +435,7 @@ func runNativeMirrorGet(cmd *cobra.Command, ref mirrorRepoRef) error {
 			RepoId:        repo.ID,
 			Authoritative: coreapi.NewOptBool(true),
 		}); aerr == nil {
-			if state, ok := authoritative.State.Get(); ok {
+			if state, ok := authoritative.Response.State.Get(); ok {
 				repo.State = coreapi.NewOptString(state)
 			}
 		}

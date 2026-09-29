@@ -160,7 +160,7 @@ func resolveNativeRepo(ctx context.Context, c repoRefClient, project, repoName s
 	if err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
 	}
-	return repo, nil
+	return &repo.Response, nil
 }
 
 // resolveNativeCloneURL resolves an Entire-native repo (by project and repo
