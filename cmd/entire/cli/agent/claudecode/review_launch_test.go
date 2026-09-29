@@ -455,7 +455,7 @@ func TestSanitizeReviewEnv_DropsCheckoutRelativePATH(t *testing.T) {
 		"FOO=bar",
 		"PATH=" + strings.Join([]string{abs1, ".", "", "rel/dir", abs2}, sep),
 	}
-	out := sanitizeReviewEnv(in)
+	out := sanitizeReviewEnv(in, "")
 
 	var path string
 	for _, kv := range out {
@@ -600,5 +600,59 @@ func TestStageReviewSkills_CollidingNamesDoNotClobber(t *testing.T) {
 	}
 	if !strings.Contains(readStaged(inv2), "UNQUALIFIED_BODY") {
 		t.Errorf("/review-x staged the wrong content: %q", readStaged(inv2))
+	}
+}
+
+// TestSanitizeReviewEnv_DropsPATHInsideTheCheckout: an absolute PATH entry is
+// no safer when it points into the reviewed checkout. The running binary's own
+// dir is exactly that when entire was built into the repo root, so it must not
+// be prepended, and no other entry under the checkout may survive either.
+func TestSanitizeReviewEnv_DropsPATHInsideTheCheckout(t *testing.T) {
+	t.Parallel()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	// Treat the test binary's directory as the reviewed checkout.
+	checkout := filepath.Dir(self)
+	inside := filepath.Join(checkout, "bin")
+	outside := t.TempDir()
+	sep := string(os.PathListSeparator)
+	out := sanitizeReviewEnv([]string{"PATH=" + strings.Join([]string{inside, outside, checkout}, sep)}, checkout)
+
+	var path string
+	for _, kv := range out {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "PATH" {
+			path = v
+		}
+	}
+	entries := filepath.SplitList(path)
+	for _, entry := range entries {
+		if pathWithin(entry, checkout) {
+			t.Errorf("sanitized PATH still resolves into the checkout via %q (full: %q)", entry, path)
+		}
+	}
+	if len(entries) != 1 || entries[0] != outside {
+		t.Errorf("sanitized PATH = %q, want only the entry outside the checkout %q", path, outside)
+	}
+}
+
+func TestPathWithin(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{root, true},
+		{filepath.Join(root, "bin"), true},
+		{filepath.Join(root, "a", "b"), true},
+		{filepath.Dir(root), false},
+		{root + "-sibling", false},
+		{filepath.Join(root, "..", filepath.Base(root)+"x"), false},
+	} {
+		if got := pathWithin(tc.dir, root); got != tc.want {
+			t.Errorf("pathWithin(%q, %q) = %v, want %v", tc.dir, root, got, tc.want)
+		}
 	}
 }

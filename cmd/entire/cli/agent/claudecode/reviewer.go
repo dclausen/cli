@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
@@ -99,8 +100,21 @@ func buildReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig, settingsPath
 	args = review.AppendModelFlag(args, cfg.Model)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// cfg (not promptCfg): the env must carry the user-configured skill names.
-	cmd.Env = sanitizeReviewEnv(review.AppendReviewEnv(os.Environ(), "claude-code", cfg, prompt))
+	cmd.Env = sanitizeReviewEnv(review.AppendReviewEnv(os.Environ(), "claude-code", cfg, prompt), reviewCheckoutRoot(ctx))
 	return cmd
+}
+
+// reviewCheckoutRoot is the reviewed checkout the reviewer runs in: the
+// worktree root, or the working directory the child inherits when that cannot
+// be resolved — never "", which would disable the PATH check against it.
+func reviewCheckoutRoot(ctx context.Context) string {
+	if root, err := paths.WorktreeRoot(ctx); err == nil && root != "" {
+		return root
+	}
+	if cwd, err := os.Getwd(); err == nil { //nolint:forbidigo // no worktree root; the child inherits this cwd
+		return cwd
+	}
+	return ""
 }
 
 // parseClaudeOutput converts claude's --output-format stream-json --verbose

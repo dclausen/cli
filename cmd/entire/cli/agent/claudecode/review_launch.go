@@ -26,9 +26,10 @@ package claudecode
 //	                           Entire-owned dir (see review_skills.go)
 //	--append-system-prompt     defense in depth only; see reviewSystemPrompt
 //
-// sanitizeReviewEnv additionally strips non-absolute PATH entries and prepends
-// the trusted entire binary's dir, so a relative PATH cannot make a branch's
-// ./entire run via the hooks against the checkout cwd.
+// sanitizeReviewEnv additionally strips non-absolute PATH entries and any entry
+// inside the reviewed checkout, and prepends the trusted entire binary's dir
+// (unless that dir is itself inside the checkout), so PATH cannot make a
+// branch's ./entire — or ./git, ./sh — run via the hooks.
 //
 // This is configuration isolation, not an OS sandbox: the reviewer keeps the
 // invoking account's privileges, and user-level and managed policy stay trusted.
@@ -63,12 +64,21 @@ const reviewSettingSources = ""
 // guarantees `command -v entire` finds the trusted CLI. This is the launch-cwd
 // analogue of why generate.go is safe (it runs in os.TempDir()); see the
 // package comment.
-func sanitizeReviewEnv(env []string) []string {
+//
+// An absolute entry is no safer when it points INTO the checkout: reviewRoot
+// is the reviewed worktree, and any PATH directory inside it — the running
+// binary's own, when entire was built into the repo root as this repo's build
+// tasks do, or a direnv-style <repo>/bin — holds branch content, so it is
+// dropped too. Skipping the prepend in that case costs nothing when another
+// entire is on PATH; when none is, the hooks fail to find it, which leaves the
+// review unrecorded rather than running a binary the branch supplied.
+func sanitizeReviewEnv(env []string, reviewRoot string) []string {
 	self, err := os.Executable()
 	selfDir := ""
 	if err == nil {
 		selfDir = filepath.Dir(self)
 	}
+	insideReview := func(dir string) bool { return reviewRoot != "" && pathWithin(dir, reviewRoot) }
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		key, val, ok := strings.Cut(kv, "=")
@@ -77,13 +87,14 @@ func sanitizeReviewEnv(env []string) []string {
 			continue
 		}
 		var kept []string
-		if selfDir != "" && filepath.IsAbs(selfDir) {
+		if selfDir != "" && filepath.IsAbs(selfDir) && !insideReview(selfDir) {
 			kept = append(kept, selfDir)
 		}
 		for _, dir := range filepath.SplitList(val) {
 			// Drop "" (which means cwd), "." and every other non-absolute
-			// entry — each of those resolves against the reviewed checkout.
-			if dir == "" || !filepath.IsAbs(dir) {
+			// entry — each of those resolves against the reviewed checkout —
+			// and every absolute entry inside it.
+			if dir == "" || !filepath.IsAbs(dir) || insideReview(dir) {
 				continue
 			}
 			if dir == selfDir {
@@ -94,6 +105,37 @@ func sanitizeReviewEnv(env []string) []string {
 		out = append(out, key+"="+strings.Join(kept, string(os.PathListSeparator)))
 	}
 	return out
+}
+
+// pathWithin reports whether dir is root or lies beneath it. Both sides are
+// compared with symlinks resolved, so a symlinked checkout or binary directory
+// (macOS /var -> /private/var) cannot slip past the check. A PATH entry need
+// not exist yet — a branch can create it — so its nearest existing ancestor is
+// resolved and the rest re-appended.
+func pathWithin(dir, root string) bool {
+	rel, err := filepath.Rel(resolveExistingPrefix(root), resolveExistingPrefix(dir))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// resolveExistingPrefix resolves symlinks in the longest existing prefix of p
+// and re-appends the components that do not exist yet.
+func resolveExistingPrefix(p string) string {
+	p = filepath.Clean(p)
+	var rest []string
+	for cur := p; ; {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(append([]string{r}, rest...)...)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		rest = append([]string{filepath.Base(cur)}, rest...)
+		cur = parent
+	}
 }
 
 // claudeReviewFlags returns the isolation flags appended to the reviewer argv.
