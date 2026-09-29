@@ -546,9 +546,14 @@ func nativeRepoViewJSON(repo *coreapi.Repo, row repoDirRow) (map[string]json.Raw
 		return nil, err
 	}
 	fields := map[string]any{
-		"repo":       row.Repo,
-		"status":     row.Status,
-		"placements": row.Placements,
+		"repo":   row.Repo,
+		"status": row.Status,
+	}
+	// Omitted when empty, as repoDirRow tags it: a repo nothing holds and a
+	// GitHub candidate are the same answer, and they must not differ by which
+	// path built the JSON. There is no third state for the key to distinguish.
+	if len(row.Placements) > 0 {
+		fields["placements"] = row.Placements
 	}
 	// Absent, never null: an unstated visibility is not a claim, and `null`
 	// reads as false to jq on the question asked to confirm a repo is

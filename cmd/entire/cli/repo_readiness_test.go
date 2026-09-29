@@ -320,6 +320,54 @@ func TestRepoView_AnInterruptedReadinessReadIsNotSwallowed(t *testing.T) {
 		"no table may be built on the state the interrupted read failed to refresh")
 }
 
+// TestRepoView_JSONIsTheRecordPlusTheView pins the shape `repo view --json`
+// answers with for a native repo: the repo as the SERVER describes it, plus the
+// keys this view computed. Replacing the record with a hand-built row turned
+// `.capabilities.canPush` into null at exit 0 — falsy to jq, on the question
+// asked before attempting a push.
+//
+// The computed keys are the ones a GitHub upstream also carries, so the common
+// core parses the same for either forge. `placements` is omitted when empty for
+// that reason: a repo nothing holds and a GitHub candidate are the same answer,
+// and must not differ by which path built the JSON.
+//
+// Not parallel: runCoreCmd replaces the shared client constructor.
+func TestRepoView_JSONIsTheRecordPlusTheView(t *testing.T) {
+	t.Run("the record's own fields survive", func(t *testing.T) {
+		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","path":"/et/acme/web","clusterSlug":"us","state":"active","visibility":"private","capabilities":{"canManage":true,"canPush":true,"canPull":false}}`,
+			testDeleteULID, testProjectULID)
+		srv, _ := serveRepoView(t, body, nil)
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		// The four the spec guarantees besides id, which the row shape dropped.
+		require.Equal(t, testProjectULID, got["owningProjectId"], "a ULID, where .project carries the mutable name")
+		require.Equal(t, "entire", got["provider"])
+		require.Equal(t, "web", got["name"])
+		require.Equal(t, map[string]any{"canManage": true, "canPush": true, "canPull": false}, got["capabilities"],
+			"the permissions answer nothing else in this command gives")
+		// And the view's own keys alongside, under the spellings mirror list uses.
+		require.Equal(t, "/et/acme/web", got["repo"])
+		require.Equal(t, true, got["private"])
+		require.Equal(t, "/et/acme/web", got["path"], "the server's key too, so create and view agree")
+	})
+
+	t.Run("placements is omitted when nothing holds the repo", func(t *testing.T) {
+		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","state":"provisioning"}`,
+			testDeleteULID, testProjectULID)
+		srv, _ := serveRepoView(t, body, nil)
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		require.NotContains(t, got, "placements",
+			"a GitHub candidate omits it, and the two must not differ by code path")
+	})
+}
+
 func TestRepoCreateReadinessFlags(t *testing.T) {
 	// Not parallel: shared client seam.
 	for _, tc := range []struct {
