@@ -281,7 +281,7 @@ func installHookEntries(rawHooks map[string]json.RawMessage, force bool) (count 
 	// Add hooks if they don't exist
 	for _, h := range simpleHooks {
 		m := simpleMatchers[h.hookType]
-		if !hookCommandExists(m, h.command) {
+		if h.command != "" && !hookCommandExists(m, h.command) {
 			simpleMatchers[h.hookType] = addHookToMatcher(m, "", h.command)
 			count++
 		}
