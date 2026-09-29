@@ -72,14 +72,18 @@ type trailMergeStub struct {
 	lookupBase   string
 	trailJSON    string
 	mergeability string
-	mergeStatus  int
-	mergeBody    string
+	// recheck, if set, is served on every mergeability read after the first
+	// (the re-read after the bypass prompt).
+	recheck     string
+	mergeStatus int
+	mergeBody   string
 
 	canPrompt bool     // what the TTY probe reports
 	confirm   bool     // the answer to the bypass prompt
 	prompts   []string // title of each bypass prompt shown
 
 	mu    sync.Mutex
+	reads int
 	posts []string
 }
 
@@ -95,7 +99,14 @@ func (s *trailMergeStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "GET " + s.lookupBase:
 		_, _ = fmt.Fprint(w, `{"items":[{"id":"trail-example","number":7,"status":"open","branch":"feature/example","base":"trunk","title":"Example"}]}`)
 	case "GET " + trailMergeRepoPath + "/mergeability":
-		_, _ = fmt.Fprint(w, s.mergeability)
+		s.mu.Lock()
+		s.reads++
+		body := s.mergeability
+		if s.reads > 1 && s.recheck != "" {
+			body = s.recheck
+		}
+		s.mu.Unlock()
+		_, _ = fmt.Fprint(w, body)
 	case "POST " + trailMergeRepoPath + "/merge":
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -179,7 +190,9 @@ func TestTrailMerge_BlockersComeFromMergeabilityGates(t *testing.T) {
 	require.NotContains(t, blockedBy, "checks: passed", "a passed gate does not block the merge")
 }
 
-func TestTrailMerge_ChecksLineReadsChecksGateAndRuns(t *testing.T) {
+// The readiness header is the `trail show` mergeability view (tested with
+// printTrailMergeability), plus how far the branch is behind its base.
+func TestTrailMerge_HeaderUsesTrailShowView(t *testing.T) {
 	failedChecks := func(m map[string]any) {
 		m["gates"] = []any{map[string]any{"gate_type": "checks", "gate_key": "checks", "blocking": true, "status": "failed", "state": "evaluated", "rationale": "build failed"}}
 		m["checks"] = map[string]any{"availability": "available", "runs": []any{
@@ -188,35 +201,30 @@ func TestTrailMerge_ChecksLineReadsChecksGateAndRuns(t *testing.T) {
 			map[string]any{"name": "e2e", "status": "in_progress", "conclusion": nil},
 		}}
 	}
-	for _, tc := range []struct {
-		name    string
-		edits   []func(map[string]any)
-		want    string
-		wantErr bool
-	}{
-		{name: "passed", want: "Checks:     ✓ passed (1 run: 1 passed)"},
-		{name: "failed", edits: []func(map[string]any){blocked, failedChecks}, wantErr: true, want: "Checks:     ✗ failed (3 runs: 1 failed, 1 pending, 1 passed)"},
-		{name: "no checks gate or CI", edits: []func(map[string]any){withField("gates", []any{}), withField("checks", map[string]any{"availability": "not_applicable", "runs": []any{}})}, want: "Checks:     ✓ none"},
-		{name: "CI unavailable", edits: []func(map[string]any){withField("gates", []any{}), withField("checks", map[string]any{"availability": "unavailable", "runs": []any{}})}, want: "Checks:     ✗ unknown (CI evidence unavailable)"},
+	stub := &trailMergeStub{t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t, blocked, failedChecks, withField("behind_by", 2))}
+	out, err := runTrailMergeTest(t, stub, "et/acme/widget", "--dry-run")
+
+	require.Error(t, err)
+	for _, want := range []string{
+		"Trail #7 (feature/example → trunk)",
+		"Mergeable: no",
+		"✗ checks  failed  build failed",
+		"Checks:    1 passed · 1 running · 1 failed (3 total)",
+		"✗ build  failure",
+		"Behind:    2 commits behind its base",
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			stub := &trailMergeStub{t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t, tc.edits...), mergeBody: `{"ok":true,"mergeCommitSha":"merge-example"}`}
-			out, err := runTrailMergeTest(t, stub, "et/acme/widget", "--dry-run")
-			require.Equal(t, tc.wantErr, err != nil, "err = %v", err)
-			require.Contains(t, out, tc.want)
-		})
+		require.Contains(t, out, want)
 	}
 }
 
 func TestTrailMerge_FallbackBlockersReportCI(t *testing.T) {
 	// Not mergeable, yet no blocking gate says why: describe from the summary.
 	stub := &trailMergeStub{t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t, blocked,
-		withField("gates", []any{}), withField("approval_gate_passed", false),
+		withField("gates", []any{}),
 		withField("checks", map[string]any{"availability": "available", "runs": []any{map[string]any{"name": "build", "status": "completed", "conclusion": "failure"}}}))}
 	out, err := runTrailMergeTest(t, stub, "et/acme/widget")
 
 	require.Error(t, err)
-	require.Contains(t, out, "required approvals are missing")
 	require.Contains(t, out, "CI checks failed")
 	require.Empty(t, stub.mergePosts())
 }
@@ -484,14 +492,14 @@ func TestTrailMerge_JSON(t *testing.T) {
 	})
 	t.Run("blocked without gates carries reasons", func(t *testing.T) {
 		stub := &trailMergeStub{t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t, blocked,
-			withField("gates", []any{}), withField("approval_gate_passed", false), withField("behind_by", 2))}
+			withField("gates", []any{}), withField("behind_by", 2))}
 		out, err := runTrailMergeTest(t, stub, "et/acme/widget", "--json", "--dry-run")
 
 		require.Error(t, err)
 		var got trailMergeResultJSON
 		require.NoError(t, json.Unmarshal([]byte(out), &got))
 		require.Empty(t, got.Blockers)
-		require.Equal(t, []string{"required approvals are missing", "branch is 2 commits behind its base"}, got.Reasons)
+		require.Equal(t, []string{"branch is 2 commits behind its base"}, got.Reasons)
 	})
 }
 
@@ -541,6 +549,39 @@ func TestTrailMerge_ConfirmsBeforeBypass(t *testing.T) {
 	}
 }
 
+// Gates can change while the prompt is open without the head moving; the
+// bypass must not cover a gate the user never saw.
+func TestTrailMerge_BypassRechecksAfterConfirmation(t *testing.T) {
+	approvalsFailed := withGate(map[string]any{"gate_type": "approvals", "gate_key": "approvals", "blocking": true, "status": "failed", "state": "evaluated", "rationale": "approval revoked"})
+	for _, tc := range []struct {
+		name     string
+		recheck  string
+		wantPost bool
+	}{
+		{name: "unchanged merges", recheck: trailMergeability(t, blocked, baseChecksRed), wantPost: true},
+		{name: "new failing gate refuses", recheck: trailMergeability(t, blocked, baseChecksRed, approvalsFailed)},
+		{name: "new head refuses", recheck: trailMergeability(t, blocked, baseChecksRed, withField("head_sha", "head-newer"))},
+		{name: "now mergeable refuses", recheck: trailMergeability(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &trailMergeStub{
+				t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t, blocked, baseChecksRed), recheck: tc.recheck,
+				mergeBody: `{"ok":true,"mergeCommitSha":"merge-example"}`, canPrompt: true, confirm: true,
+			}
+			_, err := runTrailMergeTest(t, stub, "et/acme/widget", "--force")
+
+			require.Len(t, stub.prompts, 1)
+			if tc.wantPost {
+				require.NoError(t, err)
+				require.Len(t, stub.mergePosts(), 1)
+				return
+			}
+			require.ErrorContains(t, err, "changed while you were confirming the bypass; nothing was merged")
+			require.Empty(t, stub.mergePosts())
+		})
+	}
+}
+
 func TestTrailMerge_MergeableForceDoesNotPrompt(t *testing.T) {
 	stub := &trailMergeStub{t: t, lookupBase: trailMergeLookupBase, mergeability: trailMergeability(t), mergeBody: `{"ok":true,"mergeCommitSha":"merge-example"}`, canPrompt: true}
 	_, err := runTrailMergeTest(t, stub, "et/acme/widget", "--force")
@@ -565,7 +606,7 @@ func TestConfirmTrailMergeBypassCancelledContextIsAnError(t *testing.T) {
 	cancel()
 	var out bytes.Buffer
 	rationale := "main is red: acme/app build #1 failed"
-	gates := []api.TrailGateResult{{GateType: "base_checks", Status: "failed", Rationale: &rationale}}
+	gates := []api.TrailGate{{GateType: "base_checks", Status: "failed", Rationale: &rationale}}
 
 	ok, err := confirmTrailMergeBypass(ctx, &out, &api.TrailResource{Number: 7, Base: "main"}, gates, false, true)
 	require.ErrorIs(t, err, context.Canceled)
