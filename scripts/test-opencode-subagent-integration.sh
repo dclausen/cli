@@ -14,6 +14,8 @@
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --no-entire # raw OpenCode signals only
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario concurrent   # two children in one turn
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario readonly     # one read-only explore child
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario nested       # a child that delegates again (subagent_depth 2)
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario background   # one background child (experimental flag)
 #
 # Env:
 #   OPENCODE_MODEL   model for `opencode run` (default anthropic/claude-haiku-4-5)
@@ -84,6 +86,13 @@ git -C "$REPO" commit -q -m "init"
 cat > "$REPO/opencode.json" <<'JSON'
 {"$schema": "https://opencode.ai/config.json", "permission": {"external_directory": "allow"}}
 JSON
+if [ "$SCENARIO" = nested ]; then
+  # Children are denied the task tool unless their agent names a task rule.
+  cat > "$REPO/opencode.json" <<'JSON'
+{"$schema": "https://opencode.ai/config.json", "subagent_depth": 2, "permission": {"external_directory": "allow"}, "agent": {"general": {"permission": {"task": "allow"}}}}
+JSON
+fi
+if [ "$SCENARIO" = background ]; then export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; fi
 
 # Reuse the user's global @opencode-ai/plugin tree when it pins the running
 # version; otherwise opencode installs one for this project (slow, silent).
@@ -141,7 +150,11 @@ case "$SCENARIO" in
     PROMPT="Call the task tool twice in the same response, in parallel, both with subagent_type general: the first creates docs/red.md containing one paragraph about the colour red, the second creates docs/blue.md containing one paragraph about the colour blue. Wait for both to finish. Do not create or edit any file yourself, do not delegate again, do not commit, and do not ask for confirmation." ;;
   readonly)
     PROMPT="Use the explore subagent (the task tool with subagent_type explore) exactly once to report which files exist in this repository and what README.md says. Wait for it to finish and repeat its answer. Do not create or edit any file, do not commit, and do not ask for confirmation." ;;
-  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly)" >&2; exit 2 ;;
+  nested)
+    PROMPT="Use the general subagent (the task tool with subagent_type general) exactly once, in the foreground, and give it exactly this instruction: 'Use the task tool with subagent_type general exactly once, in the foreground, to create docs/green.md containing one paragraph about the colour green. Do not create the file yourself.' Wait for it to finish. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
+  background)
+    PROMPT="Use the general subagent (the task tool with subagent_type general and background set to true) exactly once to create docs/red.md containing one paragraph about the colour red. After launching it, run the shell command \`sleep 60\` so it has time to finish, then finish. Do not create or edit the file yourself, do not delegate again, do not commit, and do not ask for confirmation." ;;
+  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background)" >&2; exit 2 ;;
 esac
 echo "scenario: $SCENARIO"
 case "$MODE" in

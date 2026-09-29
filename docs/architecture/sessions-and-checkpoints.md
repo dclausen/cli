@@ -374,7 +374,10 @@ for task work; the payload is materialized at condensation (below).
   `task_id` backs one record per call: the plugin's call start
   (`Event.SubagentStartedAt`, which becomes the record's `StartedAt`) cuts the
   declared export to that call's messages, so earlier calls' files and tokens
-  are not attributed twice.
+  are not attributed twice. A background task (`background: true`) fires its
+  `subagent-stop` from the child's own idle rather than from the tool hook,
+  which returns at launch; nested calls (`subagent_depth > 1`) are recorded on
+  the top-level session.
 
 **Exactly-once completion.** Completion goes through
 `strategy.CompleteTaskRecord`: one `MutateSessionState` closure marks

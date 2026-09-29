@@ -39,7 +39,9 @@ required.
 - The `task` tool blocks the parent turn until the child is idle (foreground).
   Background children exist behind `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`
   (`background: true` arg, `metadata.background`, result injected later as a
-  synthetic user part). Not exercised; see Gaps.
+  synthetic user part); a foreground task can also be promoted to the
+  background mid-run, which surfaces the same way. See "Background subagents"
+  below.
 - `task_id` resumes an existing child session instead of creating one, so one
   child session ID can back several `task` tool calls (several `callID`s).
 - Nesting is capped by `subagent_depth` (default 1): a child cannot call `task`
@@ -142,6 +144,18 @@ its lifecycle events never reach Entire and no session or task record is
 created for it. That is deliberate — Entire tracks the task tool's children,
 not arbitrary session nesting.
 
+**Background subagents** (`background: true`, or a task promoted to the
+background): `tool.execute.after` fires at launch with
+`metadata: {background: true, jobId: <child>}`, so the plugin holds the
+`subagent-stop` payload (`backgroundTasks`, child → payloads) and fires it on
+the child's own `session.status` idle, which OpenCode emits when the child
+completes, fails, or is aborted. That check runs before the child-event guard.
+The parent's turn may end first; the record then stays in flight, and a
+commit in between stores the transcript so far (condensation re-exports the
+child). OpenCode delivers the result to the parent as a user message made only
+of synthetic text (`<task id=… state=…>`); prompt extraction skips such
+messages, so it is not recorded as a user prompt.
+
 **Nested subagents** (`subagent_depth > 1`): a child's own task call is
 announced and completed on the **top-level** session, since the child has no
 Entire session to hold it. The plugin keeps `rootOf` (child → top-level
@@ -159,11 +173,14 @@ lives in the child's.
   the file from the task record's `files`; the parent's turn-end git status
   still attributes it to the checkpoint. Agent-agnostic normalizer behaviour,
   not fixed here.
-- **Background subagents** (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`)
-  return from `tool.execute.after` immediately with `metadata.background: true`
-  and `state: "running"`; true completion is a later synthetic user part on the
-  parent. Not exercised. If supported later it needs the two-signal `Final`
-  model (Claude Code shape), keyed on the child's own `session.status idle`.
+- **Background subagents under `opencode run`**: `run` exits on the parent's
+  first idle and aborts a still-running background child. The child's
+  `session.error` + `idle` completes its record with the transcript so far,
+  but OpenCode then starts a second plugin instance during teardown whose
+  child set is empty: it fires a stray `turn-end` for the child (a no-op, no
+  state exists) and a `turn-start` for the parent's injected "task failed"
+  prompt, which leaves the parent ACTIVE until the exited-owner sweep ends it.
+  The TUI keeps one instance and is unaffected.
 - **`task_id` resumption** reuses a child session across several `callID`s.
   Handled: each call keeps its own task record (`ToolUseID = callID`,
   `AgentID = child`), and the plugin sends the call's `tool.execute.before`

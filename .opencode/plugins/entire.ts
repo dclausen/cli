@@ -40,6 +40,11 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   // child resumed via `task_id` holds every earlier call's messages too; this
   // is what lets the CLI keep only the ones this call produced.
   const taskStartedAt = new Map<string, number>()
+  // Background children (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS, or a
+  // foreground task promoted to the background): child ID -> subagent-stop
+  // payloads held back until the child's own session goes idle. A list, since
+  // a running background child resumed via `task_id` absorbs another call.
+  const backgroundTasks = new Map<string, Record<string, unknown>[]>()
 
   /**
    * Build the shell command for a hook invocation.
@@ -169,6 +174,16 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     })
   }
 
+  // finishBackgroundTask fires the held subagent-stop for a background child
+  // that went idle: its work finished, failed, or was aborted (`opencode run`
+  // exiting with the child still running). Each case ends the task.
+  function finishBackgroundTask(childID: string) {
+    const payloads = backgroundTasks.get(childID)
+    if (!payloads) return
+    backgroundTasks.delete(childID)
+    for (const payload of payloads) callHookSync("subagent-stop", payload)
+  }
+
   function resetSessionTracking(sessionID: string) {
     if (currentSessionID === sessionID) {
       return false
@@ -203,15 +218,15 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
         // Silently ignore — plugin failures must not crash OpenCode
       }
     },
-    // Subagent completion. tool.execute.after for the task tool fires once, at
-    // true completion, with the child session ID in output.metadata. Background
-    // tasks (experimental) return immediately with metadata.background and are
-    // not tracked. Synchronous: `opencode run` exits on the parent's idle right
-    // after this, and an async hook would be killed before it finished.
+    // Subagent completion. tool.execute.after for the task tool fires once, with
+    // the child session ID in output.metadata: at true completion for a
+    // foreground task, immediately for a background one (metadata.background),
+    // whose stop is held until the child goes idle. Synchronous: `opencode run`
+    // exits on the parent's idle right after this, and an async hook would be
+    // killed before it finished.
     "tool.execute.after": async (input, output) => {
       try {
         if (input.tool !== "task") return
-        if (output?.metadata?.background === true) return
         const childID = output?.metadata?.sessionId
         if (!childID) return
         trackChild(childID, input.sessionID)
@@ -219,14 +234,19 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
         taskStartedAt.delete(input.callID)
         // A child's own task call (subagent_depth > 1) is recorded on the
         // top-level session: the child has no Entire session of its own.
-        callHookSync("subagent-stop", {
+        const payload = {
           session_id: topLevelSession(input.sessionID),
           tool_use_id: input.callID,
           subagent_id: childID,
           subagent_type: input.args?.subagent_type ?? "",
           task_description: input.args?.description ?? "",
           started_at: startedAt,
-        })
+        }
+        if (output?.metadata?.background === true) {
+          backgroundTasks.set(childID, [...(backgroundTasks.get(childID) ?? []), payload])
+          return
+        }
+        callHookSync("subagent-stop", payload)
       } catch {
         // Silently ignore — plugin failures must not crash OpenCode
       }
@@ -237,6 +257,9 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
         const info = props?.info
         if (event.type.startsWith("session.") && info?.parentID && info?.id) trackChild(info.id, info.parentID)
         if (event.type === "message.part.updated") announceTask(props?.part)
+        if (event.type === "session.status" && props?.status?.type === "idle" && props?.sessionID) {
+          finishBackgroundTask(props.sessionID)
+        }
         const eventSessionID: string | undefined =
           props?.sessionID ?? info?.sessionID ?? info?.id ?? props?.part?.sessionID
         if (eventSessionID && childSessions.has(eventSessionID)) return
@@ -364,6 +387,9 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             rootOf.clear()
             announcedTasks.clear()
             taskStartedAt.clear()
+            // A background child still running here is ended by the Go side's
+            // SessionEnd sweep, which completes every live task record.
+            backgroundTasks.clear()
             // Use sync variant: this is the last event before process exit.
             callHookSync("session-end", {
               session_id: sessionID,

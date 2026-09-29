@@ -461,6 +461,10 @@ func TestInstallHooks_ChildSessionsNeverFireLifecycleHooks(t *testing.T) {
 	if announceIdx := strings.Index(content, "announceTask(props?.part)"); announceIdx == -1 || announceIdx >= guardIdx {
 		t.Fatalf("task parts must be announced before the child guard: announce=%d guard=%d", announceIdx, guardIdx)
 	}
+	// A background child's idle is a child event too.
+	if finishIdx := strings.Index(content, "finishBackgroundTask(props.sessionID)"); finishIdx == -1 || finishIdx >= guardIdx {
+		t.Fatalf("background completion must be checked before the child guard: finish=%d guard=%d", finishIdx, guardIdx)
+	}
 	// The one-time context injection is for the user's session only.
 	if !strings.Contains(content, "if (input?.sessionID && childSessions.has(input.sessionID)) return") {
 		t.Fatal("system.transform must not spend the parent's injection on a child session")
@@ -494,12 +498,15 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		`if (event.type === "message.part.updated") announceTask(props?.part)`,
 		`session_id: topLevelSession(sessionID)`,
 		`session_id: topLevelSession(input.sessionID)`,
-		// stop: tool.execute.after for the task tool, foreground only, synchronous
+		// stop: tool.execute.after for the task tool, synchronous
 		`"tool.execute.after": async (input, output) => {`,
 		`if (input.tool !== "task") return`,
-		`if (output?.metadata?.background === true) return`,
-		`childSessions.add(childID)`,
-		`callHookSync("subagent-stop", {`,
+		`callHookSync("subagent-stop", payload)`,
+		// background: the stop is held until the child's own session goes idle
+		`if (output?.metadata?.background === true) {`,
+		`backgroundTasks.set(childID, [...(backgroundTasks.get(childID) ?? []), payload])`,
+		`if (event.type === "session.status" && props?.status?.type === "idle" && props?.sessionID) {`,
+		`finishBackgroundTask(props.sessionID)`,
 		`subagent_id: childID`,
 		`tool_use_id: input.callID`,
 		`trackChild(childID, input.sessionID)`,
