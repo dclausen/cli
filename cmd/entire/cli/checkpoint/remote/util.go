@@ -821,6 +821,11 @@ func isTokenRewritableTransport(protocol string) bool {
 }
 
 func deriveCheckpointURLFromInfo(info *Info, config *settings.CheckpointRemoteConfig) (string, error) {
+	if info.Protocol == ProtocolSSH || info.Protocol == ProtocolHTTPS {
+		if err := checkPublicForgeMatchesProvider(info.Host, config.Provider); err != nil {
+			return "", err
+		}
+	}
 	switch info.Protocol {
 	case ProtocolSSH:
 		// SCP-style (git@host:repo) doesn't support ports. When a non-default
@@ -844,6 +849,35 @@ func deriveCheckpointURLFromInfo(info *Info, config *settings.CheckpointRemoteCo
 	default:
 		return "", fmt.Errorf("unsupported protocol %q in remote URL", info.Protocol)
 	}
+}
+
+// checkpointPublicForgeProviders maps the public forge hosts providerHost knows
+// back to their provider. Only these hosts are known to belong to one provider;
+// any other host (GitHub Enterprise, self-managed GitLab) is the user's own
+// installation and is trusted to serve the configured provider.
+var checkpointPublicForgeProviders = map[string]string{
+	"github.com": ProviderGitHub,
+	"gitlab.com": ProviderGitLab,
+}
+
+// checkPublicForgeMatchesProvider refuses to derive a checkpoint URL on a
+// public forge that belongs to a different provider than the configured one.
+// SSH/HTTPS derivation keeps the remote's host so enterprise installations stay
+// on their own host, but on a public forge that host is a statement about the
+// provider: a gitlab checkpoint_remote derived from a github.com origin would
+// send checkpoints, and with ENTIRE_CHECKPOINT_TOKEN set a GitLab token, to
+// github.com. The error sends every caller to resolveProviderCheckpointURL,
+// which builds the URL on the configured provider's own host — the same
+// fallback the entire:// branch takes for a forge mismatch.
+func checkPublicForgeMatchesProvider(host, provider string) error {
+	forgeProvider, public := checkpointPublicForgeProviders[strings.ToLower(host)]
+	if !public {
+		return nil
+	}
+	if configured := strings.ToLower(strings.TrimSpace(provider)); configured != forgeProvider {
+		return fmt.Errorf("remote host %q is %s, not checkpoint provider %q", host, forgeProvider, configured)
+	}
+	return nil
 }
 
 // resolveProviderCheckpointURL builds the checkpoint URL for the configured
@@ -978,11 +1012,18 @@ func deriveTokenOriginURL(originURL string) (string, bool) {
 	return fmt.Sprintf("https://%s/%s/%s.git", hostPort, info.Owner, info.Repo), true
 }
 
+// ProviderGitHub and ProviderGitLab are the checkpoint_remote provider values
+// this package resolves (providerHost) and offers claim commands for.
+const (
+	ProviderGitHub = "github"
+	ProviderGitLab = "gitlab"
+)
+
 func providerHost(provider string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "github":
+	case ProviderGitHub:
 		return "github.com", true
-	case "gitlab":
+	case ProviderGitLab:
 		return "gitlab.com", true
 	default:
 		return "", false

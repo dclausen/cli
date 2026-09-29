@@ -38,6 +38,12 @@ func TestFetchURL(t *testing.T) {
 			wantURL:      "https://github.com/acme/checkpoints.git",
 		},
 		{
+			name:         "github.com origin with gitlab provider reads from gitlab.com",
+			originURL:    "https://github.com/acme/app.git",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"gitlab","repo":"acme/checkpoints"}}}`,
+			wantURL:      "git@gitlab.com:acme/checkpoints.git",
+		},
+		{
 			name:         "gitlab checkpoint remote with token returns https url on gitlab.com",
 			originURL:    "git@gitlab.com:acme/app.git",
 			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"gitlab","repo":"acme/checkpoints"}}}`,
@@ -587,6 +593,56 @@ func TestPushURL(t *testing.T) {
 			wantEnabled:  true,
 		},
 		{
+			// The owner names match, so the store is adopted; its URL must be
+			// built on the configured provider's host, not on github.com.
+			name:         "github.com origin with gitlab provider routes to gitlab.com",
+			originURL:    "https://github.com/acme/app.git",
+			pushRemote:   "origin",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"gitlab","repo":"acme/checkpoints"}}}`,
+			wantURL:      "git@gitlab.com:acme/checkpoints.git",
+			wantEnabled:  true,
+		},
+		{
+			// The credential case: the token is for the provider, so it must
+			// ride to gitlab.com, never to the origin's github.com.
+			name:         "token with github.com origin and gitlab provider targets gitlab.com",
+			originURL:    "git@github.com:acme/app.git",
+			pushRemote:   "origin",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"gitlab","repo":"acme/checkpoints"}}}`,
+			token:        "secret-token",
+			wantURL:      "https://gitlab.com/acme/checkpoints.git",
+			wantEnabled:  true,
+		},
+		{
+			name:         "gitlab.com origin with github provider routes to github.com",
+			originURL:    "git@gitlab.com:acme/app.git",
+			pushRemote:   "origin",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"acme/checkpoints"}}}`,
+			wantURL:      "git@github.com:acme/checkpoints.git",
+			wantEnabled:  true,
+		},
+		{
+			// Enterprise installations keep their own host: only public forge
+			// hosts are known to belong to one provider.
+			name:         "enterprise host keeps its host for the github provider",
+			originURL:    "https://ghe.example.com/acme/app.git",
+			pushRemote:   "origin",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"acme/checkpoints"}}}`,
+			wantURL:      "https://ghe.example.com/acme/checkpoints.git",
+			wantEnabled:  true,
+		},
+		{
+			// A provider with no host of its own cannot be served from github.com
+			// either, so pushes fall back to origin instead of inventing a
+			// github.com checkpoint URL.
+			name:         "github.com origin with unknown provider falls back to origin",
+			originURL:    "https://github.com/acme/app.git",
+			pushRemote:   "origin",
+			settingsJSON: `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"bitbucket","repo":"acme/checkpoints"}}}`,
+			wantURL:      "https://github.com/acme/app.git",
+			wantEnabled:  false,
+		},
+		{
 			name:         "non-derivable origin with unknown provider falls back to origin",
 			originURL:    "entire://app.entire.io/gh/acme/app",
 			pushRemote:   "origin",
@@ -1041,6 +1097,21 @@ func TestDeriveCheckpointURLFromInfo(t *testing.T) {
 		{
 			name:           "entire push remote with forge not matching provider",
 			pushRemoteURL:  "entire://aws-ap-southeast-2.entire.io/et/org/main-repo",
+			checkpointRepo: "org/checkpoints",
+			wantDeriveErr:  true,
+		},
+		{
+			// A public forge's host names its provider, so a github
+			// checkpoint_remote must not be derived on gitlab.com. The error
+			// sends callers to the provider's own host.
+			name:           "public forge of another provider over SSH",
+			pushRemoteURL:  "git@gitlab.com:org/main-repo.git",
+			checkpointRepo: "org/checkpoints",
+			wantDeriveErr:  true,
+		},
+		{
+			name:           "public forge of another provider over HTTPS",
+			pushRemoteURL:  "https://GitLab.com/org/main-repo.git",
 			checkpointRepo: "org/checkpoints",
 			wantDeriveErr:  true,
 		},

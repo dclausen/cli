@@ -41,12 +41,12 @@ func ClaimCheckpointRemoteFlagValue(config *settings.CheckpointRemoteConfig) str
 	}
 	repo := strings.TrimSpace(config.Repo)
 	switch provider := strings.ToLower(strings.TrimSpace(config.Provider)); provider {
-	case "github":
+	case ProviderGitHub:
 		if !claimRepoPattern.MatchString(repo) {
 			return ""
 		}
 		return provider + ":" + repo
-	case "gitlab":
+	case ProviderGitLab:
 		if !claimNestedRepoPattern.MatchString(repo) {
 			return ""
 		}
