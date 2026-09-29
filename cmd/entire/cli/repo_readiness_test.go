@@ -62,6 +62,10 @@ func serveRepoView(t *testing.T, repoJSON string, authoritative func(w http.Resp
 	return srv, &authReads
 }
 
+// testNativeRepoPath is the one spelling `repo view` takes for a native repo.
+// serveRepoView answers POST /repos/resolve for it with testDeleteULID.
+const testNativeRepoPath = "/et/acme/web"
+
 // TestRepoView_AuthoritativeSnapshot pins that `repo view` always reads the
 // repo authoritatively, so the primary's STATUS says whether it is usable
 // rather than dashing. The provision reason rides along in --json, which is
@@ -81,7 +85,7 @@ func TestRepoView_AuthoritativeSnapshot(t *testing.T) {
 			// no clusterSlug, so a failed repo has no placement and reports on
 			// stdout, where there is no table to keep clean; every other state
 			// reports nothing at all.
-			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 			require.NoError(t, err)
 			if state == repoStateFailed {
 				require.Contains(t, out, "Provisioning failed: max retries exhausted")
@@ -91,7 +95,7 @@ func TestRepoView_AuthoritativeSnapshot(t *testing.T) {
 					"a reason without a failure to explain is noise under a healthy repo")
 			}
 
-			out, _, err = runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+			out, _, err = runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
 			require.NoError(t, err)
 			var row repoDirRow
 			require.NoError(t, json.Unmarshal([]byte(out), &row))
@@ -139,9 +143,9 @@ func TestRepoView_ReasonFollowsTheAuthoritativeState(t *testing.T) {
 				return true
 			})
 
-			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 			require.NoError(t, err)
-			jsonOut, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+			jsonOut, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
 			require.NoError(t, err)
 			var row repoDirRow
 			require.NoError(t, json.Unmarshal([]byte(jsonOut), &row))
@@ -189,12 +193,11 @@ func TestRepoView_BeforeThePrimaryIsPlaced(t *testing.T) {
 			"a repo Entire holds a record for is not a GitHub upstream")
 	})
 
-	t.Run("a ULID ref looks nothing up, so the repo's own name is all there is", func(t *testing.T) {
+	t.Run("a ULID is not a repository's name, so it is refused", func(t *testing.T) {
 		srv, _ := serveRepoView(t, body, nil)
-		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
-		require.NoError(t, err)
-		requireOrder(t, out, "Name:", "web")
-		require.NotContains(t, out, "/et/", "nothing was resolved, and a path is never invented")
+		_, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+		require.Error(t, err, "a repo is named /et/<project>/<repo> here and no other way")
+		require.ErrorContains(t, err, nativeCloneForge, "the refusal names the grammar that works")
 	})
 
 	t.Run("--json carries the project the resolved name spells", func(t *testing.T) {
@@ -226,7 +229,7 @@ func TestRepoView_UnplacedRepoStatesItsLifecycle(t *testing.T) {
 
 	t.Run("a failed repo says so, with the reason, not that the read was early", func(t *testing.T) {
 		srv, _ := serveRepoView(t, body("failed", `,"provisionReason":"cluster quota exceeded"`), nil)
-		out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+		out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 		require.NoError(t, err)
 		// Lead with the problem, not with an explanation of the missing table.
 		require.Contains(t, out, "Provisioning failed: cluster quota exceeded.")
@@ -237,7 +240,7 @@ func TestRepoView_UnplacedRepoStatesItsLifecycle(t *testing.T) {
 
 	t.Run("a provisioning repo is still the early read", func(t *testing.T) {
 		srv, _ := serveRepoView(t, body("provisioning", ""), nil)
-		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 		require.NoError(t, err)
 		require.Contains(t, out, "No cluster holds this repository yet.")
 	})
@@ -246,7 +249,7 @@ func TestRepoView_UnplacedRepoStatesItsLifecycle(t *testing.T) {
 	// permissive one: an operator reads this to confirm a repo is restricted.
 	t.Run("an unstated visibility is dashed, never rendered Public", func(t *testing.T) {
 		srv, _ := serveRepoView(t, body("provisioning", ""), nil)
-		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 		require.NoError(t, err)
 		requireOrder(t, out, "Visibility:", "-")
 		require.NotContains(t, out, "Public")
@@ -254,7 +257,7 @@ func TestRepoView_UnplacedRepoStatesItsLifecycle(t *testing.T) {
 
 	t.Run("--json omits private when unstated and carries the raw state", func(t *testing.T) {
 		srv, _ := serveRepoView(t, body("failed", `,"provisionReason":"cluster quota exceeded"`), nil)
-		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
 		require.NoError(t, err)
 		require.NotContains(t, out, `"private"`, "an absent visibility is absent, not false")
 		var row repoDirRow
@@ -290,6 +293,8 @@ func TestRepoView_AnInterruptedReadinessReadIsNotSwallowed(t *testing.T) {
 			fmt.Fprint(w, `{"nativeMirrors":[]}`)
 		case r.URL.Path == "/api/v1/clusters":
 			fmt.Fprint(w, `{"clusters":[]}`)
+		case r.URL.Path == "/api/v1/repos/resolve":
+			assert.NoError(t, printJSON(w, nativeResolution("acme/web", testDeleteULID)))
 		case r.URL.Query().Get("authoritative") == "true":
 			// Ctrl-C lands while this read is in flight. Block until the
 			// cancellation actually reaches the transport, so the client sees a
@@ -311,7 +316,7 @@ func TestRepoView_AnInterruptedReadinessReadIsNotSwallowed(t *testing.T) {
 	var out, errW bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errW)
-	cmd.SetArgs([]string{testDeleteULID})
+	cmd.SetArgs([]string{testNativeRepoPath})
 	err := cmd.ExecuteContext(ctx)
 
 	require.Error(t, err, "an interrupted command must not report success")
@@ -337,7 +342,7 @@ func TestRepoView_JSONIsTheRecordPlusTheView(t *testing.T) {
 		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","path":"/et/acme/web","clusterSlug":"us","state":"active","visibility":"private","capabilities":{"canManage":true,"canPush":true,"canPull":false}}`,
 			testDeleteULID, testProjectULID)
 		srv, _ := serveRepoView(t, body, nil)
-		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
 		require.NoError(t, err)
 
 		var got map[string]any
@@ -358,7 +363,7 @@ func TestRepoView_JSONIsTheRecordPlusTheView(t *testing.T) {
 		body := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","state":"provisioning"}`,
 			testDeleteULID, testProjectULID)
 		srv, _ := serveRepoView(t, body, nil)
-		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--json")
+		out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--json")
 		require.NoError(t, err)
 
 		var got map[string]any
@@ -366,6 +371,33 @@ func TestRepoView_JSONIsTheRecordPlusTheView(t *testing.T) {
 		require.NotContains(t, got, "placements",
 			"a GitHub candidate omits it, and the two must not differ by code path")
 	})
+}
+
+// TestRepoView_AuthoritativeRefusesAStatelessAnswer pins the promise the flag
+// makes: "Fail if the server cannot confirm provisioning state". A 200 whose
+// body omits `state` is exactly that — the read SUCCEEDED and still cannot say
+// whether the repo is usable — so a zero exit would report a confirmation
+// nobody made. `state` is optional on the wire, and awaitRepoActive already
+// refuses the same answer when `repo create` waits for readiness.
+//
+// Without the flag the view still renders: a dashed STATUS costs less than
+// losing the table, which is the whole distinction the flag draws.
+//
+// Not parallel: runCoreCmd replaces the shared client constructor.
+func TestRepoView_AuthoritativeRefusesAStatelessAnswer(t *testing.T) {
+	// Only what the spec makes required, plus the coordinates the view renders.
+	stateless := fmt.Sprintf(`{"id":%q,"name":"web","owningProjectId":%q,"provider":"entire","path":"/et/acme/web","clusterSlug":"us","visibility":"private","capabilities":{"canManage":false,"canPush":false,"canPull":true}}`,
+		testDeleteULID, testProjectULID)
+
+	srv, _ := serveRepoView(t, stateless, nil)
+	_, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--authoritative")
+	require.Error(t, err, "the flag exists to turn an unconfirmed state into an exit code")
+	require.Contains(t, err.Error()+stderr, "readiness information")
+
+	srv, _ = serveRepoView(t, stateless, nil)
+	out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
+	require.NoError(t, err, "without the flag an unreadable state dashes the cell, it does not sink the view")
+	require.Contains(t, out, testNativeRepoPath)
 }
 
 func TestRepoCreateReadinessFlags(t *testing.T) {
@@ -506,7 +538,8 @@ func TestRepoCreateReadinessResults(t *testing.T) {
 				if tc.wantErr {
 					require.Error(t, err)
 					require.Contains(t, stderr, "creation succeeded")
-					require.Contains(t, stderr, "repo view "+testDeleteULID)
+					require.Contains(t, stderr, "repo view /et/project/web",
+						"the hint must name a ref `repo view` accepts, and a ULID is not one")
 					require.Contains(t, stderr, "support")
 					require.Contains(t, stderr, "--authoritative")
 					if tc.pollStatus == 422 {
@@ -870,7 +903,7 @@ func TestRepoViewAuthoritativeFlag(t *testing.T) {
 			// a core outage downgrade every `repo view` to a table asserting
 			// nothing was wrong, at exit 0.
 			srv, _ := serveRepoView(t, repoBody, fail)
-			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID)
+			out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 			require.NoError(t, err, "a failed readiness read must not sink the view")
 			require.Contains(t, out, "/et/acme/web")
 			require.Contains(t, stderr, "could not confirm provisioning state")
@@ -879,7 +912,7 @@ func TestRepoViewAuthoritativeFlag(t *testing.T) {
 			require.NotContains(t, stderr, "to inspect repository details")
 
 			srv, _ = serveRepoView(t, repoBody, fail)
-			_, stderr, err = runCoreCmd(t, newRepoViewCmd, srv.URL, testDeleteULID, "--authoritative")
+			_, stderr, err = runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath, "--authoritative")
 			require.Error(t, err)
 			var silent *SilentError
 			if !errors.As(err, &silent) {
@@ -888,7 +921,7 @@ func TestRepoViewAuthoritativeFlag(t *testing.T) {
 			// The server's own message reaches the user either way.
 			require.Contains(t, stderr, "repository read failed")
 			if tc.hint {
-				require.Contains(t, stderr, "entire repo view "+testDeleteULID+" to inspect")
+				require.Contains(t, stderr, "entire repo view "+testNativeRepoPath+" to inspect")
 				require.Contains(t, stderr, "without a readiness check")
 			} else {
 				require.NotContains(t, stderr, "readiness check")

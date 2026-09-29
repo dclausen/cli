@@ -246,6 +246,21 @@ func retainRepoCreation(result, snapshot *coreapi.Repo) {
 	*result = *snapshot
 }
 
+// repoViewRef spells a just-created repo the way `repo view` takes it: the
+// server's own /et/<project>/<repo> path. A recovery hint has to name a ref the
+// command accepts, and a ULID is no longer one.
+//
+// The create response carries the path, so this is normally exact. When it does
+// not — the same window in which readiness goes unconfirmed — the bare name is
+// all there is; it is not a working ref, but it names the repo, and the ID on
+// the line above is what support is asked for.
+func repoViewRef(r *coreapi.Repo) string {
+	if path := strings.TrimSpace(r.Path.Or("")); path != "" {
+		return path
+	}
+	return r.Name
+}
+
 // reportRepoCreation reports the successful POST even when waiting failed,
 // unlike runCoreMutation. A nonzero exit does not mean another POST is safe.
 func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, noWait bool, waitErr error) error {
@@ -275,11 +290,15 @@ func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, noWait bool, w
 	}
 	if waitErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Repository creation succeeded: %s (%s). Readiness was not confirmed: %v\n", result.Name, result.ID, renderRepoReadError(waitErr))
-		fmt.Fprintf(cmd.ErrOrStderr(), "Inspect repository details with: entire repo view %s\nCheck readiness with: entire repo view %s --authoritative\nWhen that command reports the primary as ready, retry the intended push or mirror creation. If readiness remains unavailable, contact support with this repository ID. Do not create the repository again. For future creates, --no-wait skips readiness checks.\n", result.ID, result.ID)
+		// The PATH, because that is what `repo view` takes — a ULID is not a
+		// repository's name and the verb no longer accepts one. The repo ID
+		// still appears above, which is what support is asked for.
+		ref := repoViewRef(result)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Inspect repository details with: entire repo view %s\nCheck readiness with: entire repo view %s --authoritative\nWhen that command reports the primary as ready, retry the intended push or mirror creation. If readiness remains unavailable, contact support with this repository ID. Do not create the repository again. For future creates, --no-wait skips readiness checks.\n", ref, ref)
 		return NewSilentError(errors.Join(waitErr, outputErr))
 	}
 	if noWait && (result.State.Or("") != repoStateActive || result.Foreign.Or(false)) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait). Check readiness with: entire repo view %s --authoritative\n", result.ID)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait). Check readiness with: entire repo view %s --authoritative\n", repoViewRef(result))
 	}
 	return outputErr
 }

@@ -294,21 +294,23 @@ func newRepoListCmd() *cobra.Command {
 }
 
 func newRepoViewCmd() *cobra.Command {
-	var project string
 	var authoritative bool
 	cmd := &cobra.Command{
 		Use:   "view <repo>",
 		Short: "Show a repository and every cluster holding a copy of it",
 		Long: "Show a repository: its identity, visibility, and one row per cluster " +
 			"it is placed on, with that cluster's clone URL and status.\n\n" +
-			"<repo> is one of:\n\n" +
-			"  - /et/<project>/<repo>, a bare name with --project, or a repo ULID —\n" +
-			"    an Entire-native repo, shown with its primary cluster and each\n" +
-			"    mirror of it, plus how far a seed in progress has got\n" +
+			"<repo> names its forge, and nothing else addresses a repository here:\n\n" +
+			"  - /et/<project>/<repo> — an Entire-native repo, shown with its\n" +
+			"    primary cluster and each mirror of it, plus how far a seed in\n" +
+			"    progress has got\n" +
 			"  - /gh/<owner>/<repo> — a GitHub upstream, shown with its mirror on\n" +
 			"    every cluster\n" +
-			"  - an entire:// clone URL, as `git clone` takes it (a trailing .git,\n" +
-			"    pasted from `git remote -v`, is accepted too)\n\n" +
+			"  - an entire:// clone URL, as `git clone` takes it. A trailing .git,\n" +
+			"    pasted from `git remote -v`, is dropped from a /gh/ URL, where\n" +
+			"    GitHub's own naming rules make the suffix decoration. On an /et/\n" +
+			"    URL it is kept: a native repo may be named `web.git`, and\n" +
+			"    trimming it would address a different repo\n\n" +
 			"A clone URL is looked up on the login server fronting its cluster, so it " +
 			"resolves even when that cluster belongs to a federation other than the " +
 			"active auth context; every other form is looked up on the active " +
@@ -318,9 +320,8 @@ func newRepoViewCmd() *cobra.Command {
 			"dash that cell when the server cannot answer.",
 		Example: "  entire repo view /et/acme/web\n" +
 			"  entire repo view /gh/octocat/hello-world\n" +
-			"  entire repo view web --project acme\n" +
 			"  entire repo view /et/acme/web --json\n" +
-			"  entire repo view entire://aws-us-east-2.entire.io/gh/octocat/hello-world",
+			"  entire repo view entire://aws-us-east-2.entire.io/et/acme/web",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -335,40 +336,30 @@ func newRepoViewCmd() *cobra.Command {
 					return badRepoRefErr(err)
 				}
 				if target.forge == nativeCloneForge {
-					// The URL spells the /et/ path, so it is passed on as one —
-					// a --project given alongside is then checked against it by
-					// the same resolver that checks the typed path.
-					return runNativeRepoView(cmd, target.qualified(), project, clusterHost, authoritative)
+					return runNativeRepoView(cmd, target.qualified(), clusterHost, authoritative)
 				}
 				warnFlagsGitHubViewIgnores(cmd)
 				return runRepoMirrorViewByName(cmd, target.owner+"/"+target.repo, clusterHost)
 			}
-			// Anything carrying a '/' is a repository reference in the one
-			// grammar the repo commands take, and it is parsed here so a bare
-			// <a>/<b> is answered with BOTH forges — this verb serves both, so
-			// suggesting only one would name a ref it then refuses.
+			// A repository is named /<forge>/<a>/<b> and no other way. A bare
+			// pair is answered with BOTH spellings, since this verb serves both
+			// forges and suggesting one would name a ref it then refuses.
 			//
 			// A /gh/ ref is a GitHub upstream: Entire holds no repo record for
 			// it, only the mirrors of it, so it takes the directory lookup
-			// rather than the repo resolver every other form uses.
-			if strings.Contains(ref, "/") {
-				target, err := parseMirrorRepoRef(ref)
-				if err != nil {
-					return err
-				}
-				if target.forge == mirrorCloneForge {
-					warnFlagsGitHubViewIgnores(cmd)
-					return runRepoMirrorViewByName(cmd, target.owner+"/"+target.repo, "")
-				}
+			// rather than the repo resolver the native path uses.
+			target, err := parseMirrorRepoRef(ref)
+			if err != nil {
+				return err
 			}
-			// A ULID or a bare name with --project, plus the /et/ path above.
-			// None of those names a cluster, so all resolve on the active
-			// context's core.
-			return runNativeRepoView(cmd, ref, project, "", authoritative)
+			if target.forge == mirrorCloneForge {
+				warnFlagsGitHubViewIgnores(cmd)
+				return runRepoMirrorViewByName(cmd, target.owner+"/"+target.repo, "")
+			}
+			return runNativeRepoView(cmd, target.qualified(), "", authoritative)
 		},
 	}
 	cmd.Flags().BoolVar(&authoritative, "authoritative", false, "Fail if the server cannot confirm provisioning state")
-	bindRepoProjectFlag(cmd, &project)
 	addJSONFlag(cmd)
 	return cmd
 }

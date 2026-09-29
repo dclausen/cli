@@ -688,9 +688,11 @@ func TestRepoProjectFlagRedundancyWarning(t *testing.T) {
 	const repoULID = "0123456789ABCDEFGHJKMNPQR5"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// The view joins the repo read with the cluster catalog and the
-		// native-mirror list, so the fake has to answer all three.
-		var body any = &coreapi.Repo{ID: repoULID, Name: "web", OwningProjectId: ulidProjectWidgets}
+		// `repo visibility get` is the vehicle: it still binds --project, and
+		// is a plain read. The cluster/native-mirror cases are kept so the fake
+		// also serves a view if one is added back here.
+		var body any = &coreapi.Repo{ID: repoULID, Name: "web", OwningProjectId: ulidProjectWidgets,
+			Visibility: coreapi.NewOptString("private")}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/native-mirrors"):
 			body = &coreapi.ListNativeMirrorsOutputBody{}
@@ -704,9 +706,9 @@ func TestRepoProjectFlagRedundancyWarning(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	t.Run("a ULID ref warns that --project is ignored", func(t *testing.T) {
-		stdout, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, repoULID, "--project", "not-this-project")
+		stdout, stderr, err := runCoreCmd(t, newRepoVisibilityGetCmd, srv.URL, repoULID, "--project", "not-this-project")
 		require.NoError(t, err, "the command must still succeed")
-		require.Contains(t, stdout, "web", "the repo must still be shown")
+		require.Contains(t, stdout, repoULID, "the repo must still be shown")
 		require.Contains(t, stderr, "--project")
 		require.Contains(t, stderr, "ignored")
 	})
@@ -714,13 +716,13 @@ func TestRepoProjectFlagRedundancyWarning(t *testing.T) {
 	t.Run("an explicit empty --project still warns", func(t *testing.T) {
 		// Changed(), not a non-empty value: --project "" is still the user
 		// saying something about this repo's project, and it is still ignored.
-		_, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, repoULID, "--project", "")
+		_, stderr, err := runCoreCmd(t, newRepoVisibilityGetCmd, srv.URL, repoULID, "--project", "")
 		require.NoError(t, err)
 		require.Contains(t, stderr, "ignored")
 	})
 
 	t.Run("a ULID ref without the flag says nothing", func(t *testing.T) {
-		_, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, repoULID)
+		_, stderr, err := runCoreCmd(t, newRepoVisibilityGetCmd, srv.URL, repoULID)
 		require.NoError(t, err)
 		require.NotContains(t, stderr, "ignored")
 	})
@@ -730,8 +732,10 @@ func TestRepoProjectFlagRedundancyWarning(t *testing.T) {
 		// warning rides on bindRepoProjectFlag so it cannot be wired for some
 		// and missed for others. Asserting the PreRunE exists is what pins
 		// that, without standing up a server per command.
+		// `repo view` is deliberately absent: it takes the /et/<project>/<repo>
+		// path and nothing else, so there is no bare name for --project to
+		// scope and no flag to warn about.
 		for name, newCmd := range map[string]func() *cobra.Command{
-			"repo view":              newRepoViewCmd,
 			"repo edit":              newRepoEditCmd,
 			"repo delete":            newRepoDeleteCmd,
 			"repo visibility get":    newRepoVisibilityGetCmd,
@@ -744,6 +748,26 @@ func TestRepoProjectFlagRedundancyWarning(t *testing.T) {
 			require.NotNilf(t, cmd.PreRunE, "%s must carry the redundancy check", name)
 		}
 	})
+}
+
+// TestRepoView_TakesForgeQualifiedRefsOnly pins the grammar `repo view` accepts:
+// a repository is named /<forge>/<a>/<b> and no other way. A ULID identifies a
+// row, not a repository, and a bare name is unique only inside a project — so
+// neither is a name this verb takes, and --project has nothing left to scope.
+func TestRepoView_TakesForgeQualifiedRefsOnly(t *testing.T) {
+	t.Parallel()
+	require.Nil(t, newRepoViewCmd().Flags().Lookup(projectFlagName),
+		"--project scoped a bare name, which this verb no longer takes")
+
+	for _, ref := range []string{"0123456789ABCDEFGHJKMNPQR5", "web", "acme/web"} {
+		cmd := newRepoCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"view", ref})
+		err := cmd.ExecuteContext(t.Context())
+		require.Errorf(t, err, "%q is not a forge-qualified repository reference", ref)
+	}
 }
 
 // TestRepoEdit_Visibility pins `repo edit --visibility`: the value is sent and

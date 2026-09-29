@@ -410,16 +410,18 @@ func regionHosts(regions []regionChoice) []string {
 // GitHub path uses — only this endpoint carries stage and lastError, the two
 // fields that say anything useful about a placement that is stuck.
 //
-// The ref is resolved by the shared repo resolver, so every spelling `repo
-// view` has always taken reaches this view: the /et/<project>/<repo> path, a
-// bare name with --project, and a repo ULID.
+// The ref is always the /et/<project>/<repo> path: it is the only spelling
+// `repo view` takes for a native repo, so the resolver is reached with no
+// project override and its ULID passthrough is unreachable from here. A ULID
+// names no project, and a repo name is unique only within one — neither is a
+// repository's name, and this verb takes the name.
 //
-// clusterHost is empty for every one of those, which name no cluster and so
-// resolve on the active context's core. An entire:// clone URL names one, and
-// is resolved there instead (coreRunnerFor).
-func runNativeRepoView(cmd *cobra.Command, ref, project, clusterHost string, authoritative bool) error {
+// clusterHost is empty for a typed path, which names no cluster and so resolves
+// on the active context's core. An entire:// clone URL names one, and is
+// resolved there instead (coreRunnerFor).
+func runNativeRepoView(cmd *cobra.Command, ref, clusterHost string, authoritative bool) error {
 	return coreRunnerFor(clusterHost)(cmd, func(ctx context.Context, c *coreapi.Client) error {
-		resolved, err := resolveRepoRefResolved(ctx, c, ref, project)
+		resolved, err := resolveRepoRefResolved(ctx, c, ref, "")
 		if err != nil {
 			return err
 		}
@@ -488,21 +490,33 @@ func runNativeRepoView(cmd *cobra.Command, ref, project, clusterHost string, aut
 			if state, ok := auth.State.Get(); ok {
 				repo.State = coreapi.NewOptString(state)
 				repo.ProvisionReason = auth.ProvisionReason
+			} else if authoritative {
+				// A 200 stating no lifecycle is precisely what the flag exists
+				// to refuse: the read SUCCEEDED and still cannot say whether the
+				// repo is usable, so a zero exit would report a confirmation
+				// nobody made. `state` is optional on the wire, and
+				// awaitRepoActive already refuses the same answer in the same
+				// words when `repo create` waits for readiness.
+				return errors.New("repository readiness unconfirmed: the server did not return repository readiness information")
 			}
-		case errors.Is(aerr, context.Canceled), errors.Is(aerr, context.DeadlineExceeded):
-			// An interrupted read is not a readiness answer, so it is never
-			// swallowed the way a server that cannot answer is: without this the
-			// default (flagless) path printed a table built on the plain read's
-			// stale state and exited 0, reporting success for a command the user
-			// stopped.
-			return aerr
+		case ctx.Err() != nil:
+			// Whether the command was stopped is the context's answer, not
+			// something to infer from the read's error: that inference relied on
+			// every wrapper between here and the transport preserving the chain,
+			// and it missed the case where the read SUCCEEDS just as the
+			// cancellation lands — printing a table for work the user had
+			// already interrupted, at exit 0.
+			//
+			// An interrupted read is never swallowed the way a server that
+			// cannot answer is, which is what the arms below do.
+			return ctx.Err()
 		case authoritative && readinessCheckUnavailable(aerr):
 			// --authoritative is the caller saying the readiness answer is the
 			// point of the command, so a registry-only fallback that cannot give
 			// one is an error rather than a dashed cell. Print here so
 			// renderCoreError cannot strip the recovery hint with the API error
 			// wrapper; the plain read is the default, so the hint names no flag.
-			fmt.Fprintf(cmd.ErrOrStderr(), "%v\nUse entire repo view %s to inspect repository details without a readiness check.\n", renderRepoReadError(aerr), repoID)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%v\nUse entire repo view %s to inspect repository details without a readiness check.\n", renderRepoReadError(aerr), ref)
 			return NewSilentError(aerr)
 		case authoritative:
 			// Any other failure of the authoritative read is a real error under
