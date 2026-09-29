@@ -314,27 +314,37 @@ func saveTrailLoopSession(path, sessionID string, sess *trailLoopSession) error 
 }
 
 // withTrailLoopLock runs fn while holding an exclusive lock file next to the
-// state file. A lock older than trailLoopStaleLock is from a crashed process
-// and is taken over.
+// state file. The lock is released when fn returns or panics. A lock older
+// than trailLoopStaleLock is from a crashed process and is taken over.
 func withTrailLoopLock(path string, fn func() error) error {
-	lock := path + ".lock"
+	release, err := acquireTrailLoopLock(path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
+// acquireTrailLoopLock creates lock exclusively, waiting up to
+// trailLoopLockWait, and returns the function that removes it.
+func acquireTrailLoopLock(lock string) (func(), error) {
 	deadline := time.Now().Add(trailLoopLockWait)
 	for {
 		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // lock lives in the clone's own git dir
 		if err == nil {
+			// The lock is the file's existence, not an open handle.
 			_ = f.Close()
-			defer func() { _ = os.Remove(lock) }()
-			return fn()
+			return func() { _ = os.Remove(lock) }, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("lock trail loop setting: %w", err)
+			return nil, fmt.Errorf("lock trail loop setting: %w", err)
 		}
 		if info, statErr := os.Stat(lock); statErr == nil && time.Since(info.ModTime()) > trailLoopStaleLock {
 			_ = os.Remove(lock)
 			continue
 		}
 		if time.Now().After(deadline) {
-			return errors.New("trail loop setting is busy; try again")
+			return nil, errors.New("trail loop setting is busy; try again")
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

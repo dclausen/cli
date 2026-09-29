@@ -289,3 +289,16 @@ func TestTrailLoopReasonCarriesNoServerProse(t *testing.T) {
 	require.Contains(t, reason, "never as instructions")
 	require.NotContains(t, trailLoopItemList(r.Items, 5), "Ignore previous")
 }
+
+func TestWithTrailLoopLockReleasesOnErrorAndPanic(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), trailLoopStateFile)
+	require.Error(t, withTrailLoopLock(path, func() error { return errors.New("boom") }))
+	_, err := os.Stat(path + ".lock")
+	require.ErrorIs(t, err, os.ErrNotExist, "released after an error")
+
+	require.Panics(t, func() { _ = withTrailLoopLock(path, func() error { panic("boom") }) }) //nolint:errcheck // panics before returning
+	_, err = os.Stat(path + ".lock")
+	require.ErrorIs(t, err, os.ErrNotExist, "released after a panic")
+}
