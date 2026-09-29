@@ -5228,10 +5228,11 @@ func TestCleanRemoteURLForReport(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		rawURL  string
-		want    string
-		wantErr bool
+		name     string
+		rawURL   string
+		want     string
+		wantSkip bool // the remote names no upstream forge, so nothing is reported
+		wantErr  bool
 	}{
 		{
 			name:   "https without credentials is normalized",
@@ -5274,17 +5275,17 @@ func TestCleanRemoteURLForReport(t *testing.T) {
 			want:   "https://ghe.corp.example.com/entireio/cli.git",
 		},
 		{
-			// A native origin has no upstream forge, so CanonicalHost is the
-			// Entire cluster. `.git` is a forge clone-URL convention and is
-			// never part of an Entire path, so it must not be appended here.
-			name:   "native origin does not gain a .git suffix",
-			rawURL: "entire://aws-us-east-2.entire.io/et/widgets/web",
-			want:   "https://aws-us-east-2.entire.io/widgets/web",
+			// A native repo mirrors nothing, so CanonicalHost falls back to the
+			// Entire cluster and no forge clone URL exists to report. Reporting
+			// a synthesized one would name a URL that addresses nothing.
+			name:     "native origin reports nothing",
+			rawURL:   "entire://aws-us-east-2.entire.io/et/widgets/web",
+			wantSkip: true,
 		},
 		{
-			name:   "native origin spelled with the .git alias is unchanged",
-			rawURL: "entire://aws-us-east-2.entire.io/et/widgets/web.git",
-			want:   "https://aws-us-east-2.entire.io/widgets/web",
+			name:     "native origin spelled with the .git alias reports nothing",
+			rawURL:   "entire://aws-us-east-2.entire.io/et/widgets/web.git",
+			wantSkip: true,
 		},
 		{
 			name:    "unparseable single-segment path errors",
@@ -5307,7 +5308,13 @@ func TestCleanRemoteURLForReport(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error parsing %q: %v", tt.rawURL, err)
 			}
-			got := cleanRemoteURLForReport(info)
+			got, ok := cleanRemoteURLForReport(info)
+			if ok == tt.wantSkip {
+				t.Fatalf("cleanRemoteURLForReport(%q) ok = %v, want %v", tt.rawURL, ok, !tt.wantSkip)
+			}
+			if !ok && got != "" {
+				t.Errorf("cleanRemoteURLForReport(%q) returned %q alongside ok=false", tt.rawURL, got)
+			}
 			if got != tt.want {
 				t.Errorf("cleanRemoteURLForReport(%q) = %q, want %q", tt.rawURL, got, tt.want)
 			}

@@ -456,10 +456,10 @@ the commands are always runnable in every build.
   miss hint rather than stripping it. Nothing appends it to an Entire path, so an
   `entire://` URL, an `/et/` or `/gh/` ref, an API argument and anything the CLI
   echoes back are all suffix-free — appending stays correct only on a
-  third-party forge clone URL, where it is that host's convention
-  (`cleanRemoteURLForReport`, the checkpoint-remote URL builders), and a native
-  remote must never gain one, which is why `cleanRemoteURLForReport` checks the
-  forge before appending. And `repo create` refuses a name ending in it.
+  third-party forge clone URL, where it is that host's convention (the
+  checkpoint-remote URL builders, and `cleanRemoteURLForReport`, which reports
+  nothing at all for a remote with no upstream forge rather than synthesizing a
+  URL that addresses nothing). And `repo create` refuses a name ending in it.
   `/et/p/foo` and `/et/p/foo.git` therefore address one repository, spelled `foo`.
   Order matters where a URL is parsed: `splitOwnerRepo` strips trailing
   separators **before** the suffix, the order canonical git uses in

@@ -1198,6 +1198,14 @@ const (
 // and independent of the trails probe: a failure here (not logged in, network
 // error, backend rejects the URL) must not block that probe.
 func reportEnableToBackend(ctx context.Context, insecureHTTPAuth bool, info *gitremote.Info) {
+	// Checked before the client is built, so a repo this report has nothing to
+	// say about costs no auth round trip.
+	reportURL, ok := cleanRemoteURLForReport(info)
+	if !ok {
+		logging.Debug(ctx, "skipping enable report: remote has no upstream forge URL", "forge", info.Forge)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, enableReportBudget)
 	defer cancel()
 
@@ -1207,7 +1215,7 @@ func reportEnableToBackend(ctx context.Context, insecureHTTPAuth bool, info *git
 		logging.Debug(ctx, "skipping enable report", "error", err)
 		return
 	}
-	if _, err := client.ReportEnable(ctx, cleanRemoteURLForReport(info)); err != nil {
+	if _, err := client.ReportEnable(ctx, reportURL); err != nil {
 		logging.Debug(ctx, "enable report failed", "error", err)
 	}
 }
@@ -1245,22 +1253,31 @@ func probeAndCacheTrailsEnablement(ctx context.Context, insecureHTTPAuth bool, i
 }
 
 // cleanRemoteURLForReport turns a parsed git remote into a clean,
-// credential-free HTTPS URL safe to send to the backend. The raw remote can
-// carry embedded credentials (https://token@host/...) or query params, so we
-// never forward it verbatim: rebuild from host/owner/repo alone.
-func cleanRemoteURLForReport(info *gitremote.Info) string {
+// credential-free HTTPS clone URL on the repo's UPSTREAM forge host, safe to
+// send to the backend. The raw remote can carry embedded credentials
+// (https://token@host/...) or query params, so we never forward it verbatim:
+// rebuild from host/owner/repo alone.
+//
+// ok is false when the remote has no upstream forge to name. An Entire-native
+// repo is the case that matters: it is not a mirror of anything, so
+// CanonicalHost falls back to the Entire cluster and every URL this could build
+// would be a fiction — `https://<cluster>/<project>/<repo>` addresses nothing,
+// and the `/et/<project>/<repo>` path that does address it is not a forge clone
+// URL. The report exists to drive the web onboarding's GitHub-App nudge, which
+// has nothing to say about such a repo, so the caller skips it entirely rather
+// than reporting a synthesized URL.
+//
+// Because ok is false for the native case, the returned host is always a real
+// git host and the `.git` suffix is always that host's clone convention rather
+// than part of a name (see gitDirSuffix).
+func cleanRemoteURLForReport(info *gitremote.Info) (string, bool) {
+	if info.Forge == gitremote.ForgeNative {
+		return "", false
+	}
 	// Use CanonicalHost, not Host: an entire://cluster/gh/owner/repo origin (an
 	// already-mirrored repo) carries the Entire cluster as Host, so reporting
 	// Host verbatim would point the backend at the cluster instead of github.com.
-	cleaned := fmt.Sprintf("https://%s/%s/%s", info.CanonicalHost(), info.Owner, info.Repo)
-	// `.git` is the clone-URL convention of an upstream git host, never part of
-	// a repo name (see gitDirSuffix). A native remote has no upstream host — its
-	// CanonicalHost is the Entire cluster — so appending the suffix there would
-	// spell an Entire path with a decoration Entire never uses.
-	if info.Forge != gitremote.ForgeNative {
-		cleaned += gitDirSuffix
-	}
-	return cleaned
+	return fmt.Sprintf("https://%s/%s/%s%s", info.CanonicalHost(), info.Owner, info.Repo, gitDirSuffix), true
 }
 
 func newDisableCmd() *cobra.Command {
