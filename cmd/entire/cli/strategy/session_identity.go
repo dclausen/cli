@@ -2,8 +2,11 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -184,7 +187,7 @@ func (s *ManualCommitStrategy) rehomeSessionAfterOwnCommit(ctx context.Context, 
 	if worktreePath == "" || isSessionHomeWorktree(worktreePath, state) {
 		return false
 	}
-	if homeHoldsPendingContent(state, worktreePath) {
+	if !homeWorktreeRemoved(state) && homeHoldsPendingContent(state, worktreePath) {
 		logging.Debug(logCtx, "post-commit: session committed outside its home worktree but the home holds pending content; staying guest-linked",
 			slog.String("session_id", state.SessionID),
 			slog.String("home_worktree", state.WorktreePath),
@@ -220,18 +223,38 @@ func (s *ManualCommitStrategy) rehomeSessionToCurrentWorktree(ctx context.Contex
 	if err != nil || current == "" || state.WorktreePath == "" || isSessionHomeWorktree(current, state) {
 		return
 	}
-	if homeHoldsPendingContent(state, current) {
-		return
-	}
-	homeCommon := gitCommonDirForWorktreeOrEmpty(ctx, state.WorktreePath)
-	if homeCommon == "" || homeCommon != gitCommonDirForWorktreeOrEmpty(ctx, current) {
-		return // relocated or another repository: reconcileWorktreePathForResumedTurn's territory
+	why := "its agent's hooks now run there"
+	if homeWorktreeRemoved(state) {
+		// The session's home was deleted (a disposable agent worktree, cleaned
+		// up after its work merged). Nothing there can be committed any more,
+		// so pending work recorded there must not strand the session: every
+		// later commit elsewhere would fail to link it. The state was loaded
+		// from this repository's session store, so current is its repository.
+		why = "its old worktree was removed"
+	} else {
+		if homeHoldsPendingContent(state, current) {
+			return
+		}
+		homeCommon := gitCommonDirForWorktreeOrEmpty(ctx, state.WorktreePath)
+		if homeCommon == "" || homeCommon != gitCommonDirForWorktreeOrEmpty(ctx, current) {
+			return // relocated or another repository: reconcileWorktreePathForResumedTurn's territory
+		}
 	}
 	head, err := repo.Head()
 	if err != nil {
 		return
 	}
-	rehomeSession(ctx, repo, state, current, head.Hash().String(), "its agent's hooks now run there")
+	rehomeSession(ctx, repo, state, current, head.Hash().String(), why)
+}
+
+// homeWorktreeRemoved reports whether the session's recorded home directory no
+// longer exists. Any other stat failure is not proof of removal.
+func homeWorktreeRemoved(state *SessionState) bool {
+	if state.WorktreePath == "" {
+		return false
+	}
+	_, err := os.Lstat(state.WorktreePath)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // rehomeSessionAtTurnEnd re-homes at a turn end that saved no step, such as

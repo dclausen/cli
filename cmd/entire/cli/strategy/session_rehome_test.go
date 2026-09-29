@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -227,5 +228,43 @@ func TestRehome_NeverOrphansOrRewritesPendingWork(t *testing.T) {
 				assert.Equal(t, before.PendingContentWorktree, state.PendingContentWorktree, "a re-home never relocates where pending work was recorded")
 			})
 		}
+	}
+}
+
+// A home worktree that was removed (a disposable agent worktree, cleaned up
+// after its work merged) cannot hold anything committable, so pending work
+// recorded there must not strand the session: every entry point moves it on a
+// strong signal, and the pending work itself is left as it was.
+func TestRehome_LeavesARemovedHomeEvenWithPendingWork(t *testing.T) {
+	fx := newRehomeFixture(t)
+	repo, err := OpenRepository(context.Background())
+	require.NoError(t, err)
+	defer repo.Close()
+	s := &ManualCommitStrategy{}
+	signalled := WithAgentWorkingTree(context.Background())
+	removedHome := filepath.Join(t.TempDir(), "removed-worktree")
+
+	entryPoints := map[string]func(*SessionState) bool{
+		"own commit": func(st *SessionState) bool {
+			return s.rehomeSessionAfterOwnCommit(signalled, repo, st, fx.worktreeDir, fx.head, true, st.SessionID)
+		},
+		"turn boundary": func(st *SessionState) bool {
+			s.rehomeSessionToCurrentWorktree(signalled, repo, st, false)
+			return st.WorktreePath == fx.worktreeDir
+		},
+	}
+	for name, rehome := range entryPoints {
+		t.Run(name, func(t *testing.T) {
+			state := *fx.state
+			state.WorktreePath = removedHome
+			state.FilesTouched = []string{"a.go"}
+			state.StepCount = 1
+			state.PendingContentWorktree = removedHome
+
+			require.True(t, rehome(&state), "a removed home must not strand the session")
+			assert.Equal(t, fx.worktreeDir, state.WorktreePath)
+			assert.Equal(t, []string{"a.go"}, state.FilesTouched, "the pending work is left as it was")
+			assert.Equal(t, 1, state.StepCount)
+		})
 	}
 }

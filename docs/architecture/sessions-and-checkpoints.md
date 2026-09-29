@@ -209,7 +209,10 @@ homed in that checkout until their first turn ends, and the fallback would give
 one agent's mid-turn commit to all of them. A match is not treated as identified when its owner
 process also hosts another live session (the Codex app-server daemon hosts
 them all, #2612): ancestry ties between them, so the match links as before but
-neither re-homes a session nor skips the fallback.
+neither re-homes a session nor skips the fallback. A home worktree that no longer
+exists (a disposable agent worktree removed after its work merged) never holds
+a session: nothing there can be committed, so the next strong signal re-homes
+it even when pending work was recorded there, which is left as it was.
 
 **The session follows its agent** (`rehomeSessionAfterOwnCommit`). A session
 is homed where its first turn-start hook ran, and agent hooks run where the
