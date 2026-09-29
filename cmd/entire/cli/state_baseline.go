@@ -185,10 +185,12 @@ func carryTurnPrompt(ctx context.Context, from, sessionID string, offset int) er
 	if err != nil {
 		return fmt.Errorf("read carried prompt: %w", err)
 	}
-	if offset < 0 || offset > len(content) {
-		// Shorter than at turn start: a condensation cleared it mid-turn, so what
-		// remains was written since and is all this turn's.
-		logging.Debug(logging.WithComponent(ctx, "state"), "prompt.txt shrank since turn start; carrying all of it",
+	if !promptBoundary(content, offset) {
+		// The turn's prompt was appended at offset, after a separator when the
+		// file already held prompts. Anything else means the file was cleared
+		// by a condensation mid-turn and rewritten since, so the offset no
+		// longer marks this turn's start: what remains is all this turn's.
+		logging.Debug(logging.WithComponent(ctx, "state"), "prompt.txt was rewritten since turn start; carrying all of it",
 			slog.Int("offset", offset), slog.Int("size", len(content)))
 		offset = 0
 	}
@@ -219,6 +221,16 @@ func carryTurnPrompt(ctx context.Context, from, sessionID string, offset int) er
 		return fmt.Errorf("trim carried prompt: %w", err)
 	}
 	return nil
+}
+
+// promptBoundary reports whether offset still marks where this turn's prompt
+// was appended to content: the start, the end (nothing appended), or a
+// separator.
+func promptBoundary(content []byte, offset int) bool {
+	if offset < 0 || offset > len(content) {
+		return false
+	}
+	return offset == 0 || offset == len(content) || bytes.HasPrefix(content[offset:], []byte(promptSeparator))
 }
 
 // promptSeparator joins the prompts of successive turns in prompt.txt.

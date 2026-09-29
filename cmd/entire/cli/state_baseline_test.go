@@ -52,3 +52,27 @@ func TestLoadPrePromptState_UnreadableBaselineDegradesDetection(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, state.NewFilesUndetectable(), "a corrupt baseline must disable status-based new-file detection")
 }
+
+// The turn-start offset marks this turn's prompt only while it still lands on
+// a boundary; a file cleared and refilled past it must not be split mid-prompt.
+func TestPromptBoundary(t *testing.T) {
+	t.Parallel()
+	prompts := []byte("first" + promptSeparator + "second")
+	cases := map[string]struct {
+		offset int
+		want   bool
+	}{
+		"start":                    {offset: 0, want: true},
+		"on the separator":         {offset: len("first"), want: true},
+		"end, nothing appended":    {offset: len(prompts), want: true},
+		"mid-prompt after refill":  {offset: 2, want: false},
+		"past the end after clear": {offset: len(prompts) + 1, want: false},
+		"negative":                 {offset: -1, want: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, promptBoundary(prompts, tc.offset))
+		})
+	}
+}
