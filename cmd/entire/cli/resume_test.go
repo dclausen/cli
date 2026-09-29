@@ -1826,31 +1826,34 @@ func TestRestoreResumeSessions_EmptyStoredSessionIDIsNotTampering(t *testing.T) 
 // fetch of) the v1 branch is wrong — the branch may well exist.
 func TestCheckRemoteMetadata_MessageNamesCheckpointStorage(t *testing.T) {
 	const ulid = "01M3PWG7BKWYH0XJKS810J0XEX"
+	const ulidRef = "refs/entire/checkpoints/EX/" + ulid
+	const hexRef = "refs/entire/checkpoints/22/aaa111bbb222"
 	tests := []struct {
 		name        string
 		refsPrimary bool
 		checkpoint  string
-		wantRef     string
 		wantPhrase  string
+		wantRefs    []string
 	}{
 		{
 			name:       "ulid under branch primary is its own ref",
 			checkpoint: ulid,
-			wantRef:    "refs/entire/checkpoints/EX/" + ulid,
-			wantPhrase: "its checkpoint ref refs/entire/checkpoints/EX/" + ulid + " is not available",
+			wantPhrase: "its metadata is not in the local or remote checkpoint ref " + ulidRef + ".",
+			wantRefs:   []string{ulidRef},
 		},
 		{
-			name:        "hex under refs primary is its own ref",
+			// Read order is the ref, then the pre-migration v1 branch.
+			name:        "hex under refs primary is its ref or the v1 branch",
 			refsPrimary: true,
 			checkpoint:  "aaa111bbb222",
-			wantRef:     "refs/entire/checkpoints/22/aaa111bbb222",
-			wantPhrase:  "its checkpoint ref refs/entire/checkpoints/22/aaa111bbb222 is not available",
+			wantPhrase:  "its metadata is not in the local or remote checkpoint ref " + hexRef + " or " + paths.MetadataBranchName + " branch.",
+			wantRefs:    []string{hexRef, paths.MetadataBranchName},
 		},
 		{
 			name:       "hex under branch primary is the v1 branch",
 			checkpoint: "aaa111bbb222",
-			wantRef:    paths.MetadataBranchName,
-			wantPhrase: "the " + paths.MetadataBranchName + " branch is not available",
+			wantPhrase: "its metadata is not in the local or remote " + paths.MetadataBranchName + " branch.",
+			wantRefs:   []string{paths.MetadataBranchName},
 		},
 	}
 	for _, tt := range tests {
@@ -1874,9 +1877,14 @@ func TestCheckRemoteMetadata_MessageNamesCheckpointStorage(t *testing.T) {
 			if !strings.Contains(out, tt.wantPhrase) {
 				t.Errorf("message should contain %q; got:\n%s", tt.wantPhrase, out)
 			}
-			wantFetch := "git fetch origin " + tt.wantRef + ":" + tt.wantRef
-			if !strings.Contains(out, wantFetch) {
-				t.Errorf("message should suggest %q; got:\n%s", wantFetch, out)
+			if got := strings.Count(out, "git fetch "); got != len(tt.wantRefs) {
+				t.Errorf("message should suggest %d fetch(es), got %d:\n%s", len(tt.wantRefs), got, out)
+			}
+			for _, ref := range tt.wantRefs {
+				wantFetch := "git fetch origin " + ref + ":" + ref
+				if !strings.Contains(out, wantFetch) {
+					t.Errorf("message should suggest %q; got:\n%s", wantFetch, out)
+				}
 			}
 		})
 	}

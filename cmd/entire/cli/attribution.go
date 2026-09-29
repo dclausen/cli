@@ -565,7 +565,7 @@ func metadataMissingReason(ctx context.Context, checkpointID id.CheckpointID, ca
 	if cause != nil {
 		reason = fmt.Sprintf("%s (%v)", reason, cause)
 	}
-	fetchCmd := suggestCheckpointStorageFetchCommand(ctx, checkpointID)
+	fetchCmd := strings.Join(suggestCheckpointStorageFetchCommands(ctx, checkpointID), " or ")
 	if checkpointID.IsEmpty() {
 		return fmt.Sprintf("%s. Run: %s.", reason, fetchCmd)
 	}

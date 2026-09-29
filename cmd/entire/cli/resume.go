@@ -842,20 +842,18 @@ func checkRemoteMetadata(
 	} else {
 		// Name where this checkpoint actually lives: a git-refs checkpoint is
 		// its own ref, and the v1 branch existing says nothing about it.
-		ref, perCheckpointRef := checkpointStorageRef(ctx, checkpointID)
-		if perCheckpointRef {
-			fmt.Fprintf(errW, "Checkpoint '%s' found in commit but its checkpoint ref %s is not available locally or on the remote.\n", checkpointID, ref)
-			fmt.Fprintf(errW, "This can happen if the checkpoint ref was not pushed.\n")
-		} else {
-			fmt.Fprintf(errW, "Checkpoint '%s' found in commit but the %s branch is not available locally or on the remote.\n", checkpointID, ref)
-			fmt.Fprintf(errW, "This can happen if the metadata branch was not pushed.\n")
-		}
+		storage := checkpointStorageRefs(ctx, checkpointID)
+		fmt.Fprintf(errW, "Checkpoint '%s' found in commit but its metadata is not in the local or remote %s.\n", checkpointID, describeCheckpointStorage(storage, "or"))
+		fmt.Fprintf(errW, "This can happen if the checkpoint metadata was not pushed.\n")
 		// The pasteable hint names the first read candidate — the elected
 		// sync remote, or the fail-open origin when the election errored
 		// (then origin is also the only place left to fetch from). A
 		// remoteless repo has nothing to fetch from, so no hint is printed.
 		if candidates := strategy.CheckpointReadRemotes(ctx); len(candidates) > 0 {
-			fmt.Fprintf(errW, "Try:\n  git fetch %s %s:%s\n", candidates[0], ref, ref)
+			fmt.Fprintf(errW, "Try:\n")
+			for _, ref := range storage {
+				fmt.Fprintf(errW, "  git fetch %s %s:%s\n", candidates[0], ref, ref)
+			}
 		}
 	}
 	return nil, nil
