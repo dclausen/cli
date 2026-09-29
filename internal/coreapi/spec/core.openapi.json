@@ -4585,6 +4585,10 @@
           },
           "source": {
             "type": "string"
+          },
+          "displayName": {
+            "description": "The account's public display name, when it has one. Absent for non-account grantees.",
+            "type": "string"
           }
         },
         "required": [
@@ -4865,6 +4869,10 @@
             "type": "string"
           },
           "source": {
+            "type": "string"
+          },
+          "displayName": {
+            "description": "The account's public display name, when it has one. Absent for non-account grantees.",
             "type": "string"
           }
         },

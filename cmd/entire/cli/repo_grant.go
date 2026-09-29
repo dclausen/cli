@@ -30,8 +30,9 @@ import (
 // on reads as a bug the first time and a lie the second.
 
 // mirrorCollaboratorColumns is the mirror half of `repo grant list`. It is
-// grantColumns' leading pair, the two things the mirror endpoint answers for:
-// who, and with which role. The columns behind them are the native listing's
+// grantColumns' GRANTEE and ROLE, the two things the mirror endpoint answers
+// for: who, and with which role. NAME is absent because MirrorCollaborator
+// carries no display name yet. The columns behind them are the native listing's
 // provenance (SOURCE/TYPE), which the mirror endpoint does not report and which
 // would be invented if this table filled them in. Like every grant table it
 // prints no internal id — the account ULID is in the --json output.

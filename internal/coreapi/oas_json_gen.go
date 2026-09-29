@@ -34772,6 +34772,12 @@ func (s *ProjectGrant) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *ProjectGrant) encodeFields(e *jx.Encoder) {
 	{
+		if s.DisplayName.Set {
+			e.FieldStart("displayName")
+			s.DisplayName.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("granteeId")
 		e.Str(s.GranteeId)
 	}
@@ -34802,12 +34808,13 @@ func (s *ProjectGrant) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfProjectGrant = [5]string{
-	0: "granteeId",
-	1: "granteeName",
-	2: "granteeType",
-	3: "role",
-	4: "source",
+var jsonFieldsNameOfProjectGrant = [6]string{
+	0: "displayName",
+	1: "granteeId",
+	2: "granteeName",
+	3: "granteeType",
+	4: "role",
+	5: "source",
 }
 
 // Decode decodes ProjectGrant from json.
@@ -34820,8 +34827,18 @@ func (s *ProjectGrant) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "displayName":
+			if err := func() error {
+				s.DisplayName.Reset()
+				if err := s.DisplayName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"displayName\"")
+			}
 		case "granteeId":
-			requiredBitSet[0] |= 1 << 0
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
 				v, err := d.Str()
 				s.GranteeId = string(v)
@@ -34843,7 +34860,7 @@ func (s *ProjectGrant) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"granteeName\"")
 			}
 		case "granteeType":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.GranteeType = string(v)
@@ -34855,7 +34872,7 @@ func (s *ProjectGrant) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"granteeType\"")
 			}
 		case "role":
-			requiredBitSet[0] |= 1 << 3
+			requiredBitSet[0] |= 1 << 4
 			if err := func() error {
 				v, err := d.Str()
 				s.Role = string(v)
@@ -34867,7 +34884,7 @@ func (s *ProjectGrant) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"role\"")
 			}
 		case "source":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
 				v, err := d.Str()
 				s.Source = string(v)
@@ -34899,7 +34916,7 @@ func (s *ProjectGrant) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00011101,
+		0b00111010,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -36968,6 +36985,12 @@ func (s *RepoGrant) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *RepoGrant) encodeFields(e *jx.Encoder) {
 	{
+		if s.DisplayName.Set {
+			e.FieldStart("displayName")
+			s.DisplayName.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("granteeId")
 		e.Str(s.GranteeId)
 	}
@@ -36998,12 +37021,13 @@ func (s *RepoGrant) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfRepoGrant = [5]string{
-	0: "granteeId",
-	1: "granteeName",
-	2: "granteeType",
-	3: "role",
-	4: "source",
+var jsonFieldsNameOfRepoGrant = [6]string{
+	0: "displayName",
+	1: "granteeId",
+	2: "granteeName",
+	3: "granteeType",
+	4: "role",
+	5: "source",
 }
 
 // Decode decodes RepoGrant from json.
@@ -37016,8 +37040,18 @@ func (s *RepoGrant) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "displayName":
+			if err := func() error {
+				s.DisplayName.Reset()
+				if err := s.DisplayName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"displayName\"")
+			}
 		case "granteeId":
-			requiredBitSet[0] |= 1 << 0
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
 				v, err := d.Str()
 				s.GranteeId = string(v)
@@ -37039,7 +37073,7 @@ func (s *RepoGrant) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"granteeName\"")
 			}
 		case "granteeType":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.GranteeType = string(v)
@@ -37051,7 +37085,7 @@ func (s *RepoGrant) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"granteeType\"")
 			}
 		case "role":
-			requiredBitSet[0] |= 1 << 3
+			requiredBitSet[0] |= 1 << 4
 			if err := func() error {
 				v, err := d.Str()
 				s.Role = string(v)
@@ -37063,7 +37097,7 @@ func (s *RepoGrant) Decode(d *jx.Decoder) error {
 				return errors.Wrap(err, "decode field \"role\"")
 			}
 		case "source":
-			requiredBitSet[0] |= 1 << 4
+			requiredBitSet[0] |= 1 << 5
 			if err := func() error {
 				v, err := d.Str()
 				s.Source = string(v)
@@ -37095,7 +37129,7 @@ func (s *RepoGrant) Decode(d *jx.Decoder) error {
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00011101,
+		0b00111010,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

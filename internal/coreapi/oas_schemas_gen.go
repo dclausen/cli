@@ -17023,12 +17023,19 @@ func (s *ProjectCollaboratorAdditional) init() ProjectCollaboratorAdditional {
 
 // Ref: #/components/schemas/ProjectGrant
 type ProjectGrant struct {
+	// The account's public display name, when it has one. Absent for non-account grantees.
+	DisplayName     OptString `json:"displayName"`
 	GranteeId       string    `json:"granteeId"`
 	GranteeName     OptString `json:"granteeName"`
 	GranteeType     string    `json:"granteeType"`
 	Role            string    `json:"role"`
 	Source          string    `json:"source"`
 	AdditionalProps ProjectGrantAdditional
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ProjectGrant) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetGranteeId returns the value of GranteeId.
@@ -17059,6 +17066,11 @@ func (s *ProjectGrant) GetSource() string {
 // GetAdditionalProps returns the value of AdditionalProps.
 func (s *ProjectGrant) GetAdditionalProps() ProjectGrantAdditional {
 	return s.AdditionalProps
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ProjectGrant) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetGranteeId sets the value of GranteeId.
@@ -17919,12 +17931,19 @@ func (s *RepoFacetPageAdditional) init() RepoFacetPageAdditional {
 
 // Ref: #/components/schemas/RepoGrant
 type RepoGrant struct {
+	// The account's public display name, when it has one. Absent for non-account grantees.
+	DisplayName     OptString `json:"displayName"`
 	GranteeId       string    `json:"granteeId"`
 	GranteeName     OptString `json:"granteeName"`
 	GranteeType     string    `json:"granteeType"`
 	Role            string    `json:"role"`
 	Source          string    `json:"source"`
 	AdditionalProps RepoGrantAdditional
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *RepoGrant) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetGranteeId returns the value of GranteeId.
@@ -17955,6 +17974,11 @@ func (s *RepoGrant) GetSource() string {
 // GetAdditionalProps returns the value of AdditionalProps.
 func (s *RepoGrant) GetAdditionalProps() RepoGrantAdditional {
 	return s.AdditionalProps
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *RepoGrant) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetGranteeId sets the value of GranteeId.

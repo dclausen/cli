@@ -1325,3 +1325,20 @@ func TestMemberCandidate_LabelCarriesTheDisplayName(t *testing.T) {
 	unnamed := memberCandidate("github:alice", member("github:alice", "acct-a"))
 	require.Equal(t, "github:alice", unnamed.label)
 }
+
+// A project or repo grant is offered for revoking under the display name the
+// server sends, like an org member; the revoke itself still goes by ULID.
+func TestGrantHolders_LabelCarriesTheDisplayName(t *testing.T) {
+	t.Parallel()
+
+	holders := grantHolders(mapRows([]coreapi.ProjectGrant{
+		{GranteeId: "acct-g", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("google:google-1001"), DisplayName: coreapi.NewOptString("Victor Gutierrez"), Role: "writer", Source: grantSourceDirect},
+		{GranteeId: "acct-a", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("github:alice"), Role: "reader", Source: grantSourceDirect},
+	}, projectGrantRowOf))
+
+	require.Len(t, holders, 2)
+	require.Equal(t, "acct-g", holders[0].ref)
+	require.True(t, holders[0].byID)
+	require.Equal(t, "google:1001 · Victor Gutierrez (writer)", holders[0].option())
+	require.Equal(t, "github:alice (reader)", holders[1].option())
+}

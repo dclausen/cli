@@ -4515,6 +4515,10 @@
       "ProjectGrant": {
         "additionalProperties": true,
         "properties": {
+          "displayName": {
+            "description": "The account's public display name, when it has one. Absent for non-account grantees.",
+            "type": "string"
+          },
           "granteeId": {
             "type": "string"
           },
@@ -4777,6 +4781,10 @@
       "RepoGrant": {
         "additionalProperties": true,
         "properties": {
+          "displayName": {
+            "description": "The account's public display name, when it has one. Absent for non-account grantees.",
+            "type": "string"
+          },
           "granteeId": {
             "type": "string"
           },

@@ -609,33 +609,33 @@ func revokeGrant(cmd *cobra.Command, subject string, revoke func() error) error 
 // so they add SOURCE and TYPE. No table prints an internal id: the grantee
 // ULID is in the --json output for anyone who needs it.
 //
-// Org members also carry NAME, the account's display name, because the server
-// returns one there: a Google account's handle is only a subject id, so the
-// name is what tells two of them apart. Project and repo grants do not carry
-// a name on the wire yet, so their tables stay as they are.
+// Both also carry NAME, the account's display name where the server sent one:
+// a Google account's handle is only a subject id, so the name is what tells two
+// of them apart. Org and team grantees never have one and show "-".
 var (
 	orgMemberColumns = []string{colHeaderGrantee, colHeaderName, colHeaderRole, colHeaderStatus}
-	grantColumns     = []string{colHeaderGrantee, colHeaderRole, "SOURCE", "TYPE"}
+	grantColumns     = []string{colHeaderGrantee, colHeaderName, colHeaderRole, "SOURCE", "TYPE"}
 )
 
 func orgMemberRow(m coreapi.OrgMemberListItem) []string {
-	return []string{granteeName(m.Handle, m.AccountId), orDash(memberDisplayName(m)), m.Role, m.Status}
+	return []string{granteeName(m.Handle, m.AccountId), orDash(displayName(m.DisplayName)), m.Role, m.Status}
 }
 
-// memberDisplayName is the member's display name, or "" when the server sent
-// none.
-func memberDisplayName(m coreapi.OrgMemberListItem) string {
-	return strings.TrimSpace(m.DisplayName.Or(""))
+// displayName is the account's display name, or "" when the server sent none.
+// The grant listings fill it best-effort, so its absence never means more than
+// "no name to show".
+func displayName(name coreapi.OptString) string {
+	return strings.TrimSpace(name.Or(""))
 }
 
 func projectGrantRow(g coreapi.ProjectGrant) []string {
-	return []string{granteeName(g.GranteeName, g.GranteeId), g.Role, g.Source, g.GranteeType}
+	return []string{granteeName(g.GranteeName, g.GranteeId), orDash(displayName(g.DisplayName)), g.Role, g.Source, g.GranteeType}
 }
 
 // repoGrantRow mirrors projectGrantRow; RepoGrant and ProjectGrant share the
-// grantee/role/source shape, so both reuse grantColumns.
+// grantee/name/role/source shape, so both reuse grantColumns.
 func repoGrantRow(g coreapi.RepoGrant) []string {
-	return []string{granteeName(g.GranteeName, g.GranteeId), g.Role, g.Source, g.GranteeType}
+	return []string{granteeName(g.GranteeName, g.GranteeId), orDash(displayName(g.DisplayName)), g.Role, g.Source, g.GranteeType}
 }
 
 // granteeName returns the friendly name when the server resolved one, in the
