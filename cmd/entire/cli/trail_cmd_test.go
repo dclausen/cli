@@ -940,9 +940,10 @@ func TestDeleteTrailByNumber(t *testing.T) {
 }
 
 // TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge pins that a bare
-// triple drops `.git` whichever forge it names. `entire trail` refuses native
-// refs downstream (errTrailsNativeUnsupported), so this is about the parser
-// spelling the name one way rather than a user-visible unlock.
+// triple drops `.git` whichever forge it names. Both forges reach a trails
+// route — a mirror by forge/owner/repo, a native repo by ULID through
+// trailRepoBasePath — so this is user-visible normalization: `--repo
+// et/p/foo.git` and `--repo et/p/foo` name one repository.
 func TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

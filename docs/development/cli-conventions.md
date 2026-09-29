@@ -628,12 +628,13 @@ cluster named `et` while `entire://gh/...` got an actionable message.
 cluster host rather than inventing a forge host. The legacy `/git/` prefix is
 excluded because `repo clone` cannot act on such a ref.
 
-**Being a forge token says nothing about which APIs accept it** — the name says
-syntax on purpose. Trails are the current example: entire-api takes `et` in the
-path but cannot resolve it, so `entire trail` refuses it locally with the real
-reason (`errTrailsNativeUnsupported`). That refusal has to cover *both* ways a
-forge reaches the API — named in `--repo` and inferred from the origin remote —
-and the inferred one is the common path.
+**Being a forge token says nothing about which route accepts it** — the name
+says syntax on purpose. Trails are the current example: a mirror is addressed by
+`forge/owner/repo`, a native repo only by its ULID, so `trailRepoBasePath`
+switches on the forge *after* `IsForgePathToken` has answered yes, and a native
+ref with no resolved repo ID fails there rather than at the grammar. That
+narrowing has to cover *both* ways a forge reaches the API — named in `--repo`
+and inferred from the origin remote — and the inferred one is the common path.
 
 Experimental commands (gated by the build-time visibility flag above — visible
 and grouped under "Experimental commands:" in developer/nightly builds, hidden

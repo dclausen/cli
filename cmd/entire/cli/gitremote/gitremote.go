@@ -108,10 +108,11 @@ var pathForges = map[string]string{
 // The name says syntax deliberately: this is NOT a capability check, and it
 // once was one (it read the upstream-host map, so it answered `{gh}`). Widening
 // it to the real path tokens is what a URL needs, but it means a caller after a
-// capability has to narrow afterwards — the trail API takes `et` in a path and
-// resolves only `gh`, so `entire trail` refuses it separately
-// (errTrailsNativeUnsupported). A caller that skips that step gets a token this
-// says yes to and an API that 404s.
+// capability still has to narrow afterwards. Trails are the worked example: a
+// native repo is reachable there, but only by ULID rather than by the
+// forge/owner/repo path a mirror uses, so trailRepoBasePath routes on the forge
+// after this has answered yes. A caller that treats this as the capability gets
+// a token it says yes to and a route that does not exist.
 func IsForgePathToken(forge string) bool {
 	_, ok := pathForges[forge]
 	return ok
