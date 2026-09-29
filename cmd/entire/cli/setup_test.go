@@ -5288,6 +5288,24 @@ func TestCleanRemoteURLForReport(t *testing.T) {
 			wantSkip: true,
 		},
 		{
+			// ParseURL preserves ANY non-empty forge token, so an unrecognized
+			// one reaches here looking like a mirror. It maps to no upstream
+			// host either, so it is the same fiction as the native case and is
+			// skipped for the same reason -- `et` is not a special case, "no
+			// known upstream host" is the rule.
+			name:     "entire:// origin with an unrecognized forge reports nothing",
+			rawURL:   "entire://aws-us-east-2.entire.io/jk/myproject/repo",
+			wantSkip: true,
+		},
+		{
+			// The skip is scoped to entire:// remotes. A direct remote is
+			// reached over a git transport, so its Host IS a git host even when
+			// the forge is unmapped -- see the enterprise case above.
+			name:   "direct remote with an unmapped forge is still reportable",
+			rawURL: "https://git.corp.example.com/team/app",
+			want:   "https://git.corp.example.com/team/app.git",
+		},
+		{
 			name:    "unparseable single-segment path errors",
 			rawURL:  "https://github.com/onlyowner.git",
 			wantErr: true,

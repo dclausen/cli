@@ -1258,21 +1258,30 @@ func probeAndCacheTrailsEnablement(ctx context.Context, insecureHTTPAuth bool, i
 // (https://token@host/...) or query params, so we never forward it verbatim:
 // rebuild from host/owner/repo alone.
 //
-// ok is false when the remote has no upstream forge to name. An Entire-native
-// repo is the case that matters: it is not a mirror of anything, so
-// CanonicalHost falls back to the Entire cluster and every URL this could build
-// would be a fiction — `https://<cluster>/<project>/<repo>` addresses nothing,
-// and the `/et/<project>/<repo>` path that does address it is not a forge clone
-// URL. The report exists to drive the web onboarding's GitHub-App nudge, which
-// has nothing to say about such a repo, so the caller skips it entirely rather
-// than reporting a synthesized URL.
+// ok is false when no upstream forge host is known, which is decided by
+// transport. A direct remote is reached over a git transport, so its Host IS a
+// git host and it is always reportable — a self-hosted GitHub Enterprise
+// included, which is why this does not simply require a mapped forge.
 //
-// Because ok is false for the native case, the returned host is always a real
-// git host and the `.git` suffix is always that host's clone convention rather
+// An entire:// remote is the opposite: its Host is a cluster, so a forge clone
+// URL exists only when the forge maps back to an upstream host. Two kinds do
+// not. A native repo mirrors nothing. An unrecognized token does not either —
+// ParseURL preserves ANY non-empty forge it finds in the path, so a
+// `entire://<cluster>/jk/<owner>/<repo>` origin arrives looking just like a
+// mirror. Both would be reported as `https://<cluster>/<owner>/<repo>.git`: a
+// URL that addresses nothing, on a host that serves no such thing, wearing a
+// suffix Entire paths never carry. The report drives the web onboarding's
+// GitHub-App nudge, which has nothing to say about either, so the caller skips
+// it rather than reporting a synthesized URL.
+//
+// Because ok is false in those cases, the host returned here is always a real
+// git host, and the `.git` suffix is always that host's clone convention rather
 // than part of a name (see gitDirSuffix).
 func cleanRemoteURLForReport(info *gitremote.Info) (string, bool) {
-	if info.Forge == gitremote.ForgeNative {
-		return "", false
+	if info.Protocol == gitremote.ProtocolEntire {
+		if _, known := info.UpstreamHost(); !known {
+			return "", false
+		}
 	}
 	// Use CanonicalHost, not Host: an entire://cluster/gh/owner/repo origin (an
 	// already-mirrored repo) carries the Entire cluster as Host, so reporting

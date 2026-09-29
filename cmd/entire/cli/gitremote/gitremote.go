@@ -133,10 +133,26 @@ func ForgePathLabels(forge string) string {
 // to Host when the forge is unknown (e.g. a self-hosted GitHub Enterprise),
 // preserving the only host we know for it.
 func (i *Info) CanonicalHost() string {
-	if host, ok := forgeToHost[i.Forge]; ok {
+	if host, ok := i.UpstreamHost(); ok {
 		return host
 	}
 	return i.Host
+}
+
+// UpstreamHost is CanonicalHost without the fallback: it returns the forge's
+// canonical public host and whether one is known at all.
+//
+// The distinction matters for an entire:// remote, and only there. Host is a
+// cluster rather than a git host, so when the forge maps to nothing there is no
+// upstream host to fall back TO — CanonicalHost answers the cluster, which is
+// the right answer for "where do I reach this" and the wrong one for "which
+// forge backs this". ParseURL preserves any non-empty forge token it finds in
+// the path, so an unrecognized one reaches callers looking exactly like a
+// mirror. A caller that needs a real forge host must ask this instead and
+// handle the false.
+func (i *Info) UpstreamHost() (string, bool) {
+	host, ok := forgeToHost[i.Forge]
+	return host, ok
 }
 
 // HostPort returns Host, or "Host:Port" when Port is non-empty.

@@ -206,6 +206,43 @@ func TestInfo_CanonicalHost(t *testing.T) {
 	}
 }
 
+// TestInfo_UpstreamHost pins the distinction CanonicalHost's fallback hides: on
+// an entire:// remote, Host is a cluster, so "CanonicalHost returned something"
+// is not evidence that a forge host is known. ParseURL preserves any non-empty
+// forge token, so an unrecognized one is indistinguishable from a mirror until
+// a caller asks this.
+func TestInfo_UpstreamHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		url       string
+		want      string
+		wantKnown bool
+	}{
+		{name: "mirror maps to its forge host", url: "entire://aws-us-east-2.entire.io/gh/org/repo", want: "github.com", wantKnown: true},
+		{name: "direct github maps too", url: "https://github.com/org/repo.git", want: "github.com", wantKnown: true},
+		{name: "native has no upstream", url: "entire://aws-us-east-2.entire.io/et/proj/repo", wantKnown: false},
+		{name: "unrecognized forge has no upstream", url: "entire://aws-us-east-2.entire.io/jk/proj/repo", wantKnown: false},
+		{name: "unmapped direct host has no forge to map", url: "git@ghe.corp.example.com:org/repo.git", wantKnown: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			info, err := ParseURL(tt.url)
+			require.NoError(t, err)
+			got, known := info.UpstreamHost()
+			assert.Equal(t, tt.wantKnown, known)
+			assert.Equal(t, tt.want, got)
+			if !known {
+				assert.Equal(t, info.Host, info.CanonicalHost(),
+					"CanonicalHost must fall back to Host, which is what makes the fallback unsafe to read as a forge host")
+			}
+		})
+	}
+}
+
 func TestRedactURL(t *testing.T) {
 	t.Parallel()
 
