@@ -200,8 +200,10 @@ func entireHookSpecs() []entireHookSpec {
 
 // specCommand returns the command for one hook type + matcher. A miss is a
 // programmer error (the caller named a spec that entireHookSpecs does not
-// define), so it returns "" and lets the caller's existing add/exists logic
-// no-op rather than panicking inside hook installation.
+// define), so it returns "" rather than panicking inside hook installation.
+// Callers must not write an empty command: installHookEntries skips it, and
+// validateTrustedReviewSettings fails the review on it.
+// TestInstallHookEntries_InstallsFullHookInventory catches the miss itself.
 func specCommand(specs []entireHookSpec, hookType, matcher string) string {
 	for _, spec := range specs {
 		if spec.hookType == hookType && spec.matcher == matcher {
@@ -284,15 +286,15 @@ func installHookEntries(rawHooks map[string]json.RawMessage, force bool) (count 
 			count++
 		}
 	}
-	if !hookCommandExistsWithMatcher(preToolUse, subagentToolMatcher, preTaskCmd) {
+	if preTaskCmd != "" && !hookCommandExistsWithMatcher(preToolUse, subagentToolMatcher, preTaskCmd) {
 		preToolUse = addHookToMatcher(preToolUse, subagentToolMatcher, preTaskCmd)
 		count++
 	}
-	if !hookCommandExistsWithMatcher(postToolUse, subagentToolMatcher, postTaskCmd) {
+	if postTaskCmd != "" && !hookCommandExistsWithMatcher(postToolUse, subagentToolMatcher, postTaskCmd) {
 		postToolUse = addHookToMatcher(postToolUse, subagentToolMatcher, postTaskCmd)
 		count++
 	}
-	if !hookCommandExistsWithMatcher(postToolUse, taskToolMatcher, postTodoCmd) {
+	if postTodoCmd != "" && !hookCommandExistsWithMatcher(postToolUse, taskToolMatcher, postTodoCmd) {
 		postToolUse = addHookToMatcher(postToolUse, taskToolMatcher, postTodoCmd)
 		count++
 	}
