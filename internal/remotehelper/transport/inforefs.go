@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/entireio/cli/internal/entireclient/discovery"
@@ -190,6 +192,42 @@ func (p *Proxy) ServiceRPC(ctx context.Context, service string, body io.ReadSeek
 	return resp.Body, nil
 }
 
+// PushTooLargeError is a receive-pack refused for size (HTTP 413). Its message
+// is a stable marker, "entire: push too large: size N exceeds limit M", that
+// callers driving git (the migrate plugin) match on git's stderr to split a
+// push and learn the server's limit. Size and Limit are 0 when the server's
+// message does not state them.
+type PushTooLargeError struct {
+	Size, Limit int64
+	ServerMsg   string
+}
+
+var declaredTooLargeRe = regexp.MustCompile(`declared size (\d+) exceeds limit (\d+)`)
+
+func (e *PushTooLargeError) Error() string {
+	if e.Limit > 0 {
+		return fmt.Sprintf("entire: push too large: size %d exceeds limit %d", e.Size, e.Limit)
+	}
+	if e.ServerMsg != "" {
+		return "entire: push too large: " + e.ServerMsg
+	}
+	return "entire: push too large: the server refused the push body as too large"
+}
+
+func newPushTooLargeError(serverMsg string) *PushTooLargeError {
+	e := &PushTooLargeError{ServerMsg: serverMsg}
+	if m := declaredTooLargeRe.FindStringSubmatch(serverMsg); m != nil {
+		// The regex admits only digits; an overflow leaves the fields zero and
+		// the message falls back to the server's text.
+		size, serr := strconv.ParseInt(m[1], 10, 64)
+		limit, lerr := strconv.ParseInt(m[2], 10, 64)
+		if serr == nil && lerr == nil {
+			e.Size, e.Limit = size, limit
+		}
+	}
+	return e
+}
+
 // HTTPErrorMessage returns a user-friendly error for non-200 HTTP
 // responses. Exposed so handlers outside the transport package can
 // produce the same shape.
@@ -207,6 +245,8 @@ func HTTPErrorMessage(statusCode int, serverMsg, baseURL string) error {
 			return errors.New(serverMsg)
 		}
 		return fmt.Errorf("repository not found: %s", baseURL)
+	case http.StatusRequestEntityTooLarge:
+		return newPushTooLargeError(serverMsg)
 	default:
 		if serverMsg != "" {
 			return fmt.Errorf("server error (HTTP %d): %s", statusCode, serverMsg)
