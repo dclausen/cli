@@ -344,11 +344,10 @@ func resolveCreds(ctx context.Context, parsedURL *url.URL, skipTLS bool, httpCli
 	// by one of them. No other saved login is substituted, so which identity
 	// pushed or fetched is always readable from current_context.
 	cfgDir := userdirs.Config()
-	clusterAuth, err := clusterdiscovery.ResolveClusterAuth(ctx, cfgDir, userdirs.Cache(), parsedURL.Host, httpClient, debuglog.Printf)
+	clusterCtx, err := clusterdiscovery.ResolveContextForCluster(ctx, cfgDir, userdirs.Cache(), parsedURL.Host, httpClient, debuglog.Printf)
 	if err != nil {
-		return nil, nil, err //nolint:wrapcheck // ResolveClusterAuth already returns a user-facing error; preserved verbatim for the "fatal: <msg>" surface
+		return nil, nil, err //nolint:wrapcheck // ResolveContextForCluster already returns a user-facing error; preserved verbatim for the "fatal: <msg>" surface
 	}
-	clusterCtx := clusterAuth.Context
 
 	// The login-JWT provider transparently refreshes an expired login JWT
 	// from the stored refresh token (serialised across processes, rotated
@@ -414,10 +413,9 @@ func coreTrusted(coreURL string, trusted []string) bool {
 }
 
 // gitActionFromRequest classifies a smart-HTTP request as "pull" or "push".
-// The jurisdiction token doesn't vary by action, but the classification
-// still gates which endpoints may carry credentials (and labels the timing
-// logs). Returns "" when the endpoint isn't a recognised git smart-HTTP
-// route.
+// The bearer doesn't vary by action, but the classification still gates
+// which endpoints may carry credentials (and labels the timing logs).
+// Returns "" when the endpoint isn't a recognised git smart-HTTP route.
 func gitActionFromRequest(req *http.Request) string {
 	path := req.URL.Path
 	switch req.Method {

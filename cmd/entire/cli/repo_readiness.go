@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -13,6 +14,23 @@ import (
 
 	"github.com/entireio/cli/internal/coreapi"
 )
+
+// createdRepoAsRepo converts the create response into the read model that the
+// readiness poll and the creation report share. The spec gives the two schemas
+// the same fields apart from the deprecated commitToken, so the conversion goes
+// through the wire form: it carries additional properties and any field a later
+// spec adds to both, where a field-by-field copy would silently drop them.
+func createdRepoAsRepo(created *coreapi.CreatedRepo) (*coreapi.Repo, error) {
+	raw, err := json.Marshal(created)
+	if err != nil {
+		return nil, fmt.Errorf("encode created repository: %w", err)
+	}
+	var repo coreapi.Repo
+	if err := json.Unmarshal(raw, &repo); err != nil {
+		return nil, fmt.Errorf("decode created repository: %w", err)
+	}
+	return &repo, nil
+}
 
 // These values mirror the provisioning enum in entiredb api/corev1/repos.go.
 // Mirror clone readiness has its own enum: an active repo need not be cloned.
@@ -43,7 +61,7 @@ const repoPollMaxInterval = 30 * time.Second
 // because ENTIRE_TOKEN still chooses its audience core and a foreign registry
 // snapshot cannot confirm lifecycle state.
 type repoLifecycleGetter interface {
-	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.Repo, error)
+	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.RepoHeaders, error)
 }
 
 // awaitRepoActive waits for an authoritative repository snapshot to become active.
@@ -115,11 +133,11 @@ func awaitRepoActive(ctx context.Context, c repoLifecycleGetter, result *coreapi
 				return fmt.Errorf("poll repository lifecycle: %w", err)
 			}
 		default:
-			if snapshot.ID != result.ID {
+			if snapshot.Response.ID != result.ID {
 				return errors.New("repository readiness unconfirmed: inspection returned a different repository ID")
 			}
 			failures = repoPollFailures{}
-			retainRepoCreation(result, snapshot)
+			retainRepoCreation(result, &snapshot.Response)
 			authoritative = true
 			// Observe terminal or incompatible state before sleeping.
 			if result.State.Or("") != repoStateProvisioning || result.Foreign.Or(false) {

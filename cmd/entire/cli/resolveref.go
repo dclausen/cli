@@ -15,10 +15,12 @@ import (
 // <id>, …). ULIDs are unfriendly to type, so these refs also accept a human
 // name: looksLikeULID decides which form was given, and the resolveXRef helpers
 // turn a name into its ULID. A ULID is always passed straight through with no
-// network call. A name is resolved by the control plane's O(1), case-insensitive
-// by-name lookup (the server matches on lower(name) and returns the single match
-// under the response's singular `org`/`project` field, or 404) — the CLI never
-// lists everything and filters client-side.
+// network call. A project or repo name is resolved by the control plane's O(1),
+// case-insensitive by-name lookup (the server matches on lower(name) and returns
+// the single match under the response's singular `project`/`repo` field, or
+// 404). An org name is different: org names are labels, not identifiers, so
+// the CLI matches the name against the caller's own org listing instead of a
+// global lookup.
 
 // providerGitHub is the identity-provider slug for GitHub-backed accounts, the
 // provider half of a qualified grantee handle like "github:alice". GitHub is the
@@ -57,7 +59,7 @@ type repoRefClient interface {
 	projectRefClient
 	ListProjectRepos(ctx context.Context, params coreapi.ListProjectReposParams) (*coreapi.ListProjectReposOutputBody, error)
 	ResolveRepos(ctx context.Context, request *coreapi.ResolveReposInputBody) (*coreapi.ResolveReposResponse, error)
-	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.Repo, error)
+	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.RepoHeaders, error)
 }
 
 // looksLikeULID reports whether s has the shape of a ULID: 26 characters drawn
@@ -82,8 +84,8 @@ func looksLikeULID(s string) bool {
 }
 
 // isCoreNotFound reports whether err is a control-plane 404. The by-name lookups
-// (ListOrgs/ListProjects/ListOrgProjects with ?name=) return 404 when nothing
-// matches; callers turn that into a friendly "no X named" message.
+// (ListProjects/ListProjectRepos with ?name=) return 404 when nothing matches;
+// callers turn that into a friendly "no X named" message.
 func isCoreNotFound(err error) bool {
 	var se *coreapi.ErrorModelStatusCode
 	return errors.As(err, &se) && se.StatusCode == http.StatusNotFound
@@ -96,23 +98,40 @@ func resolveOrgRefResolved(ctx context.Context, c *coreapi.Client, ref string) (
 	if looksLikeULID(ref) {
 		return resolvedRef{ID: ref}, nil
 	}
-	out, err := c.ListOrgs(ctx, coreapi.ListOrgsParams{Name: coreapi.NewOptString(ref)})
+	orgs, err := listAllOrgs(ctx, c)
 	if err != nil {
-		if isCoreNotFound(err) {
-			return resolvedRef{}, noOrgNamedErr(ref)
+		return resolvedRef{}, fmt.Errorf("list orgs: %w", err)
+	}
+	var exact, folded []coreapi.Org
+	for _, org := range orgs {
+		switch {
+		case org.Name == ref:
+			exact = append(exact, org)
+		case strings.EqualFold(org.Name, ref):
+			folded = append(folded, org)
 		}
-		return resolvedRef{}, err
 	}
-	org, ok := out.Response.Org.Get()
-	if !ok {
+	matches := exact
+	if len(matches) == 0 {
+		matches = folded
+	}
+	switch len(matches) {
+	case 0:
 		return resolvedRef{}, noOrgNamedErr(ref)
+	case 1:
+		return resolvedRef{ID: matches[0].ID, Name: matches[0].Name}, nil
+	default:
+		return resolvedRef{}, &ambiguousOrgError{name: ref, matches: matches}
 	}
-	return resolvedRef{ID: org.ID, Name: org.Name}, nil
 }
 
 // resolveOrgRef turns an org reference (ULID or name) into its ULID. A ULID is
-// returned unchanged; a name is resolved via the server's case-insensitive
-// by-name lookup.
+// returned unchanged. A name is matched case-insensitively against the
+// caller's own org listing (`GET /api/v1/orgs`, every page): org names are
+// not unique across accounts, so the server's global ?name= lookup is not
+// used. An exact-case match takes precedence over case-folded ones, so "acme"
+// still resolves when the caller also sees "ACME". One match resolves; several
+// are an ambiguousOrgError, since only the ULID can tell same-named orgs apart.
 func resolveOrgRef(ctx context.Context, c *coreapi.Client, ref string) (string, error) {
 	r, err := resolveOrgRefResolved(ctx, c, ref)
 	return r.ID, err
@@ -126,7 +145,7 @@ func resolveAccountRef(ctx context.Context, c *coreapi.Client, ref string) (stri
 	if looksLikeULID(ref) {
 		return ref, nil
 	}
-	provider, handle, err := parseQualifiedHandle(ref)
+	provider, handle, err := parseGranteeHandle(ref)
 	if err != nil {
 		return "", err
 	}
@@ -151,24 +170,25 @@ func resolveAccountRef(ctx context.Context, c *coreapi.Client, ref string) (stri
 // --provider-user-id was the COR-699 footgun ("provider identity not found") —
 // so the CLI always resolves it first. A bare account ULID is rejected here:
 // the by-provider routes can't be addressed by ULID, and there is no reverse
-// account→provider-id lookup; callers that accept a ULID grantee (project/repo
-// remove) handle it via the typed-id route before reaching this helper.
+// account→provider-id lookup. No caller takes one either — the grant commands
+// refuse a typed ULID outright, and the one path that revokes by ULID reads it
+// off a listing row and goes straight to the typed-id route.
 func resolveGranteeProvider(ctx context.Context, c *coreapi.Client, ref string) (provider, providerUserID string, err error) {
 	// A ULID is a tempting paste from `grant … list` (which prints the grantee
 	// ID), but the by-provider routes can't be addressed by ULID. Reject it with
 	// a message that points at the form this command actually wants, rather than
 	// letting parseQualifiedHandle dangle a "(or a ULID)" hint that doesn't apply.
-	if looksLikeULID(ref) {
-		return "", "", fmt.Errorf("grantee %q is an account ULID; this command needs a provider-qualified handle like \"github:alice\"", ref)
+	if err := ensureGranteeIsHandle(ref); err != nil {
+		return "", "", err
 	}
-	p, handle, err := parseQualifiedHandle(ref)
+	p, handle, err := parseGranteeHandle(ref)
 	if err != nil {
 		return "", "", err
 	}
 	id, err := c.ResolveHandle(ctx, coreapi.ResolveHandleParams{Provider: p, Handle: handle})
 	if err != nil {
 		if isCoreNotFound(err) {
-			return "", "", fmt.Errorf("no %s identity for handle %q", p, handle)
+			return "", "", fmt.Errorf("no %s identity for handle %q", p, identityFor(p).displayHandle(handle))
 		}
 		return "", "", err
 	}
@@ -183,6 +203,25 @@ func resolveGranteeProvider(ctx context.Context, c *coreapi.Client, ref string) 
 	return p, id.ProviderUserId, nil
 }
 
+// ensureGranteeIsHandle rejects an account ULID as a grantee. A grantee is a
+// provider-qualified handle and nothing else: the by-provider routes cannot be
+// addressed by ULID, there is no reverse account→provider-id lookup, and a
+// listing's grantee id is an internal identifier the interface does not ask
+// anyone to copy. Commands call it before resolving their target, so a grantee
+// that cannot work costs no lookup.
+func ensureGranteeIsHandle(ref string) error {
+	if looksLikeULID(ref) {
+		return fmt.Errorf("grantee %q is an account ULID; this command needs a provider-qualified handle like \"github:alice\"", ref)
+	}
+	// Reuse the split rule, not its message: parseQualifiedHandle also serves
+	// `project create --owner`, where a ULID IS accepted and its "(or a ULID)"
+	// is true. On a grantee that would offer a form this command refuses.
+	if _, _, err := parseQualifiedHandle(ref); err != nil {
+		return fmt.Errorf("grantee %q must be a provider-qualified handle like \"github:alice\"", ref)
+	}
+	return nil
+}
+
 // parseQualifiedHandle splits a provider-qualified handle like "github:alice"
 // into its provider ("github") and handle ("alice"). Accounts are addressed by
 // this friendly form; a value with no "provider:" prefix is rejected so the
@@ -193,6 +232,20 @@ func parseQualifiedHandle(ref string) (provider, handle string, err error) {
 		return "", "", fmt.Errorf("account %q must be a qualified handle like \"github:alice\" (or a ULID)", ref)
 	}
 	return provider, handle, nil
+}
+
+// formatQualifiedHandle renders a provider and handle in the form every grant
+// command accepts as a grantee ("github:alice"). Inverse of
+// parseQualifiedHandle, and deliberately adjacent to it so the two spellings
+// cannot drift.
+//
+// An empty provider yields the bare handle rather than ":alice", which parses
+// as nothing and would be a grantee string no command accepts.
+func formatQualifiedHandle(provider, handle string) string {
+	if provider == "" {
+		return handle
+	}
+	return provider + ":" + handle
 }
 
 // resolveProjectRefResolved is resolveProjectRef plus the server's name.
@@ -382,7 +435,7 @@ func resolveRepoPathRef(ctx context.Context, c repoRefClient, ref, projectRef st
 		if err != nil {
 			return resolvedRef{}, fmt.Errorf("get repo: %w", err)
 		}
-		if !strings.EqualFold(projectRef, repo.OwningProjectId) {
+		if !strings.EqualFold(projectRef, repo.Response.OwningProjectId) {
 			return resolvedRef{}, projectMismatchErr(projectRef, project, ref)
 		}
 	}
@@ -446,7 +499,31 @@ func resolveRepoInProject(ctx context.Context, c repoRefClient, name, projID str
 }
 
 func noOrgNamedErr(name string) error {
-	return fmt.Errorf("no org named %q (run `entire org list` to see names, or pass a ULID)", name)
+	return &orgNotFoundError{name: name}
+}
+
+// orgNotFoundError is a by-name org lookup miss. It is typed so a command that
+// addresses orgs by name only can word the hint without the ULID alternative.
+type orgNotFoundError struct{ name string }
+
+func (e *orgNotFoundError) Error() string {
+	return fmt.Sprintf("no org named %q (run `entire org list` to see names, or pass a ULID)", e.name)
+}
+
+// ambiguousOrgError is a by-name org lookup with more than one match in the
+// caller's own orgs. The message lists each match so the user can pick a ULID.
+type ambiguousOrgError struct {
+	name    string
+	matches []coreapi.Org
+}
+
+func (e *ambiguousOrgError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d orgs are named %q; pass the ULID instead:", len(e.matches), e.name)
+	for _, org := range e.matches {
+		fmt.Fprintf(&b, "\n  %s  %s", org.Name, org.ID)
+	}
+	return b.String()
 }
 
 var errNamedRefNotFound = errors.New("named reference not found")
