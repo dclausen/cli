@@ -259,6 +259,20 @@ type ClonePreferences struct {
 	// user can re-enable by editing this file or deleting the key.
 	ReviewMigrationDismissed bool `json:"review_migration_dismissed,omitempty"`
 
+	// CheckpointRemoteClaimDeclined records the `provider:repo` the user
+	// declined when `entire enable` offered to claim a refused
+	// checkpoint_remote, so the confirm prompt is asked once per store
+	// instead of on every run. Only the prompt is one-shot: the line saying
+	// the store is being ignored still prints every time, because that is
+	// the condition the user has to be able to discover.
+	//
+	// The declined value rather than a bool, because a repo that later
+	// configures a DIFFERENT store is a new question. Clone preferences
+	// rather than settings.local.json, so declining once covers every
+	// worktree of the clone and so a committed file can never suppress the
+	// prompt.
+	CheckpointRemoteClaimDeclined string `json:"checkpoint_remote_claim_declined,omitempty"`
+
 	// TrailsEnabled caches whether trails are enabled for this repository on the
 	// API. Pointer shape distinguishes "unknown/not refreshed yet" (nil) from a
 	// definitive false. This is clone-local and not committed so hook-time agent

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"charm.land/huh/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
 	"github.com/entireio/cli/cmd/entire/cli/gitremote"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
@@ -599,6 +601,15 @@ func reportIgnoredCheckpointRemote(ctx context.Context, w io.Writer, s *settings
 // prompt nobody can answer must not become an implicit yes — and because an
 // agent reading the output should be handed the command rather than have the
 // decision made for the human it works for.
+//
+// Asked once per store, not once per run. The report above it prints on every
+// `entire enable` by design — a destination the user cannot otherwise discover
+// is broken — but a yes/no question with this consequence is a different thing
+// to repeat: an answer nobody can record is one the user has to give again
+// every time, and a prompt that always comes back is how "yes" stops being
+// read. The decline is recorded in clone preferences, matching
+// ReviewMigrationDismissed, which reached the same place for the same reason.
+//
 // Takes the already-validated claimValue rather than the config it came from,
 // so the value written can never diverge from the one validated and printed —
 // reconstructing it here from raw fields let surrounding whitespace pass the
@@ -613,6 +624,13 @@ func offerToClaimCheckpointRemote(ctx context.Context, w io.Writer, claimValue, 
 	if claimValue == "" {
 		return false
 	}
+	// A store this clone already declined is not asked about again. A failed
+	// read is not a decline: preferences live in the git common dir, so losing
+	// them means asking once more, never claiming on the user's behalf.
+	if prefs, err := settings.LoadClonePreferences(ctx); err == nil && prefs != nil &&
+		prefs.CheckpointRemoteClaimDeclined == claimValue {
+		return false
+	}
 
 	var claim bool
 	form := NewAccessibleForm(
@@ -625,7 +643,13 @@ func offerToClaimCheckpointRemote(ctx context.Context, w io.Writer, claimValue, 
 				Value(&claim),
 		),
 	)
-	if err := form.Run(); err != nil || !claim {
+	if err := form.Run(); err != nil {
+		// An abort (esc/ctrl+c) is not an answer, so it is not recorded: the
+		// user interrupted the command rather than deciding about the store.
+		return false
+	}
+	if !claim {
+		recordDeclinedCheckpointRemoteClaim(ctx, claimValue)
 		return false
 	}
 
@@ -642,4 +666,21 @@ func offerToClaimCheckpointRemote(ctx context.Context, w io.Writer, claimValue, 
 	}
 	fmt.Fprintf(w, "Confirmed %s for this clone (saved to .entire/settings.local.json).\n", repo)
 	return true
+}
+
+// recordDeclinedCheckpointRemoteClaim remembers that this clone was offered
+// claimValue and said no, so the next `entire enable` does not ask again.
+//
+// Best-effort, and logged rather than reported. The decline already took
+// effect — nothing was written, checkpoints keep going where they were going —
+// so a preferences file that cannot be written costs one repeated prompt,
+// which is not worth failing the command the user actually ran.
+func recordDeclinedCheckpointRemoteClaim(ctx context.Context, claimValue string) {
+	if err := settings.ModifyClonePreferences(ctx, func(prefs *settings.ClonePreferences) error {
+		prefs.CheckpointRemoteClaimDeclined = claimValue
+		return nil
+	}); err != nil {
+		logging.Debug(ctx, "could not record declined checkpoint_remote claim",
+			slog.String("claim", claimValue), slog.Any("error", err))
+	}
 }

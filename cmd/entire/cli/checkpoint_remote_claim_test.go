@@ -433,3 +433,94 @@ func TestEnableAndStatusAgreeWithPushingDisabled(t *testing.T) {
 		})
 	}
 }
+
+// TestDeclinedCheckpointClaimIsAskedOnce: the notice prints on every `entire
+// enable`, but the yes/no question behind it is asked once per store. A prompt
+// that returns every run is how a considered "no" degrades into a reflexive
+// "yes", and there was previously no way to silence it short of claiming a
+// store the user had just said was not theirs.
+//
+// Not parallel: repository CWD and scripted prompt input are process-global.
+func TestDeclinedCheckpointClaimIsAskedOnce(t *testing.T) {
+	dir := setupTestRepo(t)
+	testutil.RunGit(t, dir, "remote", "add", "origin", "git@selfhosted.example:app.git")
+	testutil.RunGit(t, dir, "remote", "set-url", "--push", "origin", "git@github.com:acme/app.git")
+	writeSettings(t, `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"acme/checkpoints"}}}`)
+
+	s, err := settings.Load(t.Context())
+	require.NoError(t, err)
+
+	withInteractivePromptStdin(t, "n\n")
+	var declined bytes.Buffer
+	require.False(t, reportIgnoredCheckpointRemote(t.Context(), &declined, s, "origin", true))
+	require.False(t, settings.CheckpointRemoteIsLocalOnly(t.Context()))
+	assert.Contains(t, declined.String(), "entire enable --local --checkpoint-remote github:acme/checkpoints",
+		"a declined claim still names the fix")
+
+	prefs, err := settings.LoadClonePreferences(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "github:acme/checkpoints", prefs.CheckpointRemoteClaimDeclined)
+
+	// Stdin now carries a yes. Reaching the prompt would consume it and claim
+	// the store, so an unchanged local layer is what proves it was not asked.
+	withInteractivePromptStdin(t, "y\n")
+	var again bytes.Buffer
+	assert.False(t, reportIgnoredCheckpointRemote(t.Context(), &again, s, "origin", true))
+	assert.False(t, settings.CheckpointRemoteIsLocalOnly(t.Context()), again.String())
+	assert.Contains(t, again.String(), "not to the configured checkpoint_remote acme/checkpoints",
+		"the notice is not one-shot; only the prompt is")
+	assert.Contains(t, again.String(), "entire enable --local --checkpoint-remote github:acme/checkpoints")
+}
+
+// TestDeclinedCheckpointClaimDoesNotSilenceAnotherStore: the decline records
+// the value that was offered, so a repo that later configures a different
+// checkpoint_remote is a question nobody has answered yet. A bool here would
+// let one "no" adopt whatever the committed settings named next.
+//
+// Not parallel: repository CWD and scripted prompt input are process-global.
+func TestDeclinedCheckpointClaimDoesNotSilenceAnotherStore(t *testing.T) {
+	dir := setupTestRepo(t)
+	testutil.RunGit(t, dir, "remote", "add", "origin", "git@selfhosted.example:app.git")
+	testutil.RunGit(t, dir, "remote", "set-url", "--push", "origin", "git@github.com:acme/app.git")
+	require.NoError(t, settings.ModifyClonePreferences(t.Context(), func(prefs *settings.ClonePreferences) error {
+		prefs.CheckpointRemoteClaimDeclined = "github:acme/old-checkpoints"
+		return nil
+	}))
+	writeSettings(t, `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"acme/checkpoints"}}}`)
+
+	s, err := settings.Load(t.Context())
+	require.NoError(t, err)
+
+	withInteractivePromptStdin(t, "y\n")
+	var out bytes.Buffer
+	assert.True(t, reportIgnoredCheckpointRemote(t.Context(), &out, s, "origin", true), out.String())
+	assert.True(t, settings.CheckpointRemoteIsLocalOnly(t.Context()), out.String())
+}
+
+// TestUnansweredCheckpointClaimTakesThePromptsOwnDefault: with no input the
+// confirm falls to its `[y/N]` default, which is No, and that is recorded like
+// any other no — the record follows what the prompt concluded rather than how
+// the answer arrived. An interrupted prompt is the case that is NOT recorded,
+// and it is a different signal: huh reports ErrUserAborted for esc/ctrl+c on a
+// real terminal, which scripted stdin cannot reproduce.
+//
+// Not parallel: repository CWD and scripted prompt input are process-global.
+func TestUnansweredCheckpointClaimTakesThePromptsOwnDefault(t *testing.T) {
+	dir := setupTestRepo(t)
+	testutil.RunGit(t, dir, "remote", "add", "origin", "git@selfhosted.example:app.git")
+	testutil.RunGit(t, dir, "remote", "set-url", "--push", "origin", "git@github.com:acme/app.git")
+	writeSettings(t, `{"enabled":true,"strategy_options":{"checkpoint_remote":{"provider":"github","repo":"acme/checkpoints"}}}`)
+
+	s, err := settings.Load(t.Context())
+	require.NoError(t, err)
+
+	withInteractivePromptStdin(t, "")
+	var out bytes.Buffer
+	require.False(t, reportIgnoredCheckpointRemote(t.Context(), &out, s, "origin", true))
+	assert.False(t, settings.CheckpointRemoteIsLocalOnly(t.Context()),
+		"no answer must never claim the store")
+
+	prefs, err := settings.LoadClonePreferences(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "github:acme/checkpoints", prefs.CheckpointRemoteClaimDeclined)
+}
