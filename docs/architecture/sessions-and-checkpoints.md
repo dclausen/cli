@@ -206,7 +206,10 @@ When identity names the committing agent, the fallback is not consulted at all:
 only sessions actually homed in the commit's worktree join it. Several agents
 launched from one checkout, each working in its own worktree, are all still
 homed in that checkout until their first turn ends, and the fallback would give
-one agent's mid-turn commit to all of them.
+one agent's mid-turn commit to all of them. A match is not treated as identified when its owner
+process also hosts another live session (the Codex app-server daemon hosts
+them all, #2612): ancestry ties between them, so the match links as before but
+neither re-homes a session nor skips the fallback.
 
 **The session follows its agent** (`rehomeSessionAfterOwnCommit`). A session
 is homed where its first turn-start hook ran, and agent hooks run where the

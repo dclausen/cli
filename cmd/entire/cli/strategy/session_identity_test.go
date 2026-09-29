@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/proclive"
 	"github.com/entireio/cli/cmd/entire/cli/session"
@@ -407,6 +408,32 @@ func TestFindSessionsForWorktree_AmbiguityResolvedByLiveness(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "sess-agent-y", got[0].SessionID)
+	})
+
+	t.Run("sessions sharing one owner process are not an identified agent", func(t *testing.T) {
+		// Codex app-server hosts every session in one daemon (#2612): both
+		// states record the same owner, so ancestry ties and the recency
+		// tie-break may name the wrong one. Such a match must not re-home a
+		// session or skip the fallback.
+		dir := identityTestRepo(t)
+		wtB := addSiblingWorktree(t, dir, "daemon-b")
+		daemon := selfAncestorOwner(t)
+		earlier, later := time.Now().Add(-time.Minute), time.Now()
+		saveIdentitySession(t, "sess-daemon-a", func(st *SessionState) {
+			st.WorktreePath = dir
+			st.Owner = daemon
+			st.LastInteractionTime = &earlier
+		})
+		saveIdentitySession(t, "sess-daemon-b", func(st *SessionState) {
+			st.WorktreePath = wtB
+			st.Owner = daemon
+			st.LastInteractionTime = &later
+		})
+
+		linking, err := NewManualCommitStrategy().findCommitLinkingSet(ctx, dir, id.EmptyCheckpointID)
+		require.NoError(t, err)
+		assert.Empty(t, linking.ancestryGuest, "a tied ancestry match must not be trusted to re-home a session")
+		assert.True(t, linkingSetContains(linking.sessions, "sess-daemon-a"), "the session homed where the commit is still links")
 	})
 
 	t.Run("git sequence operation suppresses the decline hint", func(t *testing.T) {

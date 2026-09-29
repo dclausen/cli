@@ -83,7 +83,8 @@ func (s *ManualCommitStrategy) findCommitLinkingSet(ctx context.Context, worktre
 	}
 	var sessions, declined []*SessionState
 	var ancestryGuest string
-	if guest := s.findSessionByCommitAncestry(ctx, allStates); guest != nil {
+	guest := s.findSessionByCommitAncestry(ctx, allStates)
+	if guest != nil && !ownerSharedByAnotherLiveSession(guest, allStates) {
 		// The committing agent is known, so the fallback that guesses from
 		// other worktrees has nothing to add: agents launched together from
 		// one checkout are all still homed there until their first turn ends,
@@ -91,11 +92,16 @@ func (s *ManualCommitStrategy) findCommitLinkingSet(ctx context.Context, worktre
 		// sessions actually homed in this worktree join the identified one.
 		ancestryGuest = guest.SessionID
 		sessions = exactWorktreeMatches(allStates, worktreePath)
-		if !linkingSetContains(sessions, guest.SessionID) {
-			sessions = append(sessions, guest)
-		}
 	} else {
+		// No agent identified, or one owner process hosts several live
+		// sessions (the Codex app-server daemon): ancestry then ties between
+		// them and the match fell to a recency tie-break (#2612). Such a match
+		// still links as before, but is not treated as identified: no re-home,
+		// no skipped fallback.
 		sessions, declined = s.findSessionsForWorktreeFromStates(ctx, allStates, worktreePath)
+	}
+	if guest != nil && !linkingSetContains(sessions, guest.SessionID) {
+		sessions = append(sessions, guest)
 	}
 	linking := commitLinkingSet{sessions: sessions, ancestryGuest: ancestryGuest, all: allStates}
 	if stampedTrailer != id.EmptyCheckpointID {
@@ -104,6 +110,22 @@ func (s *ManualCommitStrategy) findCommitLinkingSet(ctx context.Context, worktre
 		s.announceIfCommitHoldsTheirWork(ctx, declined)
 	}
 	return linking, nil
+}
+
+// ownerSharedByAnotherLiveSession reports whether a live session other than
+// matched records the same owner process. Ancestry then ties between them at
+// equal depth and cannot name the committing one.
+func ownerSharedByAnotherLiveSession(matched *SessionState, states []*SessionState) bool {
+	for _, state := range states {
+		if state.SessionID == matched.SessionID || state.Owner == nil || state.IsEnded() || state.Kind.IsImported() {
+			continue
+		}
+		o, m := state.Owner, matched.Owner
+		if o.PID == m.PID && o.Start == m.Start && o.Host == m.Host && o.Boot == m.Boot {
+			return true
+		}
+	}
+	return false
 }
 
 // announceIfCommitHoldsTheirWork announces the declined candidates only when at
