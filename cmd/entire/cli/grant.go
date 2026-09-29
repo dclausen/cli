@@ -145,7 +145,7 @@ func newGrantAddCmd[Row any](t grantTarget[Row]) *cobra.Command {
 			// An omitted --role means the server default where the target has
 			// one, and otherwise is resolved per grantee below.
 			if cmd.Flags().Changed("role") {
-				if err := validateRole(role, t.roles); err != nil {
+				if err := validateChoice("role", role, t.roles); err != nil {
 					return err
 				}
 			}
@@ -280,7 +280,7 @@ func grantEach[Row any](ctx context.Context, cmd *cobra.Command, c *coreapi.Clie
 		}
 		wires = append(wires, wire)
 		if !jsonRequested(cmd) {
-			fmt.Fprintf(cmd.OutOrStdout(), "✓ Granted %s %s access to %s\n", p.handle, granted, pt.describe())
+			fmt.Fprintf(cmd.OutOrStdout(), "✓ Granted %s %s access to %s\n", displayGranteeName(p.handle), granted, pt.describe())
 		}
 	}
 	return emitGrantJSON(cmd, wires, single)
@@ -574,15 +574,15 @@ func refuseUnwritableRef[Row any](t grantTarget[Row]) func(*cobra.Command, []str
 	}
 }
 
-// validateRole rejects a --role outside the target's set at the CLI boundary
-// so the user gets a clear message instead of a server 422. The generated
-// bodies type their role field as an enum, so the targets cast the validated
-// string to whichever type they need.
-func validateRole(role string, allowed []string) error {
-	if slices.Contains(allowed, role) {
+// validateChoice rejects a value outside an enum flag's set at the CLI
+// boundary so the user gets a clear message instead of a server 422. The
+// generated bodies type these fields as enums, so callers cast the validated
+// string to whichever type they need. flag is the flag name without dashes.
+func validateChoice(flag, value string, allowed []string) error {
+	if slices.Contains(allowed, value) {
 		return nil
 	}
-	return fmt.Errorf("invalid --role %q: must be one of %s", role, strings.Join(allowed, ", "))
+	return fmt.Errorf("invalid --%s %q: must be one of %s", flag, value, strings.Join(allowed, ", "))
 }
 
 // revokeGrant runs a grant-removal API call idempotently. A 404 means the
@@ -608,13 +608,24 @@ func revokeGrant(cmd *cobra.Command, subject string, revoke func() error) error 
 // of provenance; project and repo grants include owner and inherited rows,
 // so they add SOURCE and TYPE. No table prints an internal id: the grantee
 // ULID is in the --json output for anyone who needs it.
+//
+// Org members also carry NAME, the account's display name, because the server
+// returns one there: a Google account's handle is only a subject id, so the
+// name is what tells two of them apart. Project and repo grants do not carry
+// a name on the wire yet, so their tables stay as they are.
 var (
-	orgMemberColumns = []string{colHeaderGrantee, colHeaderRole, colHeaderStatus}
+	orgMemberColumns = []string{colHeaderGrantee, colHeaderName, colHeaderRole, colHeaderStatus}
 	grantColumns     = []string{colHeaderGrantee, colHeaderRole, "SOURCE", "TYPE"}
 )
 
-func orgMemberRow(m coreapi.Membership) []string {
-	return []string{granteeName(m.Handle, m.AccountId), m.Role, m.Status}
+func orgMemberRow(m coreapi.OrgMemberListItem) []string {
+	return []string{granteeName(m.Handle, m.AccountId), orDash(memberDisplayName(m)), m.Role, m.Status}
+}
+
+// memberDisplayName is the member's display name, or "" when the server sent
+// none.
+func memberDisplayName(m coreapi.OrgMemberListItem) string {
+	return strings.TrimSpace(m.DisplayName.Or(""))
 }
 
 func projectGrantRow(g coreapi.ProjectGrant) []string {
@@ -627,11 +638,12 @@ func repoGrantRow(g coreapi.RepoGrant) []string {
 	return []string{granteeName(g.GranteeName, g.GranteeId), g.Role, g.Source, g.GranteeType}
 }
 
-// granteeName returns the friendly name when the server resolved one, falling
-// back to the ULID for grantees it couldn't label (e.g. teams).
+// granteeName returns the friendly name when the server resolved one, in the
+// spelling users type (see displayGranteeName), falling back to the ULID for
+// grantees it couldn't label (e.g. teams).
 func granteeName(name coreapi.OptString, granteeID string) string {
 	if n := name.Or(""); n != "" {
-		return n
+		return displayGranteeName(n)
 	}
 	return granteeID
 }
@@ -648,8 +660,15 @@ var accessRoles = []string{"reader", "writer", "admin"}
 
 const leastAccessRole = "reader"
 
-// orgRoleMember is the org's least-privileged role and the server's default.
-const orgRoleMember = "member"
+// orgRoles are the org membership roles, in help order. Invitations share the
+// set: accepting one creates a membership.
+var orgRoles = []string{roleOwner, roleAdmin, orgRoleMember}
+
+const (
+	roleOwner     = "owner"
+	roleAdmin     = "admin"
+	orgRoleMember = "member" // the least-privileged role and the server's default
+)
 
 // grantAccessBody builds the request body the project and repo grant routes
 // share. Provider and providerUserId are optional on the wire because the
@@ -666,11 +685,11 @@ func grantAccessBody(provider, providerUserID, role string) *coreapi.GrantAccess
 // orgGrantTarget is org membership: roles owner/admin/member with member as
 // the server default, a target addressed by name or ULID, and no typed-id
 // revoke route — members are removed by their provider identity.
-var orgGrantTarget = grantTarget[coreapi.Membership]{
+var orgGrantTarget = grantTarget[coreapi.OrgMemberListItem]{
 	noun:        cmdOrg,
 	refUsage:    "name or ULID",
 	exampleRef:  "acme",
-	roles:       []string{"owner", "admin", orgRoleMember},
+	roles:       orgRoles,
 	leastRole:   orgRoleMember,
 	defaultRole: orgRoleMember,
 	columns:     orgMemberColumns,
@@ -687,7 +706,7 @@ var orgGrantTarget = grantTarget[coreapi.Membership]{
 		}
 		return m.Role, m, nil
 	},
-	list: func(ctx context.Context, c *coreapi.Client, id string, pageToken coreapi.OptString) ([]coreapi.Membership, coreapi.OptString, error) {
+	list: func(ctx context.Context, c *coreapi.Client, id string, pageToken coreapi.OptString) ([]coreapi.OrgMemberListItem, coreapi.OptString, error) {
 		out, err := c.ListOrgMembers(ctx, coreapi.ListOrgMembersParams{OrgId: id, PageToken: pageToken})
 		if err != nil {
 			return nil, coreapi.OptString{}, err

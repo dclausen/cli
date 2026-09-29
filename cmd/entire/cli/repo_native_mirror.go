@@ -308,7 +308,7 @@ func renderNativeMirrorCreateError(err error, ref, clusterSlug string) error {
 // The caller has already refused everything decidable without a write (see
 // checkNativeMirrorTarget), so what is left here is the create and the wait.
 func createOneNativeMirror(ctx context.Context, t mirrorTarget, c *coreapi.Client, clientErr error, opts mirrorAddOptions, report func(status string, final, ok bool)) mirrorResult {
-	res := mirrorResult{forge: t.forge, owner: t.owner, repo: t.repo, regionLabel: regionLabel(t.region)}
+	res := mirrorResult{forge: t.forge, owner: t.owner, repo: t.repo, regionLabel: regionLabel(t.region), clusterHost: t.region.host}
 	if clientErr != nil {
 		res.status, res.err = mirrorStatusError, clientErr
 		report(mirrorStatusError, true, false)
@@ -424,10 +424,14 @@ func runNativeRepoView(cmd *cobra.Command, ref, project, clusterHost string, aut
 			return err
 		}
 		repoID := resolved.ID
-		repo, err := c.GetRepo(ctx, coreapi.GetRepoParams{RepoId: repoID})
+		// GetRepo answers with a headers wrapper; the record itself is what
+		// every line below reads and mutates, so it is unwrapped once here
+		// rather than at each use.
+		read, err := c.GetRepo(ctx, coreapi.GetRepoParams{RepoId: repoID})
 		if err != nil {
 			return err
 		}
+		repo := &read.Response
 		cat, err := c.ListClusters(ctx)
 		if err != nil {
 			return err
@@ -468,12 +472,13 @@ func runNativeRepoView(cmd *cobra.Command, ref, project, clusterHost string, aut
 		// view exists to show. Best-effort for the same reason it is narrow — a
 		// registry-only fallback cannot answer the readiness question, and a
 		// dash is a better trade than losing the table.
-		auth, aerr := c.GetRepo(ctx, coreapi.GetRepoParams{
+		fresh, aerr := c.GetRepo(ctx, coreapi.GetRepoParams{
 			RepoId:        repo.ID,
 			Authoritative: coreapi.NewOptBool(true),
 		})
 		switch {
 		case aerr == nil:
+			auth := &fresh.Response
 			// State and reason are one answer: the reason is why the state is
 			// what it is, and it is all the STATUS cell has to explain a primary
 			// that failed. Taking the state fresh and the reason from the plain

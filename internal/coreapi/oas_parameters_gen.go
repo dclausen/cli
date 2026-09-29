@@ -116,6 +116,11 @@ type DisconnectOrgCIDepotOrganizationParams struct {
 	Account string
 }
 
+// GetAccountProfileParams is parameters of getAccountProfile operation.
+type GetAccountProfileParams struct {
+	AccountId string
+}
+
 // GetBranchProtectionParams is parameters of getBranchProtection operation.
 type GetBranchProtectionParams struct {
 	RepoId string
@@ -280,7 +285,15 @@ type ListOrgMembersParams struct {
 	PageSize OptInt32 `json:",omitempty,omitzero"`
 	// Opaque cursor from a previous response's nextPageToken.
 	PageToken OptString `json:",omitempty,omitzero"`
-	OrgId     string
+	// Sort column, name when omitted. name orders by public display name, else GitHub handle; people
+	// without either come last. role orders by membership role, owner first, then by name; collaborators
+	// come last. status orders active, pending, inactive, then people without a membership. joined
+	// orders by membership creation, oldest first; people without a membership come last.
+	Sort OptListOrgMembersSort `json:",omitempty,omitzero"`
+	// Asc (default) or desc. desc reverses the order, but people without a name stay last on the name
+	// sort, and people without a membership stay last on joined.
+	Order OptListOrgMembersOrder `json:",omitempty,omitzero"`
+	OrgId string
 }
 
 // ListOrgPeopleParams is parameters of listOrgPeople operation.
@@ -289,13 +302,21 @@ type ListOrgPeopleParams struct {
 	PageSize OptInt32 `json:",omitempty,omitzero"`
 	// Opaque cursor from a previous response's nextPageToken.
 	PageToken OptString `json:",omitempty,omitzero"`
+	// Sort column, name when omitted. name orders by public display name, else GitHub handle; people
+	// without either come last. role orders by membership role, owner first, then by name; collaborators
+	// come last. status orders active, pending, inactive, then people without a membership. joined
+	// orders by membership creation, oldest first; people without a membership come last.
+	Sort OptListOrgPeopleSort `json:",omitempty,omitzero"`
+	// Asc (default) or desc. desc reverses the order, but people without a name stay last on the name
+	// sort, and people without a membership stay last on joined.
+	Order OptListOrgPeopleOrder `json:",omitempty,omitzero"`
 	// Select people with a recorded grant at this resource level.
 	Scope OptListOrgPeopleScope `json:",omitempty,omitzero"`
 	OrgId string
-	// Case-insensitive substring of account ID, public handle, or resource name.
+	// Case-insensitive substring of account ID, public handle, or public display name.
 	Search OptString `json:",omitempty,omitzero"`
-	// Member includes non-pending memberships; invited means pending; collaborator means no direct
-	// membership.
+	// Member includes non-pending memberships; invited means a WorkOS membership with status pending,
+	// not an email invitation; collaborator means no direct membership.
 	Membership OptListOrgPeopleMembership `json:",omitempty,omitzero"`
 	// Direct membership status; collaborators have no membership status.
 	Status OptListOrgPeopleStatus `json:",omitempty,omitzero"`
@@ -328,6 +349,20 @@ type ListOrgsParams struct {
 	CommitToken OptString `json:",omitempty,omitzero"`
 }
 
+// ListProjectCollaboratorsParams is parameters of listProjectCollaborators operation.
+type ListProjectCollaboratorsParams struct {
+	// Maximum entries to return; server may cap further.
+	PageSize OptInt32 `json:",omitempty,omitzero"`
+	// Opaque cursor from a previous response's nextPageToken.
+	PageToken OptString `json:",omitempty,omitzero"`
+	ProjectId string
+	// Optional repository placement ID owned by this project. Adds people granted on that logical
+	// repository.
+	RepoId OptString `json:",omitempty,omitzero"`
+	// Case-insensitive substring of account ID, active public handle, or public display name.
+	Search OptString `json:",omitempty,omitzero"`
+}
+
 // ListProjectMembersParams is parameters of listProjectMembers operation.
 type ListProjectMembersParams struct {
 	// Maximum entries to return; server may cap further.
@@ -343,10 +378,17 @@ type ListProjectPeopleParams struct {
 	PageSize OptInt32 `json:",omitempty,omitzero"`
 	// Opaque cursor from a previous response's nextPageToken.
 	PageToken OptString `json:",omitempty,omitzero"`
-	// Case-insensitive substring of account ID or public handle.
+	// Case-insensitive substring of account ID, public handle, or public display name.
 	Search OptString `json:",omitempty,omitzero"`
 	// Exact effective role on the selected resource.
-	Role      OptListProjectPeopleRole `json:",omitempty,omitzero"`
+	Role OptListProjectPeopleRole `json:",omitempty,omitzero"`
+	// Sort column, name when omitted. name orders by public display name, else GitHub handle; people
+	// without either come last. handle orders by GitHub handle ignoring case, people without one last.
+	// role orders strongest first, then by name. access orders by the listed sources, then by name.
+	Sort OptListProjectPeopleSort `json:",omitempty,omitzero"`
+	// Asc (default) or desc. desc reverses the order, but people without a name stay last on the name
+	// and handle sorts.
+	Order     OptListProjectPeopleOrder `json:",omitempty,omitzero"`
 	ProjectId string
 }
 
@@ -454,10 +496,17 @@ type ListRepoPeopleParams struct {
 	PageSize OptInt32 `json:",omitempty,omitzero"`
 	// Opaque cursor from a previous response's nextPageToken.
 	PageToken OptString `json:",omitempty,omitzero"`
-	// Case-insensitive substring of account ID or public handle.
+	// Case-insensitive substring of account ID, public handle, or public display name.
 	Search OptString `json:",omitempty,omitzero"`
 	// Exact effective role on the selected resource.
-	Role   OptListRepoPeopleRole `json:",omitempty,omitzero"`
+	Role OptListRepoPeopleRole `json:",omitempty,omitzero"`
+	// Sort column, name when omitted. name orders by public display name, else GitHub handle; people
+	// without either come last. handle orders by GitHub handle ignoring case, people without one last.
+	// role orders strongest first, then by name. access orders by the listed sources, then by name.
+	Sort OptListRepoPeopleSort `json:",omitempty,omitzero"`
+	// Asc (default) or desc. desc reverses the order, but people without a name stay last on the name
+	// and handle sorts.
+	Order  OptListRepoPeopleOrder `json:",omitempty,omitzero"`
 	RepoId string
 }
 
@@ -469,12 +518,16 @@ type ListReposParams struct {
 	PageToken OptString `json:",omitempty,omitzero"`
 	// Onboarded (default): repos in Entire; all: also include onboardable GitHub candidates.
 	Scope OptListReposScope `json:",omitempty,omitzero"`
-	// Optional: exact-match full_name (owner/repo, case-insensitive). Returns that repo's zero-or-one
-	// entries; pagination and scope are ignored, but the fact filters below still apply (a repo whose
-	// facts don't match returns empty).
+	// Optional: up to 100 comma-separated names: gh/owner/repo (GitHub only), et/project/repo
+	// (Entire-native only), or legacy owner/repo (both namespaces). Exact matching is case-insensitive;
+	// deduplication includes the forge. Unknown prefixes or malformed names return 400. Returns
+	// authorized onboarded repos with consolidated placements. Missing repos are omitted. Pagination,
+	// scope, and sorting are ignored; fact filters and projectId still apply. A single name remains
+	// supported.
 	Filter OptString `json:",omitempty,omitzero"`
 	// Optional: opaque commit token from a create, to read a snapshot that contains that write. Requires
-	// filter.
+	// a single filter name. A non-empty token with multiple supplied names returns 400, including
+	// duplicate names.
 	CommitToken OptString `json:",omitempty,omitzero"`
 	// Multi-key sort spec, e.g. org:asc,stars:desc. Keys: name,org,language,candidacy,stars,forks,
 	// pushed_at,last_activity_at,last_pushed_at,activity_hotness,checkpoint_count,open_pr_count. A
@@ -551,6 +604,12 @@ type RemoveOrgMemberParams struct {
 	OrgId          string
 	Provider       string
 	ProviderUserId string
+}
+
+// RemoveOrgMemberByMembershipIDParams is parameters of removeOrgMemberByMembershipID operation.
+type RemoveOrgMemberByMembershipIDParams struct {
+	OrgId        string
+	MembershipId string
 }
 
 // ResolveHandleParams is parameters of resolveHandle operation.

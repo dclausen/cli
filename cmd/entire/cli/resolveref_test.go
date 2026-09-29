@@ -29,8 +29,9 @@ const (
 // resolveTestClient builds a coreapi client pointed at a test server whose
 // handler is h, and returns the client plus a counter of HTTP requests seen.
 // It lets the resolver tests assert the load-bearing invariant from
-// resolveref.go's doc comment: a ULID ref makes zero network calls, a name ref
-// makes exactly one.
+// resolveref.go's doc comment: a ULID ref makes zero network calls, a project
+// or repo name ref makes exactly one, and an org name ref makes one per page
+// of the caller's org listing.
 func resolveTestClient(t *testing.T, h http.HandlerFunc) (*coreapi.Client, *atomic.Int64) {
 	t.Helper()
 	var calls atomic.Int64
@@ -68,42 +69,126 @@ func TestResolveOrgRef(t *testing.T) {
 		}
 	})
 
-	t.Run("name is resolved server-side in one call", func(t *testing.T) {
+	t.Run("name is matched against the caller's own orgs, across pages", func(t *testing.T) {
 		t.Parallel()
-		var gotName string
-		c, calls := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-			gotName = r.URL.Query().Get("name")
-			if err := printJSON(w, &coreapi.ListOrgsOutputBody{Org: coreapi.NewOptOrg(coreapi.Org{ID: ulidOrgGlobex, Name: "globex"})}); err != nil {
-				t.Errorf("encode org: %v", err)
-			}
-		})
-		got, err := resolveOrgRef(context.Background(), c, "globex")
+		c, calls := resolveTestClient(t, orgPagesHandler(t,
+			[]coreapi.Org{{ID: ulidOrgAcme, Name: "acme"}},
+			[]coreapi.Org{{ID: ulidOrgGlobex, Name: "globex"}},
+		))
+		got, err := resolveOrgRefResolved(context.Background(), c, "globex")
 		if err != nil {
 			t.Fatalf("resolveOrgRef: %v", err)
 		}
-		if got != ulidOrgGlobex {
-			t.Errorf("resolveOrgRef = %q, want globex id", got)
+		if got.ID != ulidOrgGlobex || got.Name != "globex" {
+			t.Errorf("resolveOrgRef = %+v, want globex on page 2", got)
 		}
-		if gotName != "globex" {
-			t.Errorf("server received name=%q, want %q (filtering must be server-side)", gotName, "globex")
-		}
-		if n := calls.Load(); n != 1 {
-			t.Errorf("name ref made %d HTTP calls, want 1", n)
+		if n := calls.Load(); n != 2 {
+			t.Errorf("name ref made %d HTTP calls, want 2 (one per page)", n)
 		}
 	})
 
 	t.Run("unknown name is a friendly error", func(t *testing.T) {
 		t.Parallel()
-		c, _ := resolveTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-			if err := printJSON(w, &coreapi.ListOrgsOutputBody{}); err != nil {
-				t.Errorf("encode empty: %v", err)
-			}
-		})
+		c, _ := resolveTestClient(t, orgPagesHandler(t, []coreapi.Org{{ID: ulidOrgAcme, Name: "acme"}}))
 		_, err := resolveOrgRef(context.Background(), c, "nope")
 		if err == nil || !strings.Contains(err.Error(), "no org named") {
 			t.Errorf("resolveOrgRef unknown name: err = %v, want a \"no org named\" error", err)
 		}
 	})
+
+	t.Run("name match is case-insensitive", func(t *testing.T) {
+		t.Parallel()
+		c, _ := resolveTestClient(t, orgPagesHandler(t, []coreapi.Org{{ID: ulidOrgAcme, Name: "Acme"}}))
+		got, err := resolveOrgRefResolved(context.Background(), c, "acme")
+		if err != nil {
+			t.Fatalf("resolveOrgRef case mismatch: %v", err)
+		}
+		if got.ID != ulidOrgAcme || got.Name != "Acme" {
+			t.Errorf("resolveOrgRef = %+v, want Acme with the server's spelling", got)
+		}
+	})
+
+	t.Run("exact-case match wins over case-folded ones", func(t *testing.T) {
+		t.Parallel()
+		c, _ := resolveTestClient(t, orgPagesHandler(t,
+			[]coreapi.Org{{ID: ulidOrgAcme, Name: "ACME"}},
+			[]coreapi.Org{{ID: ulidOrgGlobex, Name: "acme"}},
+		))
+		got, err := resolveOrgRef(context.Background(), c, "acme")
+		if err != nil {
+			t.Fatalf("resolveOrgRef exact-case: %v", err)
+		}
+		if got != ulidOrgGlobex {
+			t.Errorf("resolveOrgRef = %q, want the exact-case match %q", got, ulidOrgGlobex)
+		}
+	})
+
+	t.Run("several case-folded matches are ambiguous", func(t *testing.T) {
+		t.Parallel()
+		c, _ := resolveTestClient(t, orgPagesHandler(t,
+			[]coreapi.Org{{ID: ulidOrgAcme, Name: "ACME"}, {ID: ulidOrgGlobex, Name: "Acme"}},
+		))
+		_, err := resolveOrgRef(context.Background(), c, "acme")
+		if err == nil {
+			t.Fatal("resolveOrgRef case-folded ambiguous name: want an error")
+		}
+		msg := err.Error()
+		for _, want := range []string{"2 orgs are named \"acme\"", "ACME  " + ulidOrgAcme, "Acme  " + ulidOrgGlobex} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("ambiguous error %q lacks %q", msg, want)
+			}
+		}
+	})
+
+	t.Run("several same-named orgs list each ULID", func(t *testing.T) {
+		t.Parallel()
+		c, _ := resolveTestClient(t, orgPagesHandler(t,
+			[]coreapi.Org{{ID: ulidOrgAcme, Name: "acme"}},
+			[]coreapi.Org{{ID: ulidOrgGlobex, Name: "acme"}},
+		))
+		_, err := resolveOrgRef(context.Background(), c, "acme")
+		if err == nil {
+			t.Fatal("resolveOrgRef ambiguous name: want an error")
+		}
+		msg := err.Error()
+		for _, want := range []string{"2 orgs are named \"acme\"", "pass the ULID", "acme  " + ulidOrgAcme, "acme  " + ulidOrgGlobex} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("ambiguous error %q lacks %q", msg, want)
+			}
+		}
+	})
+}
+
+// orgPagesHandler serves GET /api/v1/orgs as the given pages, chained through
+// nextPageToken. It refuses a ?name= filter: the resolver must read the whole
+// listing, not the server's global by-name lookup.
+func orgPagesHandler(t *testing.T, pages ...[]coreapi.Org) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/orgs" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		if name := r.URL.Query().Get("name"); name != "" {
+			t.Errorf("server received name=%q; the resolver must not use the global lookup", name)
+		}
+		page := 0
+		if cursor := r.URL.Query().Get("pageToken"); cursor != "" {
+			n, err := strconv.Atoi(cursor)
+			if err != nil || n < 1 || n >= len(pages) {
+				t.Errorf("unexpected cursor %q", cursor)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			page = n
+		}
+		body := coreapi.ListOrgsOutputBody{Orgs: pages[page]}
+		if page+1 < len(pages) {
+			body.NextPageToken = coreapi.NewOptString(strconv.Itoa(page + 1))
+		}
+		if err := printJSON(w, &body); err != nil {
+			t.Errorf("encode orgs: %v", err)
+		}
+	}
 }
 
 func TestResolveProjectRef(t *testing.T) {
@@ -807,6 +892,28 @@ func TestResolveAccountRef(t *testing.T) {
 		}
 	})
 
+	// `project create --owner` takes the same spellings a grantee does.
+	for _, ref := range []string{"google:1001", "google:google-1001"} {
+		t.Run("google owner "+ref+" resolves the minted handle", func(t *testing.T) {
+			t.Parallel()
+			c, _ := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/google/google-1001") {
+					t.Errorf("resolved path %q, want the minted handle google-1001", r.URL.Path)
+				}
+				if err := printJSON(w, &coreapi.ResolvedIdentity{AccountId: ulidResolvedAcct, Provider: providerGoogle, Handle: "google-1001", ProviderUserId: "1001"}); err != nil {
+					t.Errorf("encode identity: %v", err)
+				}
+			})
+			got, err := resolveAccountRef(context.Background(), c, ref)
+			if err != nil {
+				t.Fatalf("resolveAccountRef: %v", err)
+			}
+			if got != ulidResolvedAcct {
+				t.Errorf("resolveAccountRef = %q, want %q", got, ulidResolvedAcct)
+			}
+		})
+	}
+
 	t.Run("non-qualified handle fails before any network call", func(t *testing.T) {
 		t.Parallel()
 		c, calls := resolveTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -843,6 +950,30 @@ func TestResolveGranteeProvider(t *testing.T) {
 			t.Errorf("handle ref made %d HTTP calls, want 1", n)
 		}
 	})
+
+	// `auth status` shows a Google login as google:<subject id>; the server
+	// only resolves its minted google-<subject id>, so both spellings must look
+	// up the minted one.
+	for _, ref := range []string{"google:1001", "google:google-1001"} {
+		t.Run("google grantee "+ref+" resolves the minted handle", func(t *testing.T) {
+			t.Parallel()
+			c, _ := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/google/google-1001") {
+					t.Errorf("resolved path %q, want the minted handle google-1001", r.URL.Path)
+				}
+				if err := printJSON(w, &coreapi.ResolvedIdentity{AccountId: ulidResolvedAcct, Provider: providerGoogle, Handle: "google-1001", ProviderUserId: "1001"}); err != nil {
+					t.Errorf("encode identity: %v", err)
+				}
+			})
+			provider, puid, err := resolveGranteeProvider(context.Background(), c, ref)
+			if err != nil {
+				t.Fatalf("resolveGranteeProvider: %v", err)
+			}
+			if provider != providerGoogle || puid != "1001" {
+				t.Errorf("resolveGranteeProvider = (%q, %q), want (google, 1001)", provider, puid)
+			}
+		})
+	}
 
 	t.Run("non-qualified handle fails before any network call", func(t *testing.T) {
 		t.Parallel()
@@ -949,6 +1080,38 @@ func TestParseQualifiedHandle(t *testing.T) {
 				t.Errorf("parseQualifiedHandle(%q) = (%q, %q), want (%q, %q)", tt.in, provider, handle, tt.wantProvider, tt.wantHandle)
 			}
 		})
+	}
+}
+
+// formatQualifiedHandle is the inverse of parseQualifiedHandle; they live
+// together so the grantee spelling cannot drift between what the CLI prints and
+// what it accepts.
+func TestFormatQualifiedHandle_RoundTripsThroughTheParser(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ provider, handle string }{
+		{"github", "alice"},
+		{"github", "alice:bob"}, // only the first colon splits, so this survives
+		{"gitlab", "a"},
+	} {
+		t.Run(tt.provider+":"+tt.handle, func(t *testing.T) {
+			t.Parallel()
+			provider, handle, err := parseQualifiedHandle(formatQualifiedHandle(tt.provider, tt.handle))
+			if err != nil {
+				t.Fatalf("parseQualifiedHandle(formatQualifiedHandle(%q, %q)): %v", tt.provider, tt.handle, err)
+			}
+			if provider != tt.provider || handle != tt.handle {
+				t.Errorf("round trip = (%q, %q), want (%q, %q)", provider, handle, tt.provider, tt.handle)
+			}
+		})
+	}
+}
+
+// An empty provider yields the bare handle: ":alice" parses as nothing and
+// would be a grantee string no command accepts.
+func TestFormatQualifiedHandle_OmitsAnEmptyProvider(t *testing.T) {
+	t.Parallel()
+	if got := formatQualifiedHandle("", "alice"); got != "alice" {
+		t.Errorf("formatQualifiedHandle(\"\", \"alice\") = %q, want %q", got, "alice")
 	}
 }
 

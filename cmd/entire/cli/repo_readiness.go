@@ -61,7 +61,7 @@ const repoPollMaxInterval = 30 * time.Second
 // because ENTIRE_TOKEN still chooses its audience core and a foreign registry
 // snapshot cannot confirm lifecycle state.
 type repoLifecycleGetter interface {
-	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.Repo, error)
+	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.RepoHeaders, error)
 }
 
 // awaitRepoActive waits for an authoritative repository snapshot to become active.
@@ -133,11 +133,11 @@ func awaitRepoActive(ctx context.Context, c repoLifecycleGetter, result *coreapi
 				return fmt.Errorf("poll repository lifecycle: %w", err)
 			}
 		default:
-			if snapshot.ID != result.ID {
+			if snapshot.Response.ID != result.ID {
 				return errors.New("repository readiness unconfirmed: inspection returned a different repository ID")
 			}
 			failures = repoPollFailures{}
-			retainRepoCreation(result, snapshot)
+			retainRepoCreation(result, &snapshot.Response)
 			authoritative = true
 			// Observe terminal or incompatible state before sleeping.
 			if result.State.Or("") != repoStateProvisioning || result.Foreign.Or(false) {
