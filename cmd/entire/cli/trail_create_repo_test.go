@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -158,4 +163,50 @@ func TestRedactGitStderr_RedactsCredentialedURLs(t *testing.T) {
 	require.NotContains(t, got, "s3cret")
 	require.Contains(t, got, "fatal: unable to access")
 	require.Contains(t, got, "; hint: check access")
+}
+
+func TestLsRemoteBranch_TimesOutOnSilentRemote(t *testing.T) {
+	// No t.Parallel: shortens the package-level check timeout and wait delay.
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() }) // accept, never answer
+		}
+	}()
+	prevTimeout, prevWait := trailBranchCheckTimeout, trailBranchCheckWaitDelay
+	trailBranchCheckTimeout, trailBranchCheckWaitDelay = 300*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { trailBranchCheckTimeout, trailBranchCheckWaitDelay = prevTimeout, prevWait })
+
+	start := time.Now()
+	presence, err := lsRemoteBranch(t.Context(), "https://"+ln.Addr().String()+"/acme/app.git", "feat")
+
+	require.Equal(t, trailBranchUnknown, presence)
+	require.ErrorContains(t, err, "no answer within")
+	require.Less(t, time.Since(start), 5*time.Second, "the check must not outlive its deadline and wait delay")
+}
+
+func TestLsRemoteBranch_PresentAndMissing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "f.txt", "x")
+	testutil.GitAdd(t, dir, "f.txt")
+	testutil.GitCommit(t, dir, "init")
+
+	head, err := exec.CommandContext(t.Context(), "git", "-C", dir, "symbolic-ref", "--short", "HEAD").Output()
+	require.NoError(t, err)
+
+	presence, err := lsRemoteBranch(t.Context(), dir, strings.TrimSpace(string(head)))
+	require.NoError(t, err)
+	require.Equal(t, trailBranchPresent, presence)
+
+	presence, err = lsRemoteBranch(t.Context(), dir, "does-not-exist")
+	require.NoError(t, err)
+	require.Equal(t, trailBranchMissing, presence)
 }

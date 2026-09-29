@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/execx"
 	"github.com/entireio/cli/cmd/entire/cli/gitremote"
@@ -22,6 +23,16 @@ const (
 	trailBranchPresent
 	trailBranchMissing
 )
+
+// trailBranchCheckTimeout bounds the remote branch check, like remoteHasBranch
+// on the local create path, so an unreachable remote fails instead of hanging.
+// A variable so tests can shorten it.
+var trailBranchCheckTimeout = 30 * time.Second
+
+// trailBranchCheckWaitDelay bounds how long the check waits for pipes after
+// the deadline kills git (a transport child can hold them open). A variable so
+// tests can shorten it.
+var trailBranchCheckWaitDelay = execx.KillWaitDelay
 
 // trailRemoteBranchState reports whether branch exists on the repository
 // named by forge/owner/repo. It is a seam for tests.
@@ -94,11 +105,26 @@ func remoteTrailBranchState(ctx context.Context, forge, owner, repo, branch stri
 	if err != nil {
 		return trailBranchUnknown, err
 	}
+	return lsRemoteBranch(ctx, url, branch)
+}
+
+// lsRemoteBranch asks url whether refs/heads/<branch> exists, within
+// trailBranchCheckTimeout.
+func lsRemoteBranch(ctx context.Context, url, branch string) (trailBranchPresence, error) {
+	ctx, cancel := context.WithTimeout(ctx, trailBranchCheckTimeout)
+	defer cancel()
 	cmd := execx.NonInteractive(ctx, "git", "ls-remote", "--heads", url, "refs/heads/"+branch)
+	// ls-remote runs the transport as a child that can outlive a killed git and
+	// hold the pipes open; WaitDelay bounds that. (TerminateOnCancel's process
+	// group cannot be combined with NonInteractive's new session.)
+	cmd.WaitDelay = trailBranchCheckWaitDelay
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return trailBranchUnknown, fmt.Errorf("git ls-remote: no answer within %s: %w", trailBranchCheckTimeout, ctx.Err())
+		}
 		// git echoes the remote URL in its errors, and a URL can carry
 		// credentials, so stderr is redacted per URL before it is surfaced.
 		if msg := redactGitStderr(stderr.String()); msg != "" {
