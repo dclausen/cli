@@ -375,11 +375,46 @@ func TestParseURL_RejectsDotOnlySegments(t *testing.T) {
 		"entire://entirehost/gh/../app",      // typed, not manufactured
 		"entire://entirehost/et/acme/..git",  // native trims too, so it can manufacture one
 		"entire://entirehost/et/acme/..",     // typed on a native path
+		// A trailing separator used to carry ".." past this guard: "../" is not
+		// dot-only as spelled. Separators are stripped first, so it is again.
+		"entire://entirehost/gh/acme/../",
+		"entire://entirehost/gh/acme/..//",
+		"entire://entirehost/gh/acme/..git/",
+		"entire://entirehost/et/acme/../",
 	} {
 		t.Run(rawURL, func(t *testing.T) {
 			t.Parallel()
 			_, err := ParseURL(rawURL)
 			require.Error(t, err)
+		})
+	}
+}
+
+// TestParseURL_TrailingSeparatorsAreStrippedBeforeTheSuffix pins the order
+// git_url_basename uses: trailing separators, then one `.git`. A pasted clone
+// URL routinely carries a trailing slash, and trimming in the other order would
+// leave the suffix in the name — the exact spelling this CLI is supposed to
+// treat as an alias.
+func TestParseURL_TrailingSeparatorsAreStrippedBeforeTheSuffix(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		url      string
+		wantRepo string
+	}{
+		{url: "entire://entirehost/et/audit1/foo.git/", wantRepo: "foo"},
+		{url: "entire://entirehost/et/audit1/foo/", wantRepo: "foo"},
+		{url: "entire://entirehost/et/audit1/foo.git//", wantRepo: "foo"},
+		{url: "entire://entirehost/gh/entireio/cli.git/", wantRepo: "cli"},
+		{url: "https://github.com/entireio/cli.git/", wantRepo: "cli"},
+		{url: "git@github.com:entireio/cli.git/", wantRepo: "cli"},
+		// Only the trailing run goes; an interior separator still splits.
+		{url: "entire://entirehost/et/audit1/a/b.git/", wantRepo: "a/b"},
+	} {
+		t.Run(tt.url, func(t *testing.T) {
+			t.Parallel()
+			info, err := ParseURL(tt.url)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantRepo, info.Repo)
 		})
 	}
 }

@@ -461,9 +461,13 @@ the commands are always runnable in every build.
   remote must never gain one, which is why `cleanRemoteURLForReport` checks the
   forge before appending. And `repo create` refuses a name ending in it.
   `/et/p/foo` and `/et/p/foo.git` therefore address one repository, spelled `foo`.
-  The consequence worth knowing is that a trim can *manufacture* a dot-only
+  Order matters where a URL is parsed: `splitOwnerRepo` strips trailing
+  separators **before** the suffix, the order canonical git uses in
+  `git_url_basename`, so a pasted `…/foo.git/` resolves like `…/foo.git` and
+  `…/o/../` cannot carry a `..` past the dot-only guard still wearing a slash.
+  That guard is the other thing to know — a trim can *manufacture* a dot-only
   segment (`..git` → `.`), a path-traversal shape for any caller that joins it,
-  which both the `/gh/` grammar and `splitOwnerRepo` refuse.
+  and both the `/gh/` grammar and `splitOwnerRepo` refuse it.
 - The three `grant` subtrees (`org grant`, `project grant`, `repo grant`) are one
   generic builder plus three target descriptions in `grant.go`; a new target is
   a `grantTarget` value, not a fourth copy of the leaves.

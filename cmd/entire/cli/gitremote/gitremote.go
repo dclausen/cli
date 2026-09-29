@@ -360,7 +360,19 @@ func ResolveRemoteRepo(ctx context.Context, remoteName string) (forge, owner, re
 // it is what git tools append to a clone path, never part of the name Entire
 // stores. This is the only place the suffix is dropped, so it goes exactly once
 // — trimming again in ParseURL's SCP branch collapsed "repo.git.git" to "repo".
+// git strips it exactly once too (one strip_suffix_mem in git_url_basename), so
+// "repo.git.git" names "repo.git" here and clones into "repo.git" there.
+//
+// Trailing separators go FIRST, which is also git's order. Trimming the suffix
+// first leaves "p/foo.git/" spelled with the suffix intact — a trailing slash is
+// exactly what a pasted URL carries — and lets "o/../" reach the dot-only guard
+// below still wearing a slash, where it no longer reads as dot-only.
+//
+// Separators only, not whitespace: git strips both, but ParseURL has already
+// trimmed the raw URL, and stripping a percent-encoded trailing newline here
+// would turn the control-character rejection below into a silent accept.
 func splitOwnerRepo(path string) (string, string, error) {
+	path = strings.TrimRight(path, "/")
 	path = strings.TrimSuffix(path, gitDirSuffix)
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
