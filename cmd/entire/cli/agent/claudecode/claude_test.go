@@ -87,6 +87,26 @@ func TestBuildGenerateArgs_IsolatesSettingSources(t *testing.T) {
 	}
 }
 
+// Settings isolation leaves the built-in tools available, and Read runs
+// without approval inside the working directory, so an injected instruction
+// could copy a file into the summary. Both argv builders must remove them.
+func TestBuildGenerateArgs_RemovesAllTools(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string][]string{
+		"buildGenerateArgs":          buildGenerateArgs("haiku", ""),
+		"buildStreamingGenerateArgs": buildStreamingGenerateArgs("haiku", ""),
+	} {
+		got, ok := flagValue(args, "--tools")
+		if !ok {
+			t.Errorf("%s: --tools missing; the model keeps every built-in tool: %v", name, args)
+			continue
+		}
+		if got != "" {
+			t.Errorf("%s: --tools = %q, want %q (no tools)", name, got, "")
+		}
+	}
+}
+
 func TestBuildGenerateArgs_PassesSettingsAsPath(t *testing.T) {
 	t.Parallel()
 	// The injected settings must be passed as a file path, not inline JSON, so a

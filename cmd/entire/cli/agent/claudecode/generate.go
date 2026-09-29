@@ -30,6 +30,13 @@ const (
 // which would let prompt-injection in the untrusted dispatch data drive tool
 // execution. So we pass --setting-sources "" (load nothing).
 //
+// Settings isolation alone still leaves every built-in tool available, and in
+// the default permission mode Read and read-only Bash run without approval
+// inside the working directory, so an injected "read this file" instruction
+// could copy a file's contents into the summary. --tools "" removes the tools
+// entirely; summary generation needs none, because the transcript is already
+// in the prompt.
+//
 // The one thing we genuinely need from the user settings is auth. Users on API
 // billing configure it with `apiKeyHelper` (a command that prints the key),
 // which lives in user settings and is therefore dropped by --setting-sources "".
@@ -51,6 +58,7 @@ func buildGenerateArgs(model, settingsPath string) []string {
 		"--print", flagOutputFormat, "json",
 		"--model", model,
 		"--setting-sources", "",
+		"--tools", "",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -71,6 +79,7 @@ func buildStreamingGenerateArgs(model, settingsPath string) []string {
 		"--verbose",
 		"--model", model,
 		"--setting-sources", "",
+		"--tools", "",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -179,11 +188,18 @@ func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model
 		defer cleanup()
 	}
 
+	workDir, cleanupDir, err := agent.NewTextGenerationDir()
+	if err != nil {
+		return "", err //nolint:wrapcheck // NewTextGenerationDir already names what failed
+	}
+	defer cleanupDir()
+
 	cmd := commandRunner(ctx, claudePath, buildGenerateArgs(model, settingsPath)...)
 
 	// Isolate from the user's git repo to prevent recursive hook triggers
-	// and index pollution (matches agent.RunIsolatedTextGeneratorCLI behavior).
-	cmd.Dir = os.TempDir()
+	// and index pollution, in an empty directory rather than the shared temp
+	// dir (matches agent.RunIsolatedTextGeneratorCLI behavior).
+	cmd.Dir = workDir
 	cmd.Env = agent.StripGitEnv(os.Environ())
 	cmd.Stdin = strings.NewReader(prompt)
 
