@@ -56,10 +56,12 @@ execution-capable agent configuration from that checkout:
   inherits trust from the nearest trusted ancestor, which covers review
   worktrees). Entire's extension is loaded with `--extension` from a copy the
   binary writes to the per-user cache directory.
-- codex runs with the checkout marked untrusted
+- codex, on a `--target` run, runs with the checkout marked untrusted
   (`-c projects={"<checkout>"={trust_level="untrusted"}}`), so the checkout's
-  `.codex/config.toml`, `mcp_servers` included, is not loaded. Without it, a
-  review worktree inside a repository the user trusts in codex is trusted too.
+  `.codex/config.toml`, `mcp_servers` and `hooks.json` included, is not
+  loaded. Without it, a review worktree inside a repository the user trusts in
+  codex is trusted too. A plain `entire review` in the user's own checkout
+  keeps codex's normal trust, so Entire's codex hooks still tag the session.
 
 The user's own agent settings still apply. The checkout's instruction files
 (`CLAUDE.md`, `AGENTS.md`, skills) are still read by the agent.

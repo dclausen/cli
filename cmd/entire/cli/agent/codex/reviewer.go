@@ -52,17 +52,27 @@ func NewReviewer() *reviewtypes.ReviewerTemplate {
 // checkpoint context. Plain `codex exec -` with the composed prompt on stdin
 // runs the same skill while carrying our arguments.
 //
-// The reviewer runs inside the checkout under review. Codex loads that
-// checkout's .codex/config.toml (mcp_servers included) when the project is
-// trusted, and it resolves trust for a linked worktree to the main repo root,
-// so trusting a repo also trusts every `entire review --target` worktree
-// inside it. The checkout is therefore marked untrusted for this run
-// (untrustedProjectOverride); the user's own config.toml still applies.
+// A `--target` review runs in a worktree of a branch someone else may
+// control. Codex loads that checkout's .codex/config.toml (mcp_servers
+// included) when the project is trusted, and it resolves trust for a linked
+// worktree to the main repo root, so trusting a repo also trusts every
+// `entire review --target` worktree inside it. On a target run the checkout
+// is therefore marked untrusted (untrustedProjectOverride). That switches off
+// codex's whole project layer, .codex/hooks.json included, so project hooks,
+// Entire's among them, do not run there; they never did at that path, since
+// codex trusts hooks per path. The user's own config.toml still applies.
+//
+// A plain `entire review` runs in the user's own checkout and keeps codex's
+// normal trust: there codex behaves as it would if the user ran it, and
+// marking the checkout untrusted would stop Entire's hooks from tagging the
+// review session.
 func buildCodexReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	promptCfg := cfg
 	promptCfg.Skills = codexNativeSkillInvocations(cfg.Skills)
-	args := []string{codexExecCommand, "--skip-git-repo-check", "--json",
-		"-c", untrustedProjectOverride(reviewCheckoutRoot(ctx))}
+	args := []string{codexExecCommand, "--skip-git-repo-check", "--json"}
+	if review.IsTargetReview() {
+		args = append(args, "-c", untrustedProjectOverride(reviewCheckoutRoot(ctx)))
+	}
 	args = review.AppendModelFlag(args, cfg.Model)
 	args = append(args, "-")
 	prompt := review.ComposeReviewPrompt(promptCfg)
