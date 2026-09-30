@@ -118,3 +118,43 @@ func TestRefusedRelocationEnvVars(t *testing.T) {
 		t.Fatalf("RefusedRelocationEnvVars() = %v, want exactly the relative CODEX_HOME", refused)
 	}
 }
+
+func TestLookupOverride_ExpandsTildeWhereTheAgentDoes(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name, envVar, value, want string
+		wantErr                   bool
+	}{
+		{name: "pi expands ~/", envVar: "PI_CODING_AGENT_DIR", value: "~/pi-home", want: filepath.Join(home, "pi-home")},
+		{name: "pi expands a bare ~", envVar: "PI_CODING_AGENT_SESSION_DIR", value: "~", want: home},
+		{name: "pi leaves ~user alone, so it stays relative", envVar: "PI_CODING_AGENT_DIR", value: "~someone/pi", wantErr: true},
+		{name: "claude does not expand ~", envVar: "CLAUDE_CONFIG_DIR", value: "~/claude", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.envVar, tt.value)
+			got, ok, err := LookupOverride(tt.envVar)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("LookupOverride() = %q, want an error", got)
+				}
+				return
+			}
+			if err != nil || !ok || got != tt.want {
+				t.Errorf("LookupOverride() = %q, %v, %v; want %q", got, ok, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestTildeExpandingEnvVars_AreRelocationEnvVars(t *testing.T) {
+	t.Parallel()
+	for _, envVar := range tildeExpandingEnvVars {
+		if !slices.Contains(relocationEnvVars, envVar) {
+			t.Errorf("%s expands ~ but is not in relocationEnvVars", envVar)
+		}
+	}
+}

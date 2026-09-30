@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -38,10 +39,15 @@ func RelocationEnvVars() []string {
 // $envVar when set, else the user's home joined with defaultRel.
 //
 // A blank value counts as unset, and a non-blank value is used exactly as
-// set, whitespace included, because that is what the agents do: Cursor tests
-// e?.trim() and then uses e, Claude reads process.env raw. Trimming the value
-// we return would make "/tmp/x " resolve to a directory the agent never wrote
-// to. A relative value is refused rather than resolved against the working
+// set, whitespace included, because that is what the agents do with a real
+// path: Cursor tests e?.trim() and then uses e, Claude reads process.env raw.
+// Trimming the value we return would make "/tmp/x " resolve to a directory the
+// agent never wrote to. Blank is the one place we knowingly differ: Claude
+// resolves an empty CLAUDE_CONFIG_DIR against its working directory (measured
+// on 2.1.285), which is almost certainly not what anyone exporting it meant,
+// and following it would make the answer depend on the cwd again. The one
+// rewrite applied is a leading ~ for the agents in tildeExpandingEnvVars,
+// which expand it themselves. A relative value is refused rather than resolved against the working
 // directory: inside a hook that is the repo root, for `session resume` it is
 // wherever the user stands, so one environment would name a different
 // directory in each process. The refusal reuses userdirs.RequireAbsoluteOverride
@@ -83,6 +89,13 @@ func LookupOverride(envVar string) (dir string, ok bool, err error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", false, nil
 	}
+	if slices.Contains(tildeExpandingEnvVars, envVar) {
+		expanded, err := expandLeadingTilde(dir)
+		if err != nil {
+			return "", false, fmt.Errorf("%s: %w", envVar, err)
+		}
+		dir = expanded
+	}
 	if err := userdirs.RequireAbsoluteOverride(envVar, dir); err != nil {
 		return "", false, err //nolint:wrapcheck // the error already names the override and its value
 	}
@@ -104,4 +117,36 @@ func RefusedRelocationEnvVars() []error {
 		}
 	}
 	return refused
+}
+
+// tildeExpandingEnvVars are the relocation variables whose agent expands a
+// leading ~ itself, so Entire has to as well: Pi runs both of its variables
+// through normalizePath, which maps "~" and "~/..." (and "~\..." on Windows)
+// onto the home directory (@earendil-works/pi-coding-agent 0.99.1,
+// utils/paths.js). The other agents are not listed because none was found to
+// expand it; for them "~/x" stays a relative path and is refused.
+var tildeExpandingEnvVars = []string{
+	"PI_CODING_AGENT_DIR",
+	"PI_CODING_AGENT_SESSION_DIR",
+}
+
+// expandLeadingTilde maps "~" and "~/rest" onto the user's home the way Pi's
+// normalizePath does, and returns anything else unchanged. "~user/..." is not
+// expanded, by Pi or here.
+func expandLeadingTilde(value string) (string, error) {
+	var rest string
+	switch {
+	case value == "~":
+	case strings.HasPrefix(value, "~/"):
+		rest = value[2:]
+	case runtime.GOOS == "windows" && strings.HasPrefix(value, `~\`):
+		rest = value[2:]
+	default:
+		return value, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand ~: %w", err)
+	}
+	return filepath.Join(home, rest), nil
 }
