@@ -662,3 +662,53 @@ func TestProjectCreateState_SameNamedOrgsAreToldApartByCreationDay(t *testing.T)
 		assert.NotContains(t, s.summary(), id)
 	}
 }
+
+// When the creation day does not tell same-named orgs apart, the minute is
+// used, and when that collides too, an oldest-first ordinal. Never an id.
+func TestSameNameAsides_FallBackToFinerDetail(t *testing.T) {
+	t.Parallel()
+	at := func(id string, ts time.Time) coreapi.Org {
+		o := wizardTestOrg(id, "Acme", "us", true)
+		o.CreatedAt = ts
+		return o
+	}
+	day := func(h, m int) time.Time { return time.Date(2025, 3, 1, h, m, 0, 0, time.UTC) }
+	const a, b = "01HZX7QACMEA00000000000000", "01HZX7QACMEB00000000000000"
+
+	assert.Equal(t, map[string]string{a: "created 2025-03-01", b: "created 2025-03-02"},
+		sameNameAsides([]coreapi.Org{at(a, day(9, 0)), at(b, day(9, 0).AddDate(0, 0, 1))}))
+	assert.Equal(t, map[string]string{a: "created 2025-03-01 09:00 UTC", b: "created 2025-03-01 14:30 UTC"},
+		sameNameAsides([]coreapi.Org{at(a, day(9, 0)), at(b, day(14, 30))}), "same day: the minute")
+	assert.Equal(t, map[string]string{a: "#1", b: "#2"},
+		sameNameAsides([]coreapi.Org{at(a, day(9, 0)), at(b, day(9, 0).Add(10*time.Second))}), "same minute: an ordinal")
+
+	// Wired through: rows and the summary read differently, with no ids.
+	d := wizardTestData()
+	d.orgs = []coreapi.Org{at(a, day(9, 0)), at(b, day(9, 0).Add(10*time.Second))}
+	s, err := newProjectCreateState(d, projectCreateInput{owner: "Acme"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "Acme  (organization, us, #1)", s.owners[1].label(4))
+	assert.Equal(t, "Acme  (organization, us, #2)", s.owners[2].label(4))
+	assert.Contains(t, s.summary(), "Owner    Acme (organization, #1)")
+	assert.NotContains(t, s.summary(), a)
+}
+
+// A hidden namesake still makes the name ambiguous for --owner, so the summary
+// offers no command, but the row is alone in the picker and gets no date.
+func TestProjectOwners_HiddenNamesakeNeedsNoAside(t *testing.T) {
+	t.Parallel()
+	d := wizardTestData()
+	hidden := wizardTestOrg("01HZX7QS0L0HIDDEN000000000", "Solo", "us", false)
+	hidden.CreatedAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	visible := wizardTestOrg("01HZX7QS0L0VISIBLE00000000", "Solo", "us", true)
+	visible.CreatedAt = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	d.orgs = []coreapi.Org{hidden, visible}
+
+	s, err := newProjectCreateState(d, projectCreateInput{owner: "Solo"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "Solo", s.owner().ref)
+	assert.Empty(t, s.ownerNote, "only one row matches")
+	assert.Equal(t, "Solo  (organization, us)", s.owner().label(4), "no date on a row alone in the picker")
+	assert.Contains(t, s.summary(), "Owner    Solo (organization)\n")
+	assert.Empty(t, s.command(), "resolveOrgRef would still find two orgs named Solo")
+}

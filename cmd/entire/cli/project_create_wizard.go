@@ -66,9 +66,10 @@ type projectOwner struct {
 	flagRef  string
 	region   string // the owner's jurisdiction: the region picker's default
 	personal bool
-	// created tells an org whose name is shared apart from the others, since
-	// its id is never shown: the day it was created. Empty otherwise.
-	created string
+	// aside tells an org apart from visible rows with the same name, since
+	// its id is never shown: "created 2025-03-01", or finer when that collides
+	// (see sameNameAsides). Empty for a name no other visible row shares.
+	aside string
 }
 
 // orgKind describes an org row: "organization, us", plus the creation day
@@ -78,8 +79,8 @@ func (o projectOwner) orgKind() string {
 	if o.region != "" {
 		parts = append(parts, o.region)
 	}
-	if o.created != "" {
-		parts = append(parts, "created "+o.created)
+	if o.aside != "" {
+		parts = append(parts, o.aside)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -258,6 +259,7 @@ func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOw
 			a.CreatedAt.Compare(b.CreatedAt),
 		)
 	})
+	asides := sameNameAsides(creatable)
 	for _, o := range creatable {
 		owner := projectOwner{
 			key:    "org:" + o.ID,
@@ -266,14 +268,66 @@ func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOw
 			ref:    o.Name,
 			region: o.Region,
 		}
+		// The flag spelling counts hidden namesakes too (resolveOrgRef would
+		// refuse the name), but the aside only visible ones: a row alone in
+		// the picker needs nothing to tell it apart.
 		if named[o.Name] == 1 {
 			owner.flagRef = o.Name
-		} else {
-			owner.created = o.CreatedAt.UTC().Format(time.DateOnly)
 		}
+		owner.aside = asides[o.ID]
 		owners = append(owners, owner)
 	}
 	return owners, len(orgs) - len(creatable)
+}
+
+// sameNameAsides tells apart visible orgs sharing an exact name, keyed by id,
+// using the least detail that works for the whole group: the creation day,
+// else the creation minute (UTC), else an oldest-first ordinal. orgs is in
+// picker order, so same-named ones are oldest first already.
+func sameNameAsides(orgs []coreapi.Org) map[string]string {
+	groups := make(map[string][]coreapi.Org)
+	for _, o := range orgs {
+		groups[o.Name] = append(groups[o.Name], o)
+	}
+	asides := make(map[string]string)
+	for _, group := range groups {
+		if len(group) < 2 {
+			continue
+		}
+		for _, format := range []func(coreapi.Org) string{
+			func(o coreapi.Org) string { return "created " + o.CreatedAt.UTC().Format(time.DateOnly) },
+			func(o coreapi.Org) string { return "created " + o.CreatedAt.UTC().Format("2006-01-02 15:04") + " UTC" },
+			nil,
+		} {
+			labels := make([]string, len(group))
+			for i, o := range group {
+				if format == nil {
+					labels[i] = fmt.Sprintf("#%d", i+1)
+				} else {
+					labels[i] = format(o)
+				}
+			}
+			if distinct(labels) {
+				for i, o := range group {
+					asides[o.ID] = labels[i]
+				}
+				break
+			}
+		}
+	}
+	return asides
+}
+
+// distinct reports whether no label repeats.
+func distinct(labels []string) bool {
+	seen := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		if seen[l] {
+			return false
+		}
+		seen[l] = true
+	}
+	return true
 }
 
 // projectRegions maps the topology's jurisdictions to picker rows.
@@ -337,7 +391,7 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 			ownerKey = matches[0].key
 		default:
 			// Same-named orgs: the picker is where they can be told apart
-			// (their rows and the summary add the creation day), so start
+			// (their rows and the summary add sameNameAsides), so start
 			// there on the first of them, the oldest, which is what was asked
 			// for either way. Never the personal row, which Enter would then
 			// create under.
@@ -461,9 +515,9 @@ func (s *projectCreateState) ownerDisplay() string {
 	if o.personal {
 		return o.ref + " (you)"
 	}
-	if o.created != "" {
+	if o.aside != "" {
 		// A shared name alone would not say which org this is.
-		return o.ref + " (organization, created " + o.created + ")"
+		return o.ref + " (organization, " + o.aside + ")"
 	}
 	return o.ref + " (organization)"
 }
