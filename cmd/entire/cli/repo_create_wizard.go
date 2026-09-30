@@ -87,8 +87,11 @@ type repoCreateState struct {
 	// tests that need no duplicate check.
 	names *repoNameIndex
 
-	// projectNote and nameNote are shown on the project and name pages.
-	projectNote, nameNote string
+	// projectNote is shown on the project page. conflict is the name a create
+	// was refused for (409) and the project it was refused in; the name page
+	// says so only while that project is the chosen one.
+	projectNote string
+	conflict    struct{ projectID, name string }
 	// pickedProject is the accessible project select's binding; see
 	// projectGroup.
 	pickedProject string
@@ -108,9 +111,9 @@ type repoCreateState struct {
 	confirmed bool
 }
 
-// repoCreateProjects builds the picker rows from the visible projects: only
-// those the caller may create repositories in, sorted by name. It also
-// returns how many were left out.
+// repoCreateProjects builds the picker rows from the visible projects, sorted
+// by name, leaving out those that say the caller may not create repositories
+// in them. It also returns how many were left out.
 func repoCreateProjects(projects []coreapi.Project) ([]repoProject, int) {
 	rows := make([]repoProject, 0, len(projects))
 	for _, p := range projects {
@@ -326,7 +329,7 @@ func runRepoCreateWizard(cmd *cobra.Command, req repoCreateRequest, projectRef s
 				// user already answered.
 				if isRepoNameConflict(err) {
 					s.names.add(req.projectID, req.name)
-					s.nameNote = fmt.Sprintf("%q was taken while you were choosing; pick another name.", req.name)
+					s.conflict.projectID, s.conflict.name = req.projectID, req.name
 					continue
 				}
 				return err
@@ -516,6 +519,17 @@ func (s *repoCreateState) refreshPageTitles() {
 	}
 }
 
+// nameNote explains a create refused because the name was taken meanwhile,
+// while the project it was refused in is the chosen one. Elsewhere that name
+// may well be free, so the note would mislead; the name index still refuses
+// it if the user goes back to that project.
+func (s *repoCreateState) nameNote() string {
+	if s.conflict.name == "" || s.conflict.projectID != s.answers.projectID {
+		return ""
+	}
+	return fmt.Sprintf("%q was taken while you were choosing; pick another name.", s.conflict.name)
+}
+
 // nameGroup asks for the name. dynamic recaps the chosen project above the
 // heading, kept current through refreshPageTitles; the accessible runner
 // leaves earlier answers on screen already, so it gets none.
@@ -527,8 +541,12 @@ func (s *repoCreateState) nameGroup(dynamic bool) *huh.Group {
 	if !dynamic {
 		return huh.NewGroup(s.accessibleName(in)).Title(repoHeadingName)
 	}
-	if s.nameNote != "" {
-		in.Description(s.nameNote)
+	if s.conflict.name != "" {
+		// Follows the project cursor: the note belongs to the project the
+		// create was refused in. A blank line stands in elsewhere, because huh
+		// sizes the page once and the height must not change.
+		note := func() string { return cmp.Or(s.nameNote(), " ") }
+		in.Description(note()).DescriptionFunc(note, &s.answers.projectID)
 	}
 	// A name page that fails validation must still let Shift+Tab leave it.
 	in.Validate(uiform.Lenient(s.nav, s.validateName))
@@ -545,8 +563,8 @@ func (s *repoCreateState) nameGroup(dynamic bool) *huh.Group {
 func (s *repoCreateState) accessibleName(in *huh.Input) *huh.Input {
 	in.Value(&s.answers.name)
 	title := "Repository name"
-	if s.nameNote != "" {
-		title = s.nameNote + " " + title
+	if note := s.nameNote(); note != "" {
+		title = note + " " + title
 	}
 	current := strings.TrimSpace(s.answers.name)
 	if current == "" {

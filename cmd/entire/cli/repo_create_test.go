@@ -47,6 +47,9 @@ type fakeRepoCreateCore struct {
 	// omitFullName leaves fullName out of the created repo.
 	omitFullName   bool
 	failVisibility bool
+	// snapshotOmitsVisibility leaves visibility and fullName out of the
+	// readiness read.
+	snapshotOmitsVisibility bool
 
 	mu           sync.Mutex
 	requests     int
@@ -195,8 +198,15 @@ func (f *fakeRepoCreateCore) handle(w http.ResponseWriter, r *http.Request) {
 		// The readiness read is authoritative: it answers with the repo as
 		// created, which the command adopts.
 		f.mu.Lock()
-		repo := f.lastCreated
+		repo := make(map[string]any, len(f.lastCreated))
+		for k, v := range f.lastCreated {
+			repo[k] = v
+		}
 		f.mu.Unlock()
+		if f.snapshotOmitsVisibility {
+			delete(repo, "visibility")
+			delete(repo, "fullName")
+		}
 		writeJSON(http.StatusOK, repo)
 	case r.Method == http.MethodPut && path == "/repos/"+testCreatedRepoID+"/visibility":
 		raw, err := io.ReadAll(r.Body)
@@ -714,7 +724,11 @@ func TestRepoCreateWizard_ConflictReopensTheWizard(t *testing.T) {
 	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
 		runs++
 		if runs == 2 {
-			require.Equal(t, `"web" was taken while you were choosing; pick another name.`, s.nameNote)
+			require.Equal(t, `"web" was taken while you were choosing; pick another name.`, s.nameNote())
+			repoProjectAccessor{s: s}.Set(testCreateProjectBeta)
+			require.Empty(t, s.nameNote(), "the note belongs to the project the create was refused in")
+			repoProjectAccessor{s: s}.Set(testCreateProjectAcme)
+			require.NotEmpty(t, s.nameNote())
 			require.Error(t, s.validateName("web"), "the taken name is now refused on the page")
 			s.answers.name = "web2"
 		}
@@ -779,4 +793,36 @@ func TestRepoCreateWizard_AccessibleEnterKeepsDefaults(t *testing.T) {
 	require.Equal(t, "web", f.createBodies[0]["name"])
 	require.NotContains(t, f.createBodies[0], "objectFormat")
 	require.Equal(t, []string{`{"visibility":"private"}`}, f.visBodies)
+}
+
+// Commands the user pastes into a shell quote the server-derived ref.
+func TestPrintRepoCreateNextSteps_QuotesTheRef(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	printRepoCreateNextSteps(&out, "/et/acme/web")
+	require.Contains(t, out.String(), "entire repo clone /et/acme/web\n", "a plain ref needs no quotes")
+	out.Reset()
+	printRepoCreateNextSteps(&out, "/et/acme/$(boom)")
+	require.Contains(t, out.String(), "entire repo clone '/et/acme/$(boom)'\n")
+	require.NotContains(t, out.String(), "clone /et/acme/$(boom)")
+}
+
+// The usage line advertises the one optional name the command accepts.
+func TestRepoCreate_UsageNamesOneOptionalName(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "create [<name>]", newRepoCreateCmd().Use)
+}
+
+// A readiness snapshot that omits the visibility must not erase what the
+// create reported: asking for the visibility the repo already has sends no
+// second request.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_VisibilitySurvivesTheReadinessSnapshot(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), createdVisibility: "private", snapshotOmitsVisibility: true}
+	f.serve()
+	stdout, _, err := execRepoCreateArgs(t, "web", "--project", "acme", "--visibility", "private")
+	require.NoError(t, err)
+	require.Empty(t, f.visBodies)
+	require.Contains(t, stdout, "✓ Created repository acme/web")
 }

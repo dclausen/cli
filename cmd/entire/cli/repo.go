@@ -118,7 +118,7 @@ func newRepoCreateCmd() *cobra.Command {
 		waitTimeout  time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   cmdCreateName + " [<name>]",
+		Use:   "create [<name>]",
 		Short: "Create a repository in a project",
 		Long: `Create a repository and wait for provisioning to become active by
 default. Active means provisioning completed; later pushes or mirror

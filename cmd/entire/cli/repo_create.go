@@ -82,7 +82,7 @@ func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client
 	visErr := applyRepoVisibility(ctx, c, created, req.visibility)
 	if visErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "The repository was created, but setting its visibility to %s failed: %v\nSet it with: entire repo edit %s --visibility %s\n",
-			req.visibility, renderCoreError(visErr), cmp.Or(ref, created.ID), req.visibility)
+			req.visibility, renderCoreError(visErr), shellArg(cmp.Or(ref, created.ID)), req.visibility)
 	}
 	reportErr := reportRepoCreation(cmd, created, ref, opts.noWait, waitErr)
 	if visErr != nil {
@@ -137,6 +137,9 @@ func printRepoCreateNextSteps(w io.Writer, ref string) {
 	if ref == "" {
 		return
 	}
+	// Quoted: the ref is server-derived and these lines are pasted into a
+	// shell.
+	ref = shellArg(ref)
 	fmt.Fprintf(w, "\nNext steps\n"+
 		"  Clone it:                entire repo clone %[1]s\n"+
 		"  Or point origin at it:   entire repo remote add origin %[1]s --override\n"+

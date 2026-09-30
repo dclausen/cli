@@ -236,6 +236,16 @@ func retainRepoCreation(result, snapshot *coreapi.Repo) {
 	if snapshot.Path.Or("") == "" {
 		snapshot.Path = result.Path
 	}
+	// The output names the repo by its full name, and a requested visibility
+	// is skipped when the create already reports it, so an omission in the
+	// snapshot must not erase either.
+	if snapshot.FullName.Or("") == "" {
+		snapshot.FullName = result.FullName
+	}
+	if snapshot.Visibility.Or("") == "" {
+		snapshot.Visibility = result.Visibility
+	}
+
 	for key, value := range result.AdditionalProps {
 		if snapshot.AdditionalProps == nil {
 			snapshot.AdditionalProps = make(coreapi.RepoAdditional)
@@ -254,7 +264,9 @@ func retainRepoCreation(result, snapshot *coreapi.Repo) {
 // The repo is named and addressed by it; the ID stands in only where nothing
 // else can address the repo, and is always given for support to act on.
 func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, ref string, noWait bool, waitErr error) error {
-	addr := cmp.Or(ref, result.ID)
+	// Quoted: the address is server-derived and goes into commands the user
+	// pastes into a shell.
+	addr := shellArg(cmp.Or(ref, result.ID))
 	// Without a path the ID is the only handle on the new repo, so the name
 	// carries it; with one, the <project>/<repo> it names is enough.
 	shown := fmt.Sprintf("%s (%s)", result.Name, result.ID)
