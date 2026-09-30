@@ -668,3 +668,67 @@ func TestJSONLContentWithPrivacyFilter_ShortReturnTripsBreaker(t *testing.T) {
 		t.Error("short return must trip the OPF breaker so the rewrite's post-loop check aborts the push")
 	}
 }
+
+// FuzzSplitBatchSpan checks splitBatchSpan against a byte-by-byte reference:
+// for any batch layout and span, every byte of the span that lies inside an
+// input is covered by exactly one piece of that input, and no piece covers a
+// separator byte, a byte outside the span, or a byte past the batch. A span
+// with a negative start is malformed (RedactBatch discards those before
+// splitting) and must yield nothing.
+func FuzzSplitBatchSpan(f *testing.F) {
+	f.Add([]byte{11, 11, 11}, 5, 15)
+	f.Add([]byte{11, 11, 11}, 6, 30)
+	f.Add([]byte{0, 3, 0}, 0, 10)
+	f.Add([]byte{4}, -2, 100)
+
+	f.Fuzz(func(t *testing.T, lens []byte, spanStart, spanEnd int) {
+		if len(lens) == 0 || len(lens) > 16 {
+			return
+		}
+		sepLen := len(opfBatchSeparator)
+		// owner[b] is the input byte b belongs to, or -1 for a separator.
+		var owner []int
+		starts := make([]int, len(lens))
+		for i, l := range lens {
+			if i > 0 {
+				for range sepLen {
+					owner = append(owner, -1)
+				}
+			}
+			starts[i] = len(owner)
+			for range int(l % 32) {
+				owner = append(owner, i)
+			}
+		}
+		batchedLen := len(owner)
+		spanStart %= batchedLen + 8
+		spanEnd %= batchedLen + 8
+
+		covered := make([]int, batchedLen)
+		for _, p := range splitBatchSpan(starts, batchedLen, spanStart, spanEnd, sepLen) {
+			if p.input < 0 || p.input >= len(starts) || p.start < 0 || p.end <= p.start {
+				t.Fatalf("invalid piece %+v", p)
+			}
+			for off := p.start; off < p.end; off++ {
+				b := starts[p.input] + off
+				if b >= batchedLen || owner[b] != p.input {
+					t.Fatalf("piece %+v covers byte %d outside input %d", p, b, p.input)
+				}
+				if b < spanStart || b >= spanEnd {
+					t.Fatalf("piece %+v covers byte %d outside span [%d,%d)", p, b, spanStart, spanEnd)
+				}
+				covered[b]++
+			}
+		}
+		for b := range batchedLen {
+			want := 0
+			if spanStart >= 0 && owner[b] >= 0 && b >= spanStart && b < spanEnd {
+				want = 1
+			}
+			if covered[b] != want {
+				t.Fatalf("byte %d (input %d) covered %d times, want %d; span [%d,%d)",
+					b, owner[b], covered[b], want, spanStart, spanEnd)
+			}
+		}
+	})
+}
