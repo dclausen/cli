@@ -263,13 +263,13 @@ this one is decided.
 
 The same rule reaches the agents' own relocation variables through
 `agent.ResolveHome` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`,
-`FACTORY_HOME_OVERRIDE`, `PI_CODING_AGENT_DIR`), for a different reason:
-nothing of Entire's is protected there, but Entire has to agree with where the
-agent wrote, and a relative value resolves against the repo root inside a hook
-and against the user's cwd in `session resume`. The list is static and
-`ResolveHome` refuses a name missing from it, so the test harnesses that scrub
-it through `agent.RelocationEnvVars()` cannot fall behind an agent that starts
-honoring a new one.
+`FACTORY_HOME_OVERRIDE`, `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`),
+for a different reason: nothing of Entire's is protected there, but Entire has
+to agree with where the agent wrote, and a relative value resolves against the
+repo root inside a hook and against the user's cwd in `session resume`. The
+list is static and `ResolveHome` refuses a name missing from it, so the test
+harnesses that scrub it through `agent.RelocationEnvVars()` cannot fall behind
+an agent that starts honoring a new one.
 
 Rejecting beats falling through to the platform default: for the config
 directory that default is the developer's REAL `~/.config/entire`, so quietly

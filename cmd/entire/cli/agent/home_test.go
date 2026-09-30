@@ -67,3 +67,38 @@ func TestRelocationEnvVars_ReturnsACopy(t *testing.T) {
 		t.Error("RelocationEnvVars() shares its backing array with the package-level list")
 	}
 }
+
+func TestLookupOverride(t *testing.T) {
+	abs := t.TempDir()
+	tests := []struct {
+		name    string
+		env     string
+		want    string
+		wantOK  bool
+		wantErr bool
+	}{
+		{name: "unset is not ok", env: ""},
+		{name: "blank is not ok", env: "  "},
+		{name: "absolute is returned as set", env: abs + " ", want: abs + " ", wantOK: true},
+		{name: "relative is refused", env: filepath.Join("relative", "dir"), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PI_CODING_AGENT_SESSION_DIR", tt.env)
+			got, ok, err := LookupOverride("PI_CODING_AGENT_SESSION_DIR")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("LookupOverride() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("LookupOverride() = %q, %v; want %q, %v", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestLookupOverride_RefusesAnUnlistedVariable(t *testing.T) {
+	t.Parallel()
+	if _, _, err := LookupOverride("NOT_A_RELOCATION_VARIABLE"); err == nil || !strings.Contains(err.Error(), "relocationEnvVars") {
+		t.Fatalf("LookupOverride() error = %v; want a refusal pointing at the list", err)
+	}
+}

@@ -24,6 +24,7 @@ var relocationEnvVars = []string{
 	"COPILOT_HOME",
 	"FACTORY_HOME_OVERRIDE",
 	"PI_CODING_AGENT_DIR",
+	"PI_CODING_AGENT_SESSION_DIR",
 }
 
 // RelocationEnvVars returns every relocation variable a built-in agent honors,
@@ -53,13 +54,11 @@ func RelocationEnvVars() []string {
 // binary before choosing, and check where the files actually land: Cursor has a
 // variable that looks like one and its transcripts do not follow it.
 func ResolveHome(envVar, defaultRel string) (string, error) {
-	if !slices.Contains(relocationEnvVars, envVar) {
-		return "", fmt.Errorf("%s is not listed in agent.relocationEnvVars", envVar)
+	dir, ok, err := LookupOverride(envVar)
+	if err != nil {
+		return "", err
 	}
-	if dir := os.Getenv(envVar); strings.TrimSpace(dir) != "" {
-		if err := userdirs.RequireAbsoluteOverride(envVar, dir); err != nil {
-			return "", err //nolint:wrapcheck // the error already names the override and its value
-		}
+	if ok {
 		return dir, nil
 	}
 	home, err := os.UserHomeDir()
@@ -67,4 +66,25 @@ func ResolveHome(envVar, defaultRel string) (string, error) {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
 	return filepath.Join(home, defaultRel), nil
+}
+
+// LookupOverride returns $envVar and true when it is set, under the same policy
+// as ResolveHome: blank counts as unset, the value is returned exactly as set,
+// a relative value is refused, and envVar must be listed in relocationEnvVars.
+//
+// Use it where the fallback is not a fixed path under the home: Pi's
+// PI_CODING_AGENT_SESSION_DIR replaces a per-repo directory derived from the
+// repo path, so its caller derives the fallback itself when ok is false.
+func LookupOverride(envVar string) (dir string, ok bool, err error) {
+	if !slices.Contains(relocationEnvVars, envVar) {
+		return "", false, fmt.Errorf("%s is not listed in agent.relocationEnvVars", envVar)
+	}
+	dir = os.Getenv(envVar)
+	if strings.TrimSpace(dir) == "" {
+		return "", false, nil
+	}
+	if err := userdirs.RequireAbsoluteOverride(envVar, dir); err != nil {
+		return "", false, err //nolint:wrapcheck // the error already names the override and its value
+	}
+	return dir, true, nil
 }
