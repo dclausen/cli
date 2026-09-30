@@ -258,7 +258,7 @@ the commands are always runnable in every build.
   creates without prompting even in a terminal; missing either, a terminal
   gets the same kind of paged wizard as `project create` (project → name →
   visibility → advanced → object format → summary) seeded from whatever was
-  given, and no terminal is refused before any request. Projects reporting
+  given, and no terminal (or `--json`) is refused before any request. Projects reporting
   `canCreateRepository: false` are hidden (one reporting no capabilities is
   offered and the server decides, as with `project create`'s orgs); a
   `--project` naming none on offer fails before the form. The duplicate-name check reads each project's repo

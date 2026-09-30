@@ -91,7 +91,7 @@ type repoCreateState struct {
 	// was refused for (409) and the project it was refused in; the name page
 	// says so only while that project is the chosen one.
 	projectNote string
-	conflict    struct{ projectID, name string }
+	conflict    struct{ projectID, name, reason string }
 	// pickedProject is the accessible project select's binding; see
 	// projectGroup.
 	pickedProject string
@@ -324,12 +324,13 @@ func runRepoCreateWizard(cmd *cobra.Command, req repoCreateRequest, projectRef s
 			created, err := createRepo(createCtx, c, req)
 			if err != nil {
 				cancel()
-				// The name was free when checked; someone took it since. Reopen
-				// the wizard on the same answers rather than fail a run the
-				// user already answered.
-				if isRepoNameConflict(err) {
+				// Typically the name was free when checked and someone took it
+				// since. Reopen the wizard on the same answers, with the
+				// server's reason, rather than fail a run the user answered.
+				if isRepoCreateConflict(err) {
 					s.names.add(req.projectID, req.name)
 					s.conflict.projectID, s.conflict.name = req.projectID, req.name
+					s.conflict.reason = coreapi.APIError(err)
 					continue
 				}
 				return err
@@ -519,15 +520,20 @@ func (s *repoCreateState) refreshPageTitles() {
 	}
 }
 
-// nameNote explains a create refused because the name was taken meanwhile,
-// while the project it was refused in is the chosen one. Elsewhere that name
+// nameNote explains a create refused with a conflict (typically the name was
+// taken meanwhile), while the project it was refused in is the chosen one. Elsewhere that name
 // may well be free, so the note would mislead; the name index still refuses
 // it if the user goes back to that project.
 func (s *repoCreateState) nameNote() string {
 	if s.conflict.name == "" || s.conflict.projectID != s.answers.projectID {
 		return ""
 	}
-	return fmt.Sprintf("%q was taken while you were choosing; pick another name.", s.conflict.name)
+	// The endpoint's 409 is not documented as a name clash alone, so the
+	// server's own words are shown rather than a guess at the cause.
+	if s.conflict.reason != "" {
+		return fmt.Sprintf("Creating %q was refused (%s); pick another name.", s.conflict.name, s.conflict.reason)
+	}
+	return fmt.Sprintf("Creating %q was refused as a conflict; pick another name.", s.conflict.name)
 }
 
 // nameGroup asks for the name. dynamic recaps the chosen project above the

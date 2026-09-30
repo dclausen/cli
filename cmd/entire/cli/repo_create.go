@@ -57,9 +57,10 @@ func createRepo(ctx context.Context, c *coreapi.Client, req repoCreateRequest) (
 	return createdRepoAsRepo(&response.Response)
 }
 
-// isRepoNameConflict reports the server refusing a create because the name is
-// already taken in the project.
-func isRepoNameConflict(err error) bool {
+// isRepoCreateConflict reports the server refusing a create with a 409. A
+// name taken in the project is the expected cause, but the endpoint does not
+// document it as the only one, so callers show the server's reason.
+func isRepoCreateConflict(err error) bool {
 	var se *coreapi.ErrorModelStatusCode
 	return errors.As(err, &se) && se.StatusCode == http.StatusConflict
 }
@@ -94,7 +95,18 @@ func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client
 		visCtx, cancel = context.WithTimeout(cmd.Context(), repoVisibilityGrace)
 		defer cancel()
 	}
-	visErr := applyRepoVisibility(visCtx, c, created, req.visibility)
+	var visErr error
+	switch {
+	case waitErr != nil && !errors.Is(waitErr, context.DeadlineExceeded) && req.visibility != "":
+		// Provisioning failed, readiness could not be read, or the command
+		// was interrupted: setting visibility now would pile a second error
+		// onto a repo that may never become usable. Say how to finish once it
+		// is active instead.
+		fmt.Fprintf(cmd.ErrOrStderr(), "Visibility was not set. Once the repository is active, set it with: entire repo edit %s --visibility %s\n",
+			shellArg(cmp.Or(ref, created.ID)), req.visibility)
+	default:
+		visErr = applyRepoVisibility(visCtx, c, created, req.visibility)
+	}
 	if visErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "The repository was created, but setting its visibility to %s failed: %v\nSet it with: entire repo edit %s --visibility %s\n",
 			req.visibility, renderCoreError(visErr), shellArg(cmp.Or(ref, created.ID)), req.visibility)

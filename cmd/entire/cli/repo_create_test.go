@@ -53,6 +53,8 @@ type fakeRepoCreateCore struct {
 	// snapshotHangs makes the readiness read wait until the client gives up,
 	// so --wait-timeout runs out.
 	snapshotHangs bool
+	// snapshotState overrides the lifecycle state the readiness read reports.
+	snapshotState string
 
 	mu           sync.Mutex
 	requests     int
@@ -213,6 +215,9 @@ func (f *fakeRepoCreateCore) handle(w http.ResponseWriter, r *http.Request) {
 		if f.snapshotOmitsVisibility {
 			delete(repo, "visibility")
 			delete(repo, "fullName")
+		}
+		if f.snapshotState != "" {
+			repo["state"] = f.snapshotState
 		}
 		writeJSON(http.StatusOK, repo)
 	case r.Method == http.MethodPut && path == "/repos/"+testCreatedRepoID+"/visibility":
@@ -731,7 +736,7 @@ func TestRepoCreateWizard_ConflictReopensTheWizard(t *testing.T) {
 	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
 		runs++
 		if runs == 2 {
-			require.Equal(t, `"web" was taken while you were choosing; pick another name.`, s.nameNote())
+			require.Equal(t, `Creating "web" was refused (Conflict); pick another name.`, s.nameNote(), "the server's reason, not a guess")
 			repoProjectAccessor{s: s}.Set(testCreateProjectBeta)
 			require.Empty(t, s.nameNote(), "the note belongs to the project the create was refused in")
 			repoProjectAccessor{s: s}.Set(testCreateProjectAcme)
@@ -749,7 +754,7 @@ func TestRepoCreateWizard_ConflictReopensTheWizard(t *testing.T) {
 }
 
 // The real forms, in accessible mode: each stage is its own form, answered
-// line by line, and --json keeps stdout to the repository object.
+// line by line, and the prompts stay off stdout.
 //
 // Not parallel: sets env vars and swaps package-level seams.
 func TestRepoCreateWizard_AccessibleRun(t *testing.T) {
@@ -761,7 +766,7 @@ func TestRepoCreateWizard_AccessibleRun(t *testing.T) {
 		"2",         // object format sha256
 		"y",         // create
 	)
-	stdout, _, err := execRepoCreateArgs(t, "--json")
+	stdout, _, err := execRepoCreateArgs(t)
 	require.NoError(t, err)
 
 	shown := terminal.String()
@@ -772,9 +777,9 @@ func TestRepoCreateWizard_AccessibleRun(t *testing.T) {
 	require.Contains(t, shown, "Command        entire repo create web --project beta --visibility public --object-format sha256")
 	require.NotContains(t, shown, testCreateProjectBeta, "no id is ever shown")
 
-	var obj map[string]any
-	require.NoError(t, json.Unmarshal([]byte(stdout), &obj), "stdout stays one JSON object")
-	require.Equal(t, "public", obj["visibility"])
+	require.Contains(t, stdout, "✓ Created repository beta/web")
+	require.NotContains(t, stdout, "Which project", "prompts stay off stdout")
+	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies)
 	require.Len(t, f.createBodies, 1)
 	require.Equal(t, testCreateProjectBeta, f.createBodies[0]["projectId"])
 	require.Equal(t, "sha256", f.createBodies[0]["objectFormat"])
@@ -846,5 +851,37 @@ func TestRepoCreate_VisibilityAfterWaitTimeout(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded, "readiness was not confirmed")
 	require.Contains(t, stderr, "Readiness was not confirmed")
 	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies, "the visibility was still set")
+	require.NotContains(t, stderr, "setting its visibility to public failed")
+}
+
+// --json asks for machine output, so it never opens the wizard, even in a
+// terminal: a script run under a pty must not hang on a form.
+//
+// Not parallel: sets env vars and swaps package-level seams.
+func TestRepoCreate_JSONNeverPrompts(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+	f.serve()
+	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
+		t.Error("the wizard must not open under --json")
+		return false, nil
+	})
+	_, _, err := execRepoCreateArgs(t, "web", "--json")
+	require.ErrorIs(t, err, errRepoCreateNeedsInput)
+	require.Zero(t, f.requestCount(), "refused before any request")
+}
+
+// A repo whose provisioning failed gets no visibility write: that would pile a
+// second error onto a repo that may never become usable. The user is told how
+// to finish once it is active.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_NoVisibilityWhenProvisioningFailed(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), snapshotState: "failed"}
+	f.serve()
+	_, stderr, err := execRepoCreateArgs(t, "web", "--project", "acme", "--visibility", "public")
+	require.ErrorContains(t, err, "provisioning failed")
+	require.Empty(t, f.visBodies)
+	require.Contains(t, stderr, "Visibility was not set. Once the repository is active, set it with: entire repo edit /et/acme/web --visibility public")
 	require.NotContains(t, stderr, "setting its visibility to public failed")
 }
