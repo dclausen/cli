@@ -312,7 +312,7 @@ func TestRewriteUnpushedV1WithOPF_NoEnabledCategoriesAbortsThenRepairs(t *testin
 	require.True(t, trailers.HasOPFApplied(repaired.Message))
 }
 
-func TestPrePushFromGitHook_DeferralStillRunsOPF(t *testing.T) {
+func TestPrePushFromGitHook_UnscannedV1IsHeldForTheWorker(t *testing.T) {
 	fake := &fakeOPFForRewrite{}
 	configureFakeOPF(t, fake)
 
@@ -326,18 +326,17 @@ func TestPrePushFromGitHook_DeferralStillRunsOPF(t *testing.T) {
 	t.Chdir(dir)
 	paths.ClearWorktreeRootCache()
 	t.Cleanup(paths.ClearWorktreeRootCache)
+	spawns := swapOPFScanSpawn(t)
 
-	// The empty remote defers Entire's automatic metadata push. The OPF rewrite
-	// still must run because the user's outer git push may include v1 directly.
+	// Pre-push never runs the model: v1 has not been scanned, so it is held
+	// back, the user's push succeeds, and the scan worker is started for the
+	// remote this push named.
 	require.NoError(t, NewManualCommitStrategy().PrePushFromGitHook(t.Context(), "origin"))
-
+	require.Zero(t, fake.batchCallCount(), "pre-push must not call the model")
+	require.Equal(t, []string{"origin"}, *spawns, "the worker must be spawned for the push's remote")
 	ref, err := repo.Reference(plumbing.NewBranchReferenceName(paths.MetadataBranchName), true)
 	require.NoError(t, err)
-	require.NotEqual(t, originalTip, ref.Hash(), "OPF rewrite must advance the local v1 ref before deferral")
-	commit, err := repo.CommitObject(ref.Hash())
-	require.NoError(t, err)
-	require.True(t, trailers.HasOPFApplied(commit.Message))
-	require.Equal(t, 1, fake.batchCallCount())
+	require.Equal(t, originalTip, ref.Hash(), "a held v1 must not be rewritten by the hook")
 }
 
 // Regression: the no-categories abort must reach the git hook boundary.
