@@ -20,9 +20,9 @@ import (
 )
 
 // deviceLogin runs `entire login --device` against production and completes
-// the approval in a headless browser: GitHub sign-in as the test user with
-// its password and authenticator code, then the Authorize button on Entire's
-// device page. The login runs in dir, outside any repository checkout. The
+// the approval in a headless browser: GitHub on Entire's provider picker,
+// GitHub sign-in as the test user with its password and authenticator code,
+// then the Authorize button on Entire's device page. The login runs in dir, outside any repository checkout. The
 // returned error never carries the password, the TOTP secret, the device
 // code, or the approval URL.
 func deviceLogin(ctx context.Context, dir, username, password, totpSecret string) error {
@@ -177,6 +177,7 @@ type approver struct {
 	code                           string
 	username, password, totpSecret string
 	submitted, otpSubmitted        bool
+	chosenProvider                 bool
 }
 
 var (
@@ -188,6 +189,7 @@ var (
 	gitHubVerify         = regexp.MustCompile(`(?i)^verify$`)
 	gitHubAuthenticator  = regexp.MustCompile(`(?i)authenticator app`)
 	gitHubAuthorizeApp   = regexp.MustCompile(`(?i)^authorize .*entire`)
+	entireContinueGitHub = regexp.MustCompile(`(?i)^continue with github$`)
 )
 
 func (a *approver) step() error {
@@ -288,6 +290,18 @@ func (a *approver) stepTwoFactor(body string) error {
 }
 
 func (a *approver) stepEntire() error {
+	// A fresh browser first lands on the sign-in page, which offers GitHub and
+	// Google. The test user is a GitHub account, so pick GitHub once. Seeing
+	// the page again means the GitHub sign-in did not take, and clicking again
+	// would loop without ever tripping the stall check.
+	continueGitHub := a.page.GetByRole(*playwright.AriaRoleLink, playwright.PageGetByRoleOptions{Name: entireContinueGitHub}).First()
+	if visible, _ := continueGitHub.IsVisible(); visible {
+		if a.chosenProvider {
+			return errors.New("entire's sign-in page came back after choosing GitHub")
+		}
+		a.chosenProvider = true
+		return continueGitHub.Click()
+	}
 	// The device page comes back from GitHub with the code prefilled; fill it
 	// only when the inputs are visibly empty.
 	part1 := a.page.GetByLabel("Code part 1")
