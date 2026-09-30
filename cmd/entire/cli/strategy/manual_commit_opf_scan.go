@@ -155,6 +155,9 @@ func RunOPFScan(ctx context.Context, remote string) error {
 		return nil
 	}
 	defer release()
+	// One line on every exit of a worker that ran, so a failed or stalled
+	// background scan can be told apart from one that never started.
+	defer logging.Info(logCtx, "opf scan worker finished")
 
 	cache, err := checkpoint.OPFSpanCacheForRepo(repo)
 	if err != nil {

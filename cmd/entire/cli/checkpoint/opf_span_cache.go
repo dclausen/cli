@@ -59,6 +59,14 @@ func OPFSpanCacheAt(gitCommonDir string) (redact.OPFSpanCache, error) {
 	return &opfSpanCache{root: root}, nil
 }
 
+// opfSpanRecord is the stored form of one redact.Span. It is a separate,
+// tagged type so the on-disk format does not follow redact's field names.
+type opfSpanRecord struct {
+	Start int    `json:"s"`
+	End   int    `json:"e"`
+	Label string `json:"l"`
+}
+
 func opfSpanEntryName(key string) (string, error) {
 	if len(key) != 64 || strings.Trim(key, "0123456789abcdef") != "" {
 		return "", fmt.Errorf("invalid OPF span cache key %q", key)
@@ -75,9 +83,17 @@ func (c *opfSpanCache) LoadOPFSpans(key string) (map[string][]redact.Span, bool)
 	if err != nil {
 		return nil, false
 	}
-	var spans map[string][]redact.Span
-	if err := json.Unmarshal(data, &spans); err != nil || spans == nil {
+	var records map[string][]opfSpanRecord
+	if err := json.Unmarshal(data, &records); err != nil || records == nil {
 		return nil, false
+	}
+	spans := make(map[string][]redact.Span, len(records))
+	for leaf, recs := range records {
+		out := make([]redact.Span, 0, len(recs))
+		for _, r := range recs {
+			out = append(out, redact.Span{Start: r.Start, End: r.End, Label: r.Label})
+		}
+		spans[leaf] = out
 	}
 	return spans, true
 }
@@ -87,10 +103,15 @@ func (c *opfSpanCache) StoreOPFSpans(key string, spans map[string][]redact.Span)
 	if err != nil {
 		return err
 	}
-	if spans == nil {
-		spans = map[string][]redact.Span{}
+	records := make(map[string][]opfSpanRecord, len(spans))
+	for leaf, ss := range spans {
+		recs := make([]opfSpanRecord, 0, len(ss))
+		for _, sp := range ss {
+			recs = append(recs, opfSpanRecord{Start: sp.Start, End: sp.End, Label: sp.Label})
+		}
+		records[leaf] = recs
 	}
-	data, err := json.Marshal(spans)
+	data, err := json.Marshal(records)
 	if err != nil {
 		return fmt.Errorf("encode OPF span cache entry: %w", err)
 	}

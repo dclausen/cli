@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -99,7 +100,7 @@ func ScanBlobsWithPrivacyFilter(ctx context.Context, inputs []NamedBlob, cache O
 			}
 		})
 		if err := cache.StoreOPFSpans(opfBlobCacheKey(in.ID, cats), entry); err != nil {
-			return err
+			return fmt.Errorf("store OPF span cache entry: %w", err)
 		}
 	}
 	return nil

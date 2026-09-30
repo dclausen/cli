@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func TestScanThenApplyMatchesOnePassBatch(t *testing.T) {
 	}
 	for key, entry := range cache.entries {
 		for leafKey := range entry {
-			if bytes.Contains([]byte(key+leafKey), []byte("Alice")) {
+			if strings.Contains(key+leafKey, "Alice") {
 				t.Fatalf("cache keys must not contain leaf text")
 			}
 		}
