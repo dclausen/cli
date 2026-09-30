@@ -71,26 +71,29 @@ func buildCodexReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.C
 	promptCfg := cfg
 	promptCfg.Skills = codexNativeSkillInvocations(cfg.Skills)
 	args := []string{codexExecCommand, "--skip-git-repo-check", "--json"}
-	root := ""
+	targetRoot := ""
 	if review.IsTargetReview() {
-		var err error
-		root, err = reviewCheckoutRoot(ctx)
+		root, err := reviewCheckoutRoot(ctx)
 		if err != nil {
 			// prepareCodexReview already failed the run for this; a nil command
 			// stops Start rather than spawning codex with the checkout trusted.
 			return nil
 		}
 		args = append(args, "-c", untrustedProjectOverride(root))
+		targetRoot = root
 	}
 	args = review.AppendModelFlag(args, cfg.Model)
 	args = append(args, "-")
 	prompt := review.ComposeReviewPrompt(promptCfg)
 	cmd := exec.CommandContext(ctx, "codex", args...)
-	// Codex keys trust on its own working directory, so on a target run it
-	// runs from exactly the directory the override names. Left to inherit the
-	// process cwd, a reviewer started from a subdirectory would key trust on a
-	// path the override does not match and fall back to the trusted repo.
-	cmd.Dir = root
+	if targetRoot != "" {
+		// Codex keys trust on its own working directory, so a target run runs
+		// from exactly the directory the override names. Left to inherit the
+		// process cwd, a reviewer started from a subdirectory would key trust
+		// on a path the override does not match and fall back to the trusted
+		// repo. A plain review keeps the inherited cwd.
+		cmd.Dir = targetRoot
+	}
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = review.AppendReviewEnv(os.Environ(), "codex", cfg, prompt)
 	return cmd

@@ -160,6 +160,9 @@ func TestCodexReviewer_PlainReviewKeepsCheckoutTrust(t *testing.T) {
 			t.Fatalf("plain review marks the user's checkout untrusted: %v", cmd.Args)
 		}
 	}
+	if cmd.Dir != "" {
+		t.Errorf("cmd.Dir = %q, want it unset so a plain review keeps the caller's cwd", cmd.Dir)
+	}
 }
 
 // A target review whose checkout cannot be resolved must fail before codex
