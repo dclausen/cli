@@ -487,8 +487,8 @@ func (s *projectCreateState) regionIDs() []string {
 }
 
 // validateName checks the length the API enforces and, when the listing
-// loaded, that the chosen owner has no project of that name yet. Names are
-// compared case-insensitively, as the API's own name lookup is.
+// loaded, that no visible project already has the name. Names are compared
+// case-insensitively, as the API's own name lookup is.
 func (s *projectCreateState) validateName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -497,13 +497,23 @@ func (s *projectCreateState) validateName(name string) error {
 	if utf8.RuneCountInString(name) > projectNameMaxLen {
 		return fmt.Errorf("project names are at most %d characters", projectNameMaxLen)
 	}
+	// Project names are unique across owners (see resolveProjectByName), so
+	// any visible project of that name is a conflict, not only the chosen
+	// owner's. Only visible ones can be checked; the server has the last word.
 	o := s.owner()
 	for _, p := range s.existing {
-		if string(p.OwnerType) == string(o.kind) && p.OwnerId == o.id && strings.EqualFold(p.Name, name) {
-			if o.personal {
-				return fmt.Errorf("you already have a project named %q", p.Name)
-			}
+		if !strings.EqualFold(p.Name, name) {
+			continue
+		}
+		switch {
+		case string(p.OwnerType) == string(o.kind) && p.OwnerId == o.id && o.personal:
+			return fmt.Errorf("you already have a project named %q", p.Name)
+		case string(p.OwnerType) == string(o.kind) && p.OwnerId == o.id:
 			return fmt.Errorf("%s already has a project named %q", o.ref, p.Name)
+		case p.OwnerName.Or("") != "":
+			return fmt.Errorf("%q is taken by %s's project; project names are unique", p.Name, p.OwnerName.Or(""))
+		default:
+			return fmt.Errorf("a project named %q already exists; project names are unique", p.Name)
 		}
 	}
 	return nil

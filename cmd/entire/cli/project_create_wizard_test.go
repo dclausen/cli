@@ -182,11 +182,16 @@ func TestProjectCreateState_ValidateName(t *testing.T) {
 	require.ErrorContains(t, s.validateName(strings.Repeat("x", 101)), "at most 100 characters")
 	require.NoError(t, s.validateName(strings.Repeat("x", 100)))
 	require.EqualError(t, s.validateName("Widgets"), `Acme already has a project named "widgets"`)
-	require.NoError(t, s.validateName("dotfiles"), "another owner's project name is free here")
+	// Project names are unique across owners: another owner's name is taken
+	// too, named by the server's owner name when the listing has one.
+	require.EqualError(t, s.validateName("dotfiles"), `a project named "dotfiles" already exists; project names are unique`)
+	s.existing[1].OwnerName = coreapi.NewOptString("github:alice")
+	require.EqualError(t, s.validateName("dotfiles"), `"dotfiles" is taken by github:alice's project; project names are unique`)
+	require.NoError(t, s.validateName("gadgets"))
 
 	s.setOwner(projectOwnerKeyPersonal)
 	require.EqualError(t, s.validateName("dotfiles"), `you already have a project named "dotfiles"`)
-	require.NoError(t, s.validateName("widgets"))
+	require.ErrorContains(t, s.validateName("widgets"), `a project named "widgets" already exists`)
 
 	s.existing = nil // the listing failed: only the length checks remain
 	require.NoError(t, s.validateName("dotfiles"))
