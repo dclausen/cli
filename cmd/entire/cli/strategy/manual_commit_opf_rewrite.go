@@ -273,8 +273,7 @@ const (
 type OPFScanPendingError struct{}
 
 func (e *OPFScanPendingError) Error() string {
-	return "the OpenAI Privacy Filter is still scanning these checkpoints in the background; " +
-		"they are pushed automatically when the scan finishes"
+	return "the OpenAI Privacy Filter has not finished scanning these checkpoints"
 }
 
 // redactBlobsForOPFRewrite produces the OPF-redacted bytes for blobs through the

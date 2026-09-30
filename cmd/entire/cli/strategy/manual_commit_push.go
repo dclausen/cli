@@ -167,7 +167,7 @@ func (s *ManualCommitStrategy) prePush(ctx context.Context, remote string, prote
 				// Not scanned yet: hold v1 back rather than make the user's push
 				// wait on the model. The worker scans and then pushes it.
 				opfSpan.End()
-				fmt.Fprintf(stderrWriter, "[entire] %s\n", rewriteErr)
+				fmt.Fprintln(stderrWriter, opfScanPendingNotice)
 				maybeSpawnOPFScan(ctx, ps.remote)
 				return nil
 			}
@@ -358,9 +358,18 @@ func warnOPFCheckpointRefsWithheld(ctx context.Context, err error, withheld int)
 	if withheld == 0 {
 		return
 	}
+	var pending *OPFScanPendingError
+	if errors.As(err, &pending) {
+		fmt.Fprintln(stderrWriter, opfScanPendingNotice)
+		return
+	}
 	fmt.Fprintf(stderrWriter,
 		"[entire] %d checkpoint ref(s) were not pushed and stay queued for the next push: %v\n", withheld, err)
 }
+
+// opfScanPendingNotice is what the user sees when checkpoints are held for the
+// background scan. It is not an error: nothing is lost and no action is needed.
+const opfScanPendingNotice = "[entire] Checkpoints are being scanned by the OpenAI Privacy Filter in the background and will be pushed when it finishes."
 
 // deferCheckpointPushOnEmptyRemote reports whether publication of the git-branch
 // v1 metadata should be held back because the push remote may be brand new.

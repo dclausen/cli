@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1267,12 +1266,12 @@ func TestRewriteQueuedCheckpointRefsWithOPF_OversizedRefDoesNotBlockOthers(t *te
 	require.Equal(t, 1, fake.batchCallCount(), "only the ref that fits may reach OPF")
 }
 
-// Backend divergence: the v1 path aborts the user's push on OPF failure; the
-// refs path fails closed by withholding the flush instead — the user's push
-// succeeds, nothing un-OPF'd ships, and the refs stay queued.
-func TestPrePushCheckpointRefs_OPFFailureWithholdsFlush(t *testing.T) {
+// Pre-push never runs the model: unscanned refs are withheld, the user's push
+// succeeds, the user is told why, and nothing reaches the remote.
+func TestPrePushCheckpointRefs_UnscannedRefsAreWithheldWithNotice(t *testing.T) {
 	configureFakeOPF(t, &fakeRuntimeAlwaysFails{})
 	bareDir, repo, refs := setupGitRefsOPFRepo(t, "a1b2c3d4e5f6")
+	swapOPFScanSpawn(t)
 
 	var buf bytes.Buffer
 	oldWriter := stderrWriter
@@ -1280,15 +1279,24 @@ func TestPrePushCheckpointRefs_OPFFailureWithholdsFlush(t *testing.T) {
 	t.Cleanup(func() { stderrWriter = oldWriter })
 
 	require.NoError(t, NewManualCommitStrategy().PrePushFromGitHook(t.Context(), "origin"),
-		"an OPF failure must not block the user's git push")
+		"unscanned checkpoints must not block the user's git push")
 
-	assert.Contains(t, buf.String(), "checkpoint ref", "the withheld push must be visible to the user")
-	assert.ElementsMatch(t, refs, queuedRefs(t, repo), "withheld refs stay queued for the next push")
-	lsCmd := exec.CommandContext(t.Context(), "git", "ls-remote", bareDir)
-	lsCmd.Env = testutil.GitIsolatedEnv()
-	out, err := lsCmd.CombinedOutput()
-	require.NoError(t, err, "ls-remote failed: %s", out)
-	assert.NotContains(t, string(out), refs[0].String(), "no ref may reach the remote when OPF failed")
+	assert.Contains(t, buf.String(), opfScanPendingNotice, "the held push must be visible to the user")
+	assert.ElementsMatch(t, refs, queuedRefs(t, repo), "withheld refs stay queued")
+	assertRefsAbsentFromRemote(t, bareDir, refs, "no unscanned ref may reach the remote")
+}
+
+// A worker whose model call fails delivers nothing: the refs stay queued and
+// off the remote, so the next push (or worker) tries again.
+func TestRunOPFScan_RuntimeFailureDeliversNothing(t *testing.T) {
+	configureFakeOPF(t, &fakeRuntimeAlwaysFails{})
+	bareDir, repo, refs := setupGitRefsOPFRepo(t, "a1b2c3d4e5f6")
+	resetRedactionConfiguredForTest()
+	t.Cleanup(resetRedactionConfiguredForTest)
+
+	require.NoError(t, RunOPFScan(t.Context(), "origin"), "the worker is best-effort and never fails the process")
+	assert.ElementsMatch(t, refs, queuedRefs(t, repo), "refs stay queued after a failed scan")
+	assertRefsAbsentFromRemote(t, bareDir, refs, "no ref may reach the remote when OPF failed")
 }
 
 // With OPF off the git-refs path is unchanged: refs push as written, unrewritten.
