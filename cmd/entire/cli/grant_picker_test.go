@@ -1331,14 +1331,31 @@ func TestMemberCandidate_LabelCarriesTheDisplayName(t *testing.T) {
 func TestGrantHolders_LabelCarriesTheDisplayName(t *testing.T) {
 	t.Parallel()
 
-	holders := grantHolders(mapRows([]coreapi.ProjectGrant{
-		{GranteeId: "acct-g", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("google:google-1001"), DisplayName: coreapi.NewOptString("Victor Gutierrez"), Role: "writer", Source: grantSourceDirect},
-		{GranteeId: "acct-a", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("github:alice"), Role: "reader", Source: grantSourceDirect},
-	}, projectGrantRowOf))
+	// Each target maps its rows through its own function, so each is checked:
+	// a mapper that dropped DisplayName would lose the name on that target only.
+	assertHolders := func(t *testing.T, holders []grantCandidate) {
+		t.Helper()
+		require.Len(t, holders, 2)
+		require.Equal(t, "acct-g", holders[0].ref)
+		require.True(t, holders[0].byID)
+		require.Equal(t, "google:1001 · Victor Gutierrez (writer)", holders[0].option())
+		require.Equal(t, "acct-a", holders[1].ref)
+		require.Equal(t, "github:alice (reader)", holders[1].option())
+	}
 
-	require.Len(t, holders, 2)
-	require.Equal(t, "acct-g", holders[0].ref)
-	require.True(t, holders[0].byID)
-	require.Equal(t, "google:1001 · Victor Gutierrez (writer)", holders[0].option())
-	require.Equal(t, "github:alice (reader)", holders[1].option())
+	t.Run("project", func(t *testing.T) {
+		t.Parallel()
+		assertHolders(t, grantHolders(mapRows([]coreapi.ProjectGrant{
+			{GranteeId: "acct-g", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("google:google-1001"), DisplayName: coreapi.NewOptString("Victor Gutierrez"), Role: "writer", Source: grantSourceDirect},
+			{GranteeId: "acct-a", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("github:alice"), Role: "reader", Source: grantSourceDirect},
+		}, projectGrantRowOf)))
+	})
+
+	t.Run("repo", func(t *testing.T) {
+		t.Parallel()
+		assertHolders(t, grantHolders(mapRows([]coreapi.RepoGrant{
+			{GranteeId: "acct-g", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("google:google-1001"), DisplayName: coreapi.NewOptString("Victor Gutierrez"), Role: "writer", Source: grantSourceDirect},
+			{GranteeId: "acct-a", GranteeType: granteeTypeAccount, GranteeName: coreapi.NewOptString("github:alice"), Role: "reader", Source: grantSourceDirect},
+		}, repoGrantRowOf)))
+	})
 }
