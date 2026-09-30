@@ -103,6 +103,10 @@ func (k Kind) IsImported() bool {
 type CondensationAttempt struct {
 	CheckpointID    id.CheckpointID `json:"checkpoint_id"`
 	RecoveryPending bool            `json:"recovery_pending,omitempty"`
+	// Stamped marks a reservation prepare-commit-msg made when it stamped the
+	// trailer: nothing has been written under the ID yet. A condensation that
+	// starts writing replaces it with an ordinary attempt.
+	Stamped bool `json:"stamped,omitempty"`
 }
 
 // State represents the state of an active session.
@@ -891,6 +895,18 @@ func (s *State) PendingCondensationID() id.CheckpointID {
 // BeginCondensationAttempt records a checkpoint ID before its persistent write.
 func (s *State) BeginCondensationAttempt(checkpointID id.CheckpointID) {
 	s.CondensationAttempt = &CondensationAttempt{CheckpointID: checkpointID}
+}
+
+// ReserveStampedCheckpoint records the checkpoint ID prepare-commit-msg
+// stamped on a commit for this session, before anything is written under it.
+func (s *State) ReserveStampedCheckpoint(checkpointID id.CheckpointID) {
+	s.CondensationAttempt = &CondensationAttempt{CheckpointID: checkpointID, Stamped: true}
+}
+
+// StampedReservationFor reports whether the pending attempt is only
+// prepare-commit-msg's reservation of checkpointID, with nothing written.
+func (s *State) StampedReservationFor(checkpointID id.CheckpointID) bool {
+	return s.CondensationAttempt != nil && s.CondensationAttempt.Stamped && s.CondensationAttempt.CheckpointID == checkpointID
 }
 
 // RequireCondensationRecovery keeps legacy orphan reconciliation enabled for

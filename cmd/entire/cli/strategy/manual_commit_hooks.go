@@ -1187,6 +1187,7 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error {
 
 	trailerOwned := anySessionOwnsCheckpoint(sessions, checkpointID)
 
+	condensedHere := make(map[string]bool, len(sessions))
 	loopCtx, processSessionsLoop := perf.StartLoop(ctx, "process_sessions")
 	for _, sess := range sessions {
 		if sess.FullyCondensed && sess.Phase == session.PhaseEnded {
@@ -1203,6 +1204,7 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error {
 				committedFileSet, shadowBranchesToDelete, uncondensedActiveOnBranch, allAgentFiles,
 				sessionsWithCommittedFiles, condensedTelemetry)
 			trailerOwned = trailerOwned || condensed
+			condensedHere[sessionID] = condensed
 			s.rehomeSessionAfterOwnCommit(iterCtx, repo, state, worktreePath, newHead, condensed, linking.ancestryGuest)
 			return nil
 		}, func() {
@@ -1217,6 +1219,7 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error {
 		iterSpan.End()
 	}
 	processSessionsLoop.End()
+	releaseUncondensedReservations(ctx, linking.all, checkpointID, condensedHere)
 
 	logUnclaimedCheckpointTrailer(logCtx, checkpointID, sessions, trailerOwned, isRebase)
 
@@ -2700,12 +2703,38 @@ func reserveCheckpointForStampedSessions(ctx context.Context, states []*SessionS
 			if state.PendingCondensationID() != id.EmptyCheckpointID {
 				return ErrMutationSkip
 			}
-			state.BeginCondensationAttempt(checkpointID)
+			state.ReserveStampedCheckpoint(checkpointID)
 			return nil
 		})
-		if err != nil && !errors.Is(err, ErrStateNotFound) && !errors.Is(err, ErrMutationSkip) {
+		if err != nil && !errors.Is(err, ErrStateNotFound) {
 			logging.Debug(logging.WithComponent(ctx, "checkpoint"), "prepare-commit-msg: could not reserve the stamped checkpoint on the session",
 				slog.String("session_id", stamped.SessionID),
+				slog.String("checkpoint_id", checkpointID.String()),
+				slog.String("error", err.Error()))
+		}
+	}
+}
+
+// releaseUncondensedReservations clears prepare-commit-msg's reservation of
+// checkpointID on every session this post-commit did not condense into it. The
+// commit now owns that ID; a reservation left behind would make the session's
+// next commit reuse it and stamp a second commit with the same checkpoint, and
+// it would exempt that reuse from the stampedByAnotherCommit guard.
+func releaseUncondensedReservations(ctx context.Context, states []*SessionState, checkpointID id.CheckpointID, condensed map[string]bool) {
+	for _, listed := range states {
+		if condensed[listed.SessionID] || !listed.StampedReservationFor(checkpointID) {
+			continue
+		}
+		err := MutateSessionState(ctx, listed.SessionID, func(state *SessionState) error {
+			if !state.StampedReservationFor(checkpointID) {
+				return ErrMutationSkip
+			}
+			state.ClearCondensationAttempt()
+			return nil
+		})
+		if err != nil && !errors.Is(err, ErrStateNotFound) {
+			logging.Debug(logging.WithComponent(ctx, "checkpoint"), "post-commit: could not release an uncondensed reservation",
+				slog.String("session_id", listed.SessionID),
 				slog.String("checkpoint_id", checkpointID.String()),
 				slog.String("error", err.Error()))
 		}

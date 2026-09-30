@@ -699,3 +699,34 @@ func TestPendingContentGrew(t *testing.T) {
 		})
 	}
 }
+
+// A reservation prepare-commit-msg left on a session this post-commit did not
+// condense is released: the commit owns the ID, and a kept reservation would
+// make the session's next commit reuse it. A condensation already writing under
+// the ID, or the session that did condense, keeps it.
+func TestReleaseUncondensedReservations(t *testing.T) {
+	identityTestRepo(t)
+	ctx := context.Background()
+	cp := id.CheckpointID("01M2VBJBJQZ2BP1W2PBWDF3J60")
+	other := id.CheckpointID("01M2VBJBJQZ2BP1W2PBWDF3J61")
+	saveIdentitySession(t, "stamped-uncondensed", func(st *SessionState) { st.ReserveStampedCheckpoint(cp) })
+	saveIdentitySession(t, "stamped-condensed", func(st *SessionState) { st.ReserveStampedCheckpoint(cp) })
+	saveIdentitySession(t, "writing", func(st *SessionState) { st.BeginCondensationAttempt(cp) })
+	saveIdentitySession(t, "another-commit", func(st *SessionState) { st.ReserveStampedCheckpoint(other) })
+
+	listed, err := NewManualCommitStrategy().listAllSessionStates(ctx)
+	require.NoError(t, err)
+	releaseUncondensedReservations(ctx, listed, cp, map[string]bool{"stamped-condensed": true})
+
+	for sid, want := range map[string]id.CheckpointID{
+		"stamped-uncondensed": id.EmptyCheckpointID,
+		"stamped-condensed":   cp,
+		"writing":             cp,
+		"another-commit":      other,
+	} {
+		st, err := LoadSessionState(ctx, sid)
+		require.NoError(t, err)
+		require.NotNil(t, st, sid)
+		assert.Equal(t, want, st.PendingCondensationID(), sid)
+	}
+}
