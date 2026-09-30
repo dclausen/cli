@@ -35,7 +35,7 @@ type TargetWorktree struct {
 
 type reviewWorktreeRunner func(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error
 
-func runTargetReview(ctx context.Context, cmd *cobra.Command, target string, childArgs []string, cleanupWorktree, modeSelected bool, deps Deps) error {
+func runTargetReview(ctx context.Context, cmd *cobra.Command, target string, childArgs []string, cleanupWorktree, trustTargetCommands, modeSelected bool, deps Deps) error {
 	if modeSelected {
 		return errors.New("--target can only be used when running a review")
 	}
@@ -50,6 +50,15 @@ func runTargetReview(ctx context.Context, cmd *cobra.Command, target string, chi
 	if err != nil {
 		return err
 	}
+	if !trustTargetCommands {
+		changed, err := targetAgentCommandChanges(ctx, callerWorktree, prepared.Path)
+		if err != nil {
+			return fmt.Errorf("check %s for agent commands: %w", target, err)
+		}
+		if len(changed) > 0 {
+			return targetAgentCommandsError(target, changed)
+		}
+	}
 	env := []string{envReviewFindingsWorktree + "=" + callerWorktree}
 	if err := runReviewInWorktree(ctx, deps.RunInWorktree, prepared.Path, childArgs, env, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 		return wrapReviewSilentError(deps.NewSilentError, err)
@@ -57,12 +66,24 @@ func runTargetReview(ctx context.Context, cmd *cobra.Command, target string, chi
 	return finishTargetReview(ctx, cmd, prepared, cleanupWorktree, deps.RemoveTarget)
 }
 
+// targetOnlyFlagsWithoutTarget rejects flags that only mean something with
+// --target when it was not given.
+func targetOnlyFlagsWithoutTarget(cleanupWorktree, trustTargetCommands bool) error {
+	switch {
+	case cleanupWorktree:
+		return errors.New("--cleanup-worktree requires --target")
+	case trustTargetCommands:
+		return errors.New("--trust-target-commands requires --target")
+	}
+	return nil
+}
+
 func reviewTargetChildArgs(cmd *cobra.Command, positional []string) []string {
 	args := make([]string, 0, len(positional)+cmd.Flags().NFlag()+1)
 	args = append(args, "review")
 	args = append(args, positional...)
 	cmd.Flags().Visit(func(flag *pflag.Flag) {
-		if flag.Name == "target" || flag.Name == "cleanup-worktree" {
+		if flag.Name == "target" || flag.Name == "cleanup-worktree" || flag.Name == "trust-target-commands" {
 			return
 		}
 		args = append(args, "--"+flag.Name+"="+flag.Value.String())

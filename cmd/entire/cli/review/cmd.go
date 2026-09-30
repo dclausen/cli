@@ -113,6 +113,7 @@ func NewCommand(deps Deps) *cobra.Command {
 	var setSlots []string
 	var target string
 	var cleanupWorktree bool
+	var trustTargetCommands bool
 
 	cmd := &cobra.Command{
 		Use: "review",
@@ -165,6 +166,10 @@ Flags:
   --cleanup-worktree
                  remove a newly-created target worktree after a successful
                  review. Interactive runs ask when this flag is omitted.
+  --trust-target-commands
+                 review a --target branch even though it adds or changes
+                 Claude Code commands, skills, or agents under .claude/.
+                 Without it, such a review stops before any reviewer starts.
 
 To tag an already-finished session as a review, use
 'entire session attach --review <id>'.`,
@@ -181,10 +186,10 @@ To tag an already-finished session as a review, use
 			ctx := cmd.Context()
 			if target != "" {
 				modeSelected := configure || edit || findings || listProfiles || listAgents || listModels
-				return runTargetReview(ctx, cmd, target, reviewTargetChildArgs(cmd, args), cleanupWorktree, modeSelected, deps)
+				return runTargetReview(ctx, cmd, target, reviewTargetChildArgs(cmd, args), cleanupWorktree, trustTargetCommands, modeSelected, deps)
 			}
-			if cleanupWorktree {
-				return errors.New("--cleanup-worktree requires --target")
+			if err := targetOnlyFlagsWithoutTarget(cleanupWorktree, trustTargetCommands); err != nil {
+				return err
 			}
 
 			// Discover external agents so review configs that target them
@@ -281,6 +286,7 @@ To tag an already-finished session as a review, use
 	cmd.Flags().StringVar(&baseOverride, "base", "", "git ref to scope the review against (default: origin/HEAD → origin/main → origin/master → main → master)")
 	cmd.Flags().StringVar(&target, "target", "", "branch, trail ID, or Entire trail URL to check out in a worktree and review")
 	cmd.Flags().BoolVar(&cleanupWorktree, "cleanup-worktree", false, "remove a newly-created target worktree after a successful review (interactive runs ask when omitted)")
+	cmd.Flags().BoolVar(&trustTargetCommands, "trust-target-commands", false, "review a --target branch even if it adds or changes Claude Code commands, skills, or agents")
 	cmd.Flags().DurationVar(&reviewTimeout, "timeout", 0, "optional hard cap per reviewer (default: none — reviewers run until they finish, like a skill invoked directly in a session). When set, it also bounds the consolidating judge; unset, the judge keeps its own 20m default")
 	// The listing modes and the action modes each select a distinct command
 	// behavior; combining them silently runs one and drops the rest, so reject

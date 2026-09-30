@@ -22,6 +22,7 @@ entire review --timeout 15m
 entire review --agent claude-code --model opus
 entire review general --target feature/my-change
 entire review general --target feature/my-change --cleanup-worktree
+entire review general --target feature/my-change --trust-target-commands
 entire review general --target https://entire.io/gh/acme/app/trails/42/my-change
 ```
 
@@ -63,8 +64,19 @@ execution-capable agent configuration from that checkout:
   codex is trusted too. A plain `entire review` in the user's own checkout
   keeps codex's normal trust, so Entire's codex hooks still tag the session.
 
-The user's own agent settings still apply. The checkout's instruction files
-(`CLAUDE.md`, `AGENTS.md`, skills) are still read by the agent.
+The user's own agent settings still apply.
+
+Claude Code has no flag that drops only a checkout's commands, skills, and
+subagents while keeping the user's own, and a command file can run shell
+commands when invoked (its `!` lines, under its own `allowed-tools`). So a
+`--target` review first lists files under `.claude/commands/`,
+`.claude/skills/`, and `.claude/agents/` that the branch adds or changes
+since it forked from the caller's checkout, and stops before any reviewer
+starts if there are any. `--trust-target-commands` reviews the branch anyway,
+for when those files have been read.
+
+The checkout's instruction files (`CLAUDE.md`, `AGENTS.md`) are still read by
+the agent as prompt content.
 
 ## Profiles
 
