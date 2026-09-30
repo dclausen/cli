@@ -50,6 +50,13 @@ execution-capable agent configuration from that checkout:
   the checkout's `.claude/settings.json`, `.claude/settings.local.json`, and
   `.mcp.json` are not loaded; Entire's lifecycle hooks are passed from the
   binary via `--settings`. The user's own MCP servers are not loaded either.
+  The same flags keep the checkout's `.claude/commands`, `.claude/skills`, and
+  `.claude/agents` from being discovered, so a branch cannot shadow `/review`
+  with a command whose `!` lines run shell commands; the user's own commands
+  and skills still resolve. Checked on Claude Code 2.0.0 through 2.1.286. A
+  Claude Code older than `--setting-sources` (e.g. 1.0.x) rejects the flag and
+  exits before loading anything, and the review fails with a message to update
+  Claude Code.
 - pi runs with `--no-approve` and `--no-extensions`, so `.pi/settings.json`,
   `.pi/extensions/`, `.pi/SYSTEM.md`, and extensions or packages named in
   project settings are not loaded, even when the repository is trusted (pi
@@ -63,8 +70,10 @@ execution-capable agent configuration from that checkout:
   codex is trusted too. A plain `entire review` in the user's own checkout
   keeps codex's normal trust, so Entire's codex hooks still tag the session.
 
-The user's own agent settings still apply. The checkout's instruction files
-(`CLAUDE.md`, `AGENTS.md`, skills) are still read by the agent.
+The user's own agent settings still apply. For claude-code, the checkout's
+`CLAUDE.md` is not preloaded as project instructions and its project skills
+are not available, so a profile that names a project-level skill does not
+resolve it; the reviewer can still read `CLAUDE.md` with its file tools.
 
 ## Profiles
 

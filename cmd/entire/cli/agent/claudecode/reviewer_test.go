@@ -562,3 +562,37 @@ func drainEvents(ch <-chan reviewtypes.Event) {
 		_ = ev
 	}
 }
+
+// TestClassifyReviewExit_TooOldForIsolation: a Claude Code without one of the
+// isolation flags exits before loading anything, and the review must say to
+// update it rather than surface a bare "unknown option". An unrelated unknown
+// option is left to the default error.
+func TestClassifyReviewExit_TooOldForIsolation(t *testing.T) {
+	t.Parallel()
+	exitErr := errors.New("exit status 1")
+	for _, tc := range []struct {
+		stderr   string
+		wantFlag string
+	}{
+		{"error: unknown option '--setting-sources'", "--setting-sources"},
+		{"error: unknown option '--strict-mcp-config'", "--strict-mcp-config"},
+		{"error: unknown option '--settings=x'", "--settings"},
+		{"error: unknown option '--frobnicate'", ""},
+		{"auth failed: login required", ""},
+		{"", ""},
+	} {
+		got := classifyReviewExit(tc.stderr, exitErr)
+		if tc.wantFlag == "" {
+			if got != nil {
+				t.Errorf("classifyReviewExit(%q) = %v, want nil", tc.stderr, got)
+			}
+			continue
+		}
+		if got == nil || !strings.Contains(got.Error(), tc.wantFlag) || !strings.Contains(got.Error(), "update Claude Code") {
+			t.Errorf("classifyReviewExit(%q) = %v, want an update-Claude-Code error naming %s", tc.stderr, got, tc.wantFlag)
+		}
+		if !errors.Is(got, exitErr) {
+			t.Errorf("classifyReviewExit(%q) does not wrap the exit error", tc.stderr)
+		}
+	}
+}

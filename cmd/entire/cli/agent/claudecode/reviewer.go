@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
@@ -31,9 +33,10 @@ const envelopeTypeAssistant = "assistant"
 // produced) instead of buffering until end-of-run like plain-text -p mode.
 func NewReviewer() *reviewtypes.ReviewerTemplate {
 	return &reviewtypes.ReviewerTemplate{
-		AgentName: "claude-code",
-		BuildCmd:  buildReviewCmd,
-		Parser:    parseClaudeOutput,
+		AgentName:    "claude-code",
+		BuildCmd:     buildReviewCmd,
+		Parser:       parseClaudeOutput,
+		ClassifyExit: classifyReviewExit,
 	}
 }
 
@@ -50,6 +53,12 @@ func NewReviewer() *reviewtypes.ReviewerTemplate {
 // the project file, are passed from the binary instead (--settings), so the
 // review is still captured without trusting the branch's copy of them.
 //
+// The same flag also keeps the checkout's .claude/commands, skills, and agents
+// out: none is discovered under --setting-sources user, so a branch cannot
+// shadow the profile's /review with a command whose `!` lines run shell
+// commands. Checked against Claude Code 2.0.0 through 2.1.286 (the flag's
+// whole range); the user's own commands and skills still resolve.
+//
 // --strict-mcp-config keeps .mcp.json out explicitly. --setting-sources user
 // also stops it on current Claude Code, but that is not documented behavior of
 // the flag, and the review should not depend on it. The cost is that the
@@ -62,6 +71,28 @@ func buildReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Env = review.AppendReviewEnv(os.Environ(), "claude-code", cfg, prompt)
 	return cmd
+}
+
+// reviewIsolationFlags are the flags buildReviewCmd relies on to keep the
+// reviewed checkout's configuration out of the reviewer.
+var reviewIsolationFlags = []string{flagSettingSources, "--settings", "--strict-mcp-config"}
+
+// unknownOptionPattern matches the error Claude Code's option parser prints
+// for a flag it does not know, e.g. "error: unknown option '--setting-sources'".
+var unknownOptionPattern = regexp.MustCompile(`unknown option '(-[^'=\s]+)`)
+
+// classifyReviewExit turns a Claude Code too old for one of the isolation flags
+// into an error that says so. Such a CLI exits before loading anything, so the
+// review already failed closed; without this the user sees only a raw
+// "unknown option" and no remedy. Dropping the flag to make the run succeed is
+// not an option: it is what keeps the checkout's hooks from running.
+func classifyReviewExit(stderr string, err error) error {
+	for _, m := range unknownOptionPattern.FindAllStringSubmatch(stderr, -1) {
+		if slices.Contains(reviewIsolationFlags, m[1]) {
+			return fmt.Errorf("claude-code: this Claude Code does not support %s, which isolated reviews need to keep the reviewed checkout's configuration out of the reviewer; update Claude Code (2.0.0 or later) and retry: %w", m[1], err)
+		}
+	}
+	return nil
 }
 
 // reviewHookSettings returns the settings JSON carrying exactly the hooks
