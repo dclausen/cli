@@ -428,8 +428,8 @@ the commands are always runnable in every build.
   to be one it takes back. `parseEntireCloneURL` reads the path with
   `parseMirrorRepoRef`, the same grammar the bare refs take, so a URL and the
   ref it was built from can never disagree about what a name may contain —
-  a trailing `.git` included, which is part of a native name and decoration on
-  a `/gh/` one. `--authoritative` says nothing about a GitHub
+  a trailing `.git` included, which is decoration on either forge and dropped on
+  the way in. `--authoritative` says nothing about a GitHub
   upstream — Entire holds no repo record for one — so the `/gh/` route warns
   that it ignored the flag rather than exiting 0 with the check it promised
   never performed.
@@ -482,25 +482,28 @@ the commands are always runnable in every build.
   are best-effort without `--cluster`: if either fails (a core that 404s or
   503s the listing, a catalog hiccup), resolution degrades to the home cluster
   instead of failing a clone that has always worked.
-  A trailing `.git` is decoration on a `/gh/` mirror ref and **part of the name**
-  on a native `/et/` one (`mirrorGitDirSuffix` documents the mechanics). GitHub
-  rejects a repository name ending in `.git` outright, so on a mirror path the
-  suffix can only ever be decoration and dropping it is what lets a pasted
-  `git clone` URL resolve. The server is the opposite case: entiredb permits an
-  interior dot (the same rule that makes `entire-trails.el` legal), `POST
-  /api/v1/repos {"name":"foo.git"}` returns 201, and the data plane resolves
-  `/et/` paths verbatim — so `parseNativeCloneRef` keeps the suffix, `repo
-  create` forwards such a name, and a native lookup asks for `foo.git`. Trimming
-  it there resolved a *different* repository — sibling repos `foo` and `foo.git`
-  both exist, so `repo delete /et/p/foo.git` destroyed the neighbour and printed
-  the path the user typed beside the survivor's ULID, reading as success. Every
-  remaining trim is therefore a `/gh/` grammar, and
-  `gitremote.splitOwnerRepo` skips the trim for `ForgeNative` so a native remote
-  reads back the name it was cloned under. Two consequences worth knowing — a
-  trim can *manufacture* a dot-only segment (`..git` → `.`), which both the
-  `/gh/` grammar and `splitOwnerRepo` refuse; and `resolveRepoRef`'s
-  project-scoped miss names the suffix in its hint rather than stripping it,
-  since a bare name in that position is a name, not a path.
+  A trailing `.git` is **never part of a repo name**, on either backend
+  (`gitDirSuffix` documents the mechanics). One rule, three mechanics. Every ref
+  parser drops it on the way in — `parseNativeCloneRef`, `parseMirrorCloneRef`,
+  `parseTrailRepoShape`, `parseExpertsRepo`, `parseMirrorCloneURL`, and
+  `gitremote.splitOwnerRepo` for a remote read back from git config; the one
+  deliberate exception is a bare name under `--project`, which is a name and not
+  a path, so `resolveRepoRef` looks it up verbatim and names the suffix in its
+  miss hint rather than stripping it. Nothing appends it to an Entire path, so an
+  `entire://` URL, an `/et/` or `/gh/` ref, an API argument and anything the CLI
+  echoes back are all suffix-free — appending stays correct only on a
+  third-party forge clone URL, where it is that host's convention (the
+  checkpoint-remote URL builders, and `cleanRemoteURLForReport`, which reports
+  nothing at all for a remote with no upstream forge rather than synthesizing a
+  URL that addresses nothing). And `repo create` refuses a name ending in it.
+  `/et/p/foo` and `/et/p/foo.git` therefore address one repository, spelled `foo`.
+  Order matters where a URL is parsed: `splitOwnerRepo` strips trailing
+  separators **before** the suffix, the order canonical git uses in
+  `git_url_basename`, so a pasted `…/foo.git/` resolves like `…/foo.git` and
+  `…/o/../` cannot carry a `..` past the dot-only guard still wearing a slash.
+  That guard is the other thing to know — a trim can *manufacture* a dot-only
+  segment (`..git` → `.`), a path-traversal shape for any caller that joins it,
+  and both the `/gh/` grammar and `splitOwnerRepo` refuse it.
 - The three `grant` subtrees (`org grant`, `project grant`, `repo grant`) are one
   generic builder plus three target descriptions in `grant.go`; a new target is
   a `grantTarget` value, not a fourth copy of the leaves.
@@ -661,12 +664,13 @@ cluster named `et` while `entire://gh/...` got an actionable message.
 cluster host rather than inventing a forge host. The legacy `/git/` prefix is
 excluded because `repo clone` cannot act on such a ref.
 
-**Being a forge token says nothing about which APIs accept it** — the name says
-syntax on purpose. Trails are the current example: entire-api takes `et` in the
-path but cannot resolve it, so `entire trail` refuses it locally with the real
-reason (`errTrailsNativeUnsupported`). That refusal has to cover *both* ways a
-forge reaches the API — named in `--repo` and inferred from the origin remote —
-and the inferred one is the common path.
+**Being a forge token says nothing about which route accepts it** — the name
+says syntax on purpose. Trails are the current example: a mirror is addressed by
+`forge/owner/repo`, a native repo only by its ULID, so `trailRepoBasePath`
+switches on the forge *after* `IsForgePathToken` has answered yes, and a native
+ref with no resolved repo ID fails there rather than at the grammar. That
+narrowing has to cover *both* ways a forge reaches the API — named in `--repo`
+and inferred from the origin remote — and the inferred one is the common path.
 
 Experimental commands (gated by the build-time visibility flag above — visible
 and grouped under "Experimental commands:" in developer/nightly builds, hidden

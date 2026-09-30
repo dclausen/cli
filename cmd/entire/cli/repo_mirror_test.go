@@ -1134,12 +1134,14 @@ func TestParseEntireCloneURL(t *testing.T) {
 		// it has to parse: a URL read out of the table is pasted back in.
 		{name: "native clone URL", raw: "entire://aws-us-east-2.entire.io/et/acme/web",
 			wantCluster: "aws-us-east-2.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "web"},
-		// On a native ref the suffix is part of the NAME — trimming it made
-		// /et/audit1/victim.git address the repo called victim (5c0fce6434).
-		// Delegating to parseNativeCloneRef is what keeps this URL honest
-		// without the URL parser knowing the rule.
-		{name: "native clone URL keeps .git as part of the name", raw: "entire://c.entire.io/et/acme/web.git",
-			wantCluster: "c.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "web.git"},
+		// A trailing .git is decoration on either forge (085804b150): git
+		// tooling reserves the suffix — Git LFS derives its endpoint by
+		// appending it — so a repo literally named `foo.git` is
+		// indistinguishable from `foo` to anything following that convention.
+		// Delegating to parseNativeCloneRef is what keeps this URL following
+		// the rule without the URL parser restating it.
+		{name: "native clone URL drops a trailing .git", raw: "entire://c.entire.io/et/acme/web.git",
+			wantCluster: "c.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "web"},
 		{name: "owner and repo lowercased", raw: "entire://c.entire.io/gh/OctoCat/Hello-World",
 			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "octocat", wantRepo: "hello-world"},
 		// Still trimmed on the /gh/ side, where GitHub's own naming rules make

@@ -127,6 +127,19 @@ and recovery instructions go to stderr.`,
 		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Refuse a name that ends in `.git`. The suffix is never part of a
+			// repo name (see gitDirSuffix): every ref parser drops it, so the
+			// name would round-trip to a different string than the one typed.
+			// The server refuses it too; saying so here costs no round trip and
+			// names the spelling to use instead.
+			if name := strings.TrimSpace(args[0]); strings.HasSuffix(name, gitDirSuffix) {
+				cmd.SilenceUsage = true
+				err := fmt.Errorf("repo name %q must not end in %s: the suffix is never part of a repo name, so Entire could not address the repo by the name you typed", name, gitDirSuffix)
+				if trimmed := strings.TrimSuffix(name, gitDirSuffix); trimmed != "" {
+					err = fmt.Errorf("%w (use %q)", err, trimmed)
+				}
+				return err
+			}
 			var format coreapi.CreateRepoInputBodyObjectFormat
 			if objectFormat != "" {
 				parsed, err := parseObjectFormat(objectFormat)
@@ -306,11 +319,9 @@ func newRepoViewCmd() *cobra.Command {
 			"    progress has got\n" +
 			"  - /gh/<owner>/<repo> — a GitHub upstream, shown with its mirror on\n" +
 			"    every cluster\n" +
-			"  - an entire:// clone URL, as `git clone` takes it. A trailing .git,\n" +
-			"    pasted from `git remote -v`, is dropped from a /gh/ URL, where\n" +
-			"    GitHub's own naming rules make the suffix decoration. On an /et/\n" +
-			"    URL it is kept: a native repo may be named `web.git`, and\n" +
-			"    trimming it would address a different repo\n\n" +
+			"  - an entire:// clone URL, as `git clone` takes it. A trailing .git\n" +
+			"    is decoration on either forge — pasting one from `git remote -v`\n" +
+			"    resolves the same repository as the bare URL\n\n" +
 			"A clone URL is looked up on the login server fronting its cluster, so it " +
 			"resolves even when that cluster belongs to a federation other than the " +
 			"active auth context; every other form is looked up on the active " +
