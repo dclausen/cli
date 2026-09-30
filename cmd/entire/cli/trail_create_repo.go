@@ -24,8 +24,9 @@ const (
 	trailBranchMissing
 )
 
-// trailBranchCheckTimeout bounds the remote branch check, like remoteHasBranch
-// on the local create path, so an unreachable remote fails instead of hanging.
+// trailBranchCheckTimeout bounds the whole remote branch check (resolving the
+// repo's URL and asking it), like remoteHasBranch on the local create path, so
+// an unreachable control plane or remote fails instead of hanging.
 // A variable so tests can shorten it.
 var trailBranchCheckTimeout = 30 * time.Second
 
@@ -101,12 +102,20 @@ func runTrailCreateForRepo(cmd *cobra.Command, repoArg, title, body, base, branc
 // never Missing: a private GitHub repo without credentials must not read as
 // an absent branch.
 func remoteTrailBranchState(ctx context.Context, forge, owner, repo, branch string) (trailBranchPresence, error) {
-	url, err := trailRepoCloneURL(ctx, forge, owner, repo)
+	ctx, cancel := context.WithTimeout(ctx, trailBranchCheckTimeout)
+	defer cancel()
+	url, err := resolveTrailRepoCloneURL(ctx, forge, owner, repo)
 	if err != nil {
+		if ctx.Err() != nil {
+			return trailBranchUnknown, fmt.Errorf("resolve %s/%s/%s: no answer within %s: %w", forge, owner, repo, trailBranchCheckTimeout, ctx.Err())
+		}
 		return trailBranchUnknown, err
 	}
 	return lsRemoteBranch(ctx, url, branch)
 }
+
+// resolveTrailRepoCloneURL is a seam for tests.
+var resolveTrailRepoCloneURL = trailRepoCloneURL
 
 // lsRemoteBranch asks url whether refs/heads/<branch> exists, within
 // trailBranchCheckTimeout.

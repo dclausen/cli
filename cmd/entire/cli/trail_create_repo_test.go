@@ -210,3 +210,21 @@ func TestLsRemoteBranch_PresentAndMissing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, trailBranchMissing, presence)
 }
+
+func TestRemoteTrailBranchState_BoundsURLResolution(t *testing.T) {
+	// No t.Parallel: swaps package-level seams.
+	prevResolve, prevTimeout := resolveTrailRepoCloneURL, trailBranchCheckTimeout
+	resolveTrailRepoCloneURL = func(ctx context.Context, _, _, _ string) (string, error) {
+		<-ctx.Done() // an unresponsive control plane
+		return "", ctx.Err()
+	}
+	trailBranchCheckTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { resolveTrailRepoCloneURL, trailBranchCheckTimeout = prevResolve, prevTimeout })
+
+	start := time.Now()
+	presence, err := remoteTrailBranchState(t.Context(), "et", "proj", "app", "feat")
+
+	require.Equal(t, trailBranchUnknown, presence)
+	require.ErrorContains(t, err, "resolve et/proj/app: no answer within")
+	require.Less(t, time.Since(start), 5*time.Second)
+}
