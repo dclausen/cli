@@ -61,3 +61,21 @@ func TestGenerateText_DoesNotRetryOtherFailures(t *testing.T) {
 		t.Errorf("calls = %d, want 1", calls)
 	}
 }
+
+// A codex too old for --ignore-user-config fails with a remedy, and is not
+// retried without the flag.
+func TestGenerateText_TooOldForIgnoreUserConfigFailsClosed(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	ag := &CodexAgent{CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		calls++
+		return exec.CommandContext(ctx, "sh", "-c", `echo "error: unexpected argument '--ignore-user-config' found" >&2; exit 2`)
+	}}
+	_, err := ag.GenerateText(context.Background(), "prompt", "")
+	if err == nil || !strings.Contains(err.Error(), "update codex") {
+		t.Fatalf("err = %v, want an update-codex error", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (no retry without the flag)", calls)
+	}
+}

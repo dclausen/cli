@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -57,6 +58,15 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 		if err == nil {
 			return result, nil
 		}
+		if strings.Contains(capturedStderr, "'"+flagIgnoreUserConfig+"'") {
+			// Not retried without it: that would let the user's MCP servers and
+			// hooks back into a run whose prompt is untrusted.
+			return "", &agent.TextGenerationError{
+				Err:         fmt.Errorf("codex text generation failed: this codex does not support %s, which Entire needs to generate summaries without the user's MCP servers and hooks; update codex (0.122 or newer): %w", flagIgnoreUserConfig, err),
+				Stderr:      capturedStderr,
+				StdoutBytes: stdoutBytes,
+			}
+		}
 		if name, ok := unknownDisabledFeature(capturedStderr, disabled); ok {
 			logging.Debug(ctx, "codex does not know a feature Entire disables for text generation; retrying without it",
 				slog.String("feature", name))
@@ -80,7 +90,7 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 // lives in auth.json and still works. A custom model provider or profile set
 // in config.toml is not used for summaries as a result.
 func generateTextArgs(disabled []string, model string) []string {
-	args := []string{"exec", "--skip-git-repo-check", "--ignore-user-config"}
+	args := []string{"exec", "--skip-git-repo-check", flagIgnoreUserConfig}
 	for _, feature := range disabled {
 		args = append(args, "--disable", feature)
 	}
@@ -89,6 +99,9 @@ func generateTextArgs(disabled []string, model string) []string {
 	}
 	return append(args, "-")
 }
+
+// flagIgnoreUserConfig is present in codex-cli since at least 0.122.0.
+const flagIgnoreUserConfig = "--ignore-user-config"
 
 var unknownFeaturePattern = regexp.MustCompile(`Unknown feature flag: (\S+)`)
 
