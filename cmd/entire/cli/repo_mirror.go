@@ -1519,7 +1519,11 @@ func parseEntireCloneURL(raw string) (clusterHost string, ref mirrorRepoRef, err
 	if verr := validateClusterHost(authority); verr != nil {
 		return "", mirrorRepoRef{}, verr
 	}
-	return u.Host, ref, nil
+	// The value that was VALIDATED, not url.Parse's reading of it. The two agree
+	// for everything validateClusterHost accepts — a bare host[:port] parses to
+	// itself — so this changes no behaviour; it removes the need to know that in
+	// order to see the function is right.
+	return authority, ref, nil
 }
 
 // badRepoRefErr wraps a clone-URL parse failure with the forms `repo view`

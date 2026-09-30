@@ -835,6 +835,71 @@ func TestReportRepoCreationNoWaitReason(t *testing.T) {
 	require.Contains(t, stderr.String(), "unconfirmed")
 }
 
+// TestReportRepoCreationWithoutAPath pins that a recovery hint never names a
+// command that cannot work. `repo view` takes the /et/<project>/<repo> path and
+// nothing else, and the create response has no path in exactly the window where
+// readiness goes unconfirmed — so there is no ref to offer, and offering the
+// bare name would hand someone already stuck a command this verb refuses.
+//
+// Both branches that print a hint are covered: the readiness failure, and
+// --no-wait leaving a non-active state. The repository ID survives either way,
+// because that is what support is asked for.
+func TestReportRepoCreationWithoutAPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		noWait  bool
+		waitErr error
+		// A readiness failure is reported AND returned, so the exit code says
+		// so; --no-wait asked not to wait, so an unconfirmed state is not an
+		// error there.
+		wantErr bool
+	}{
+		{name: "readiness failed", waitErr: errors.New("readiness unconfirmed"), wantErr: true},
+		{name: "--no-wait with a non-active state", noWait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newRepoCreateCmd()
+			var out, stderr bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&stderr)
+			// No Path: the server has not minted clone coordinates yet.
+			result := &coreapi.Repo{ID: testDeleteULID, Name: "web",
+				State: coreapi.NewOptString("provisioning")}
+
+			err := reportRepoCreation(cmd, result, tc.noWait, tc.waitErr)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			require.NotContains(t, stderr.String(), "entire repo view",
+				"no path means no ref this verb accepts, so no command is offered")
+			require.NotContains(t, stderr.String(), "repo view web",
+				"the bare name in particular: `repo view` refuses it")
+			require.Contains(t, stderr.String(), testDeleteULID,
+				"the ID stays — it is what support is asked for")
+		})
+	}
+
+	t.Run("with a path the hint is offered", func(t *testing.T) {
+		t.Parallel()
+		cmd := newRepoCreateCmd()
+		var out, stderr bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&stderr)
+		result := &coreapi.Repo{ID: testDeleteULID, Name: "web",
+			Path: coreapi.NewOptString("/et/acme/web"), State: coreapi.NewOptString("provisioning")}
+
+		require.Error(t, reportRepoCreation(cmd, result, false, errors.New("readiness unconfirmed")))
+
+		require.Contains(t, stderr.String(), "entire repo view /et/acme/web",
+			"the path is a ref the verb takes, so the hint is worth printing")
+	})
+}
+
 func TestRepoCreateAlreadyReportedCoreError(t *testing.T) {
 	t.Parallel()
 	statusErr := &coreapi.ErrorModelStatusCode{StatusCode: http.StatusForbidden,
