@@ -177,7 +177,7 @@ type approver struct {
 	code                           string
 	username, password, totpSecret string
 	submitted, otpSubmitted        bool
-	chosenProvider                 bool
+	chosenProvider, visitedGitHub  bool
 }
 
 var (
@@ -202,6 +202,7 @@ func (a *approver) step() error {
 	case current.String() == "about:blank":
 		return nil
 	case current.Scheme == "https" && current.Host == "github.com":
+		a.visitedGitHub = true
 		stepErr = a.stepGitHub(current)
 	case current.Scheme == "https" && (current.Host == "entire.io" || strings.HasSuffix(current.Host, ".entire.io")):
 		stepErr = a.stepEntire()
@@ -291,16 +292,25 @@ func (a *approver) stepTwoFactor(body string) error {
 
 func (a *approver) stepEntire() error {
 	// A fresh browser first lands on the sign-in page, which offers GitHub and
-	// Google. The test user is a GitHub account, so pick GitHub once. Seeing
-	// the page again means the GitHub sign-in did not take, and clicking again
-	// would loop without ever tripping the stall check.
+	// Google. The test user is a GitHub account, so pick GitHub once.
+	//
+	// The click only starts the redirect, so the picker can still be showing
+	// on the next tick; until the browser has reached GitHub, keep waiting and
+	// leave a redirect that never happens to the stall check (the URL does not
+	// move). The picker and the device page share /cli/auth, so the URL cannot
+	// tell them apart. Seeing the picker after GitHub means the sign-in did not
+	// take, and clicking again would loop without tripping the stall check.
 	continueGitHub := a.page.GetByRole(*playwright.AriaRoleLink, playwright.PageGetByRoleOptions{Name: entireContinueGitHub}).First()
 	if visible, _ := continueGitHub.IsVisible(); visible {
-		if a.chosenProvider {
-			return errors.New("entire's sign-in page came back after choosing GitHub")
+		switch {
+		case !a.chosenProvider:
+			a.chosenProvider = true
+			return continueGitHub.Click()
+		case a.visitedGitHub:
+			return errors.New("entire's sign-in page came back after the GitHub sign-in")
+		default:
+			return nil
 		}
-		a.chosenProvider = true
-		return continueGitHub.Click()
 	}
 	// The device page comes back from GitHub with the code prefilled; fill it
 	// only when the inputs are visibly empty.
