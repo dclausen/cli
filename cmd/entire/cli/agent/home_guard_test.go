@@ -22,8 +22,18 @@ var envReaderOwners = map[string]string{
 // testOverrideConsts name ENTIRE_TEST_* overrides through a constant, so the
 // literal prefix check cannot see them.
 var testOverrideConsts = map[string]string{
-	"piSessionDirEnvVar": "ENTIRE_TEST_PI_SESSION_DIR",
-	"cursorChatsDirEnv":  "ENTIRE_TEST_CURSOR_CHATS_DIR",
+	"piSessionDirEnvVar":         "ENTIRE_TEST_PI_SESSION_DIR",
+	"cursorChatsDirEnv":          "ENTIRE_TEST_CURSOR_CHATS_DIR",
+	"antigravityTestBrainDirEnv": "ENTIRE_TEST_ANTIGRAVITY_BRAIN_DIR",
+}
+
+// nonRelocationReads are environment reads that are not an agent relocation
+// variable, with the reason. An entry here must not name where an agent keeps
+// its per-user state; that belongs in relocationEnvVars.
+var nonRelocationReads = map[string]string{
+	"configDirEnv":              "ENTIRE_ANTIGRAVITY_CONFIG_DIR, Entire's own override, refused when relative",
+	"statusDirEnv":              "ENTIRE_ANTIGRAVITY_STATUS_DIR, Entire's own snapshot cache override, refused when relative",
+	`"OPENCODE_CONFIG_CONTENT"`: "inline config merged into the generation config handed to opencode, not a location",
 }
 
 // TestAgentEnvReadsGoThroughResolveHome pins that no agent reads a relocation
@@ -37,7 +47,7 @@ var testOverrideConsts = map[string]string{
 //
 // Allowed: the two owners above, and the ENTIRE_TEST_* overrides each agent
 // keeps for its own tests, whether spelled as a literal or through one of the
-// constants above.
+// constants above, and the reads nonRelocationReads explains.
 func TestAgentEnvReadsGoThroughResolveHome(t *testing.T) {
 	t.Parallel()
 	root, ok := testutil.GitGrepGuardRepoRoot(t)
@@ -68,6 +78,8 @@ func TestAgentEnvReadsGoThroughResolveHome(t *testing.T) {
 		case strings.HasPrefix(arg, `"ENTIRE_TEST_`):
 			continue
 		case testOverrideConsts[arg] != "":
+			continue
+		case nonRelocationReads[arg] != "":
 			continue
 		}
 		t.Errorf("%s reads %s directly; a relocation variable goes through agent.ResolveHome so it is listed in relocationEnvVars, a test override is spelled ENTIRE_TEST_*", path, arg)

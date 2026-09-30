@@ -49,9 +49,6 @@ func (f *FactoryAIDroidAgent) Description() string {
 	return "Factory AI Droid - agent-native development platform"
 }
 
-// IsPreview returns true as Factory AI Droid integration is in preview.
-func (f *FactoryAIDroidAgent) IsPreview() bool { return true }
-
 // ProtectedDirs returns directories that Factory AI Droid uses for config/state.
 func (f *FactoryAIDroidAgent) ProtectedDirs() []string { return []string{".factory"} }
 
@@ -95,8 +92,8 @@ func (f *FactoryAIDroidAgent) GetSessionID(input *agent.HookInput) string { retu
 
 // factoryHomeEnvVar relocates the home directory Droid resolves ~ to. The
 // droid binary's getFactoryHome() returns this value in place of os.homedir()
-// and its session store appends .factory/sessions underneath, so like
-// GEMINI_CLI_HOME it moves the home, not the dot-directory. It is undocumented;
+// and its session store appends .factory/sessions underneath, so unlike
+// CLAUDE_CONFIG_DIR it moves the home, not the dot-directory. It is undocumented;
 // it is the only relocation mechanism the shipped binary has.
 const factoryHomeEnvVar = "FACTORY_HOME_OVERRIDE"
 

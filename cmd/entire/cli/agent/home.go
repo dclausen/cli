@@ -23,7 +23,6 @@ var relocationEnvVars = []string{
 	"CODEX_HOME",
 	"COPILOT_HOME",
 	"FACTORY_HOME_OVERRIDE",
-	"GEMINI_CLI_HOME",
 	"PI_CODING_AGENT_DIR",
 }
 
@@ -49,9 +48,8 @@ func RelocationEnvVars() []string {
 //
 // defaultRel encodes what the variable replaces, and the agents differ.
 // CLAUDE_CONFIG_DIR and CODEX_HOME stand in for the dot-directory, so their
-// callers pass ".claude" / ".codex"; GEMINI_CLI_HOME and FACTORY_HOME_OVERRIDE
-// stand in for the home itself, so their callers pass "" and append
-// ".gemini" / ".factory" to the result. Read the agent's source or shipped
+// callers pass ".claude" / ".codex"; FACTORY_HOME_OVERRIDE stands in for the
+// home itself, so its caller passes "" and appends ".factory" to the result. Read the agent's source or shipped
 // binary before choosing, and check where the files actually land: Cursor has a
 // variable that looks like one and its transcripts do not follow it.
 func ResolveHome(envVar, defaultRel string) (string, error) {

@@ -24,6 +24,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/stringutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/tuiutil"
 
 	"github.com/spf13/cobra"
 )
@@ -389,9 +390,22 @@ type checkpointSyncInfo struct {
 	// IgnoredRemote and IgnoredReason report a configured checkpoint_remote
 	// that the ownership check rejected as inherited with the clone. Both
 	// reads and pushes then fall back to the elected remote, and status is
-	// where a user finds out why — the hooks only log the rejection.
+	// where a user finds out why.
 	IgnoredRemote string
 	IgnoredReason string
+	// IgnoredDisproved marks a rejection where a remote named a different
+	// owner — the fork case, where checkpoints landing on the elected remote is
+	// the intended outcome — so it renders as information, not a warning. False
+	// for an unprovable owner, which only the user can settle.
+	IgnoredDisproved bool
+	// IgnoredReasonIsReadSide marks the push-disabled report, which comes from
+	// the fetch side's verdict rather than ownership, so it names no verdict.
+	IgnoredReasonIsReadSide bool
+	// IgnoredRemedy is the command that claims the ignored store for this
+	// clone, empty only when the configured entry is too malformed to name
+	// one. Carried rather than rebuilt at render time so the text and the
+	// JSON cannot offer different fixes.
+	IgnoredRemedy string
 }
 
 // resolveDedicatedReadSource records where checkpoint READS land when the
@@ -399,8 +413,9 @@ type checkpointSyncInfo struct {
 // name a read source, so the two cannot answer the question differently — the
 // asymmetry between them is what this function exists to remove.
 //
-// lead is the read candidate whose FETCH url joins origin in the ownership
-// vote: the elected remote, or "" when the election failed and reads fall
+// lead is the read candidate whose PUSH urls join origin in the ownership
+// vote (the same identity set the push side uses, so reads land where writes
+// went): the elected remote, or "" when the election failed and reads fall
 // open to origin alone.
 //
 // Reports whether it settled the answer — the dedicated store serves reads
@@ -439,8 +454,8 @@ func computeCheckpointSyncInfo(ctx context.Context, s *EntireSettings) checkpoin
 
 	elected, err := strategy.ResolveCheckpointSyncRemote(ctx)
 	if err != nil {
-		// Fail-closed: checkpoint_push_remote names a remote that does not
-		// exist. The pre-push gate is silently skipping checkpoint sync, so
+		// Fail-closed: election could not confirm a usable checkpoint sync
+		// remote. The pre-push gate is silently skipping checkpoint sync, so
 		// status is the user's signal.
 		// Accepted divergence: if a structured checkpoint_remote is also
 		// configured, the gate's dedicated exemption may still sync checkpoint
@@ -471,10 +486,12 @@ func computeCheckpointSyncInfo(ctx context.Context, s *EntireSettings) checkpoin
 	// separate questions. With pushing enabled the line names a push
 	// destination, so PushURL decides, mirroring the pre-push exemption
 	// (ps.hasCheckpointURL). With pushing disabled it names a READ source,
-	// which is the fetch side's call over a different ownership identity set
-	// — origin plus the candidate's FETCH url, not its push urls — so a
-	// remote whose two urls have different owners is eligible on one side
-	// only, and asking the wrong side reports a store reads do not use.
+	// which is the fetch side's call. Both sides vote ownership over the same
+	// identity set — origin plus the candidate's PUSH urls, never its fetch
+	// url, so reads land where writes went — but the read side can still
+	// decline a store for reasons the push side does not consider (an origin
+	// URL that will not parse, a protocol with no checkpoint mapping), so
+	// asking the wrong side can report a store reads do not use.
 	//
 	// Both probes are local-only; never call resolvePushSettings here — its
 	// follow-up metadata fetch dials, and status must stay network-free.
@@ -518,30 +535,34 @@ func computeCheckpointSyncInfo(ctx context.Context, s *EntireSettings) checkpoin
 	// ignored. When the ownership check is what rejected it, say so: this is
 	// the one trust-gate rejection a user otherwise experiences only as
 	// checkpoints vanishing. Local-only, like everything else here.
-	// Accepted divergence: this verdict votes with the push identity set
-	// (origin + push URLs of the elected remote), while a fetch votes with its
-	// read candidate, so a push-only owner mismatch shows "not in use" here
-	// even though a lead-less fetch still resolves the checkpoint remote.
-	if cr := s.GetCheckpointRemote(); cr != nil {
-		if repo, reason, inherited := checkpointremote.InheritedCheckpointRemote(ctx, s, elected.Name); inherited {
-			info.IgnoredRemote = repo
-			info.IgnoredReason = reason
-		} else if info.PushDisabled {
-			// That verdict votes with the push identity set, so it accepts a
-			// store the fetch side declined — and with pushing disabled the
-			// fetch side is the one that decided the line above. Without this
-			// the configured store is reported by nothing at all, which is
-			// the silent-ignore the warning exists to prevent.
-			//
-			// No reason is given: the fetch side returns a verdict and not a
-			// cause, and its false covers ownership, an unparseable origin
-			// URL and an unmappable protocol alike, so naming one would be a
-			// guess. The causes are logged where they are decided.
-			info.IgnoredRemote = cr.Repo
-			info.IgnoredReason = "checkpoint reads do not resolve to it (see .entire/logs for the reason)"
-		}
+	// Accepted divergence: this verdict votes on origin plus the elected
+	// remote's push URLs, and so does a fetch that names a read candidate —
+	// but a fetch with NO candidate votes on origin alone, so a mismatch that
+	// lives only in the elected remote's push URL shows "not in use" here
+	// even though such a lead-less fetch still resolves the checkpoint remote.
+	// With pushing disabled, reaching here means the fetch side already
+	// declined the store above (resolveDedicatedReadSource returned false).
+	if r, ok := ignoredCheckpointRemote(ctx, s, elected.Name, info.PushDisabled); ok {
+		info.IgnoredRemote = r.Repo
+		info.IgnoredReason = r.Reason
+		info.IgnoredDisproved = r.Verdict == checkpointremote.OwnershipDisproved
+		info.IgnoredReasonIsReadSide = r.ReadSide
+		info.IgnoredRemedy = r.Remedy
 	}
 	return info
+}
+
+// IgnoredVerdict names the ownership verdict behind IgnoredRemote for --json;
+// empty when nothing is ignored or the refusal was not an ownership verdict.
+func (info checkpointSyncInfo) IgnoredVerdict() string {
+	switch {
+	case info.IgnoredRemote == "" || info.IgnoredReasonIsReadSide:
+		return ""
+	case info.IgnoredDisproved:
+		return "disproved"
+	default:
+		return "unprovable"
+	}
 }
 
 // countUnpushedCheckpointsForStatus counts best-effort: status must never fail
@@ -620,10 +641,19 @@ func writeCheckpointSyncLines(ctx context.Context, b *strings.Builder, s *Entire
 		b.WriteString(sty.render(sty.dim, " (fallback; nothing was elected)"))
 	}
 	if info.IgnoredRemote != "" {
+		// The repo comes from the committed settings file, so it is stripped
+		// of escape sequences before it reaches the terminal.
+		repo := tuiutil.SanitizeDisplayText(info.IgnoredRemote)
+		line := ignoredCheckpointRemoteSentence(repo, info.IgnoredReason, info.Remote) + " " +
+			ignoredCheckpointRemoteFix(repo, info.IgnoredRemedy)
 		b.WriteString("\n")
-		b.WriteString(sty.render(sty.yellow,
-			"  ! checkpoint_remote "+info.IgnoredRemote+" is not in use: "+info.IgnoredReason+
-				". If this checkpoint repo is yours, set checkpoint_remote in .entire/settings.local.json."))
+		if info.IgnoredDisproved {
+			// Another owner's store: checkpoints on the elected remote is the
+			// intended outcome for a fork, so this is information, not a fault.
+			b.WriteString(sty.render(sty.dim, "  "+line))
+		} else {
+			b.WriteString(sty.render(sty.yellow, "  ! "+line))
+		}
 	}
 	if info.Unpushed > 0 {
 		b.WriteString("\n  ")
@@ -670,19 +700,48 @@ func timeAgo(t time.Time) string {
 	return formatRelativeDuration(time.Since(t))
 }
 
-// formatRelativeDuration renders a positive duration as "just now" / "Xm ago"
-// / "Xh ago" / "Xd ago". Shared between `entire status` and `entire auth list`
-// so the bucket thresholds and labels stay consistent.
+// formatRelativeDuration renders a signed duration relative to now: "just now"
+// near zero, "Xm ago" / "Xh ago" / "Xd ago" / "Xmo ago" in the past, and "in Xm"
+// … "in Xmo" in the future. Shared between `entire status` and `entire auth
+// status` so the bucket thresholds and labels stay consistent.
+//
+// The sign test comes first on purpose: a future duration is negative, so it
+// would otherwise satisfy d < time.Minute and report "just now" for a session
+// that expires in a month.
 func formatRelativeDuration(d time.Duration) string {
-	switch {
-	case d < time.Minute:
+	if d > -time.Minute && d < time.Minute {
+		// Also absorbs the small negative durations that clock skew produces
+		// for a timestamp the server stamped moments ago.
 		return lastUsedJustNow
+	}
+	if d < 0 {
+		return "in " + humanizeDuration(-d)
+	}
+	return humanizeDuration(d) + " ago"
+}
+
+// humanizeDuration renders a positive duration as a single coarse unit. It
+// holds the bucket ladder that formatRelativeDuration wraps with tense, so past
+// and future can never drift apart.
+//
+// Each unit's band starts at 1 — 1m, 1h, 1d, 1mo — which is why days stop at 30
+// rather than running to 60. A wider day band would make the first reachable
+// month "2mo", so a value ticking past the boundary would read 59d then 2mo and
+// look like it had doubled.
+func humanizeDuration(d time.Duration) string {
+	const (
+		day   = 24 * time.Hour
+		month = 30 * day
+	)
+	switch {
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < day:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < month:
+		return fmt.Sprintf("%dd", int(d/day))
 	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+		return fmt.Sprintf("%dmo", int(d/month))
 	}
 }
 
@@ -705,17 +764,13 @@ func writeActiveSessions(ctx context.Context, w io.Writer, sty statusStyles) {
 		return
 	}
 
-	states, err := store.List(ctx)
+	// ListReadOnly, not List: asking what is happening must not change what is
+	// happening. List deletes stale records as it reads them, and status is the
+	// command people run to look. Cleanup stays with doctor and the sweeper,
+	// which still call List.
+	states, err := store.ListReadOnly(ctx)
 	if err != nil || len(states) == 0 {
 		return
-	}
-
-	// Finalize any non-ended session whose agent process has exited without a
-	// SessionStop hook firing, so it doesn't linger as "active" until the
-	// inactivity timeout. The sweep marks them ended in place, so the filter
-	// below drops them.
-	if n := finalizeExitedSessions(ctx, states, time.Now().Add(interactiveSweepCondenseBudget)); n > 0 {
-		fmt.Fprintln(w, sty.render(sty.dim, fmt.Sprintf("Finalized %d exited session(s) (agent process gone).", n)))
 	}
 
 	// Filter to active sessions only, per session.State.IsEnded — the same rule
@@ -1050,7 +1105,8 @@ type statusJSON struct {
 	CheckpointPushDisabled bool `json:"checkpoint_push_disabled,omitempty"`
 	// CheckpointSyncRemote is the elected checkpoint sync remote name, or the
 	// org/repo slug in dedicated checkpoint_remote mode. Deliberately not named
-	// checkpoint_remote, which is the existing GitHub-coupled setting.
+	// checkpoint_remote, which is the strategy_options.checkpoint_remote settings
+	// key (a provider + owner/repo object, not a git remote name).
 	CheckpointSyncRemote       string `json:"checkpoint_sync_remote,omitempty"`
 	CheckpointSyncRemoteSource string `json:"checkpoint_sync_remote_source,omitempty"` // config|observed|default|sole|first|dedicated
 	CheckpointSyncError        string `json:"checkpoint_sync_error,omitempty"`         // fail-closed message
@@ -1073,6 +1129,17 @@ type statusJSON struct {
 	// fall back to the elected remote). Mirrors the text path's warning line.
 	CheckpointRemoteIgnored       string `json:"checkpoint_remote_ignored,omitempty"`
 	CheckpointRemoteIgnoredReason string `json:"checkpoint_remote_ignored_reason,omitempty"`
+	// CheckpointRemoteIgnoredRemedy is the command that claims the ignored
+	// store for this clone. Emitted so an agent reading --json can act on the
+	// rejection rather than only report it; absent when no single command
+	// fixes it.
+	CheckpointRemoteIgnoredRemedy string `json:"checkpoint_remote_ignored_remedy,omitempty"`
+	// CheckpointRemoteIgnoredVerdict says why ownership refused the store:
+	// "disproved" when a remote names a different owner (a fork, where the
+	// fallback is the intended outcome) or "unprovable" when no owner could be
+	// read (only the user can settle it). Absent when the refusal was not an
+	// ownership verdict.
+	CheckpointRemoteIgnoredVerdict string `json:"checkpoint_remote_ignored_verdict,omitempty"`
 	// SecretScanners lists the enabled engines when non-default; omitted when default.
 	SecretScanners []string `json:"secret_scanners,omitempty"`
 	Error          string   `json:"error,omitempty"`
@@ -1104,9 +1171,16 @@ func codexHooksStatusFromIssue(issue *codexHookIssue) *codexHooksStatusJSON {
 }
 
 type sessionBriefJSON struct {
-	Agent  string `json:"agent"`
-	Model  string `json:"model,omitempty"`
-	Status string `json:"status"`
+	Agent string `json:"agent"`
+	// SessionID distinguishes two sessions for the same agent, which the
+	// previous one-entry-per-agent shape could not represent.
+	SessionID string `json:"session_id,omitempty"`
+	// WorktreePath and Branch say WHERE a session is, which is the whole
+	// reason two entries for one agent are distinguishable in practice.
+	WorktreePath string `json:"worktree_path,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Status       string `json:"status"`
 	// CaptureDegraded reports that a session for this agent last turned with a
 	// status scan over budget, so new-file detection was skipped.
 	CaptureDegraded bool `json:"capture_degraded,omitempty"`
@@ -1166,54 +1240,45 @@ func runStatusJSON(ctx context.Context, w io.Writer) error {
 		result.UnpushedCheckpoints = syncInfo.Unpushed
 		result.CheckpointRemoteIgnored = syncInfo.IgnoredRemote
 		result.CheckpointRemoteIgnoredReason = syncInfo.IgnoredReason
+		result.CheckpointRemoteIgnoredRemedy = syncInfo.IgnoredRemedy
+		result.CheckpointRemoteIgnoredVerdict = syncInfo.IgnoredVerdict()
 
 		if store, err := session.NewStateStore(ctx); err == nil {
-			if states, err := store.List(ctx); err == nil {
-				// Finalize sessions whose agent has exited (matches the human
-				// status path) so --json doesn't leave them orphaned or
-				// report them under active_sessions.
-				finalizeExitedSessions(ctx, states, time.Now().Add(interactiveSweepCondenseBudget))
-				// Deduplicate by agent: one entry per agent, "active" wins over "idle".
-				type agentEntry struct {
-					brief    sessionBriefJSON
-					isActive bool
-				}
-				byAgent := make(map[string]*agentEntry)
+			// Read-only, and one entry per session. Collapsing by agent hid a
+			// second session for the same agent in another worktree, and the
+			// finalize-on-read this replaces made `status --json` mutate the
+			// state it reports.
+			if states, err := store.ListReadOnly(ctx); err == nil {
 				for _, st := range states {
 					if st.IsEnded() {
 						continue
 					}
-					agent := string(st.AgentType)
-					if agent == "" {
-						agent = unknownPlaceholder
+					agentName := string(st.AgentType)
+					if agentName == "" {
+						agentName = unknownPlaceholder
 					}
-					active := st.Phase == session.PhaseActive
-					if existing, ok := byAgent[agent]; ok {
-						if active && !existing.isActive {
-							existing.brief.Model = st.ModelName
-							existing.brief.Status = sessionStatusLabel(st)
-							existing.isActive = true
-						}
-						// Degradation is sticky across the dedupe: any degraded
-						// session for this agent must not be hidden by a healthy one.
-						existing.brief.CaptureDegraded = existing.brief.CaptureDegraded || st.CaptureDegradedAt != nil
-					} else {
-						byAgent[agent] = &agentEntry{
-							brief: sessionBriefJSON{
-								Agent:           agent,
-								Model:           st.ModelName,
-								Status:          sessionStatusLabel(st),
-								CaptureDegraded: st.CaptureDegradedAt != nil,
-							},
-							isActive: active,
-						}
+					branch := st.Branch
+					if branch == "" && st.WorktreePath != "" {
+						branch = resolveWorktreeBranch(ctx, st.WorktreePath)
 					}
+					result.ActiveSessions = append(result.ActiveSessions, sessionBriefJSON{
+						Agent:           agentName,
+						SessionID:       st.SessionID,
+						WorktreePath:    st.WorktreePath,
+						Branch:          branch,
+						Model:           st.ModelName,
+						Status:          sessionStatusLabel(st),
+						CaptureDegraded: st.CaptureDegradedAt != nil,
+					})
 				}
-				for _, e := range byAgent {
-					result.ActiveSessions = append(result.ActiveSessions, e.brief)
-				}
+				// Agent first so the listing stays grouped and readable;
+				// session ID breaks ties so two sessions for one agent have a
+				// deterministic order.
 				sort.Slice(result.ActiveSessions, func(i, j int) bool {
-					return result.ActiveSessions[i].Agent < result.ActiveSessions[j].Agent
+					if result.ActiveSessions[i].Agent != result.ActiveSessions[j].Agent {
+						return result.ActiveSessions[i].Agent < result.ActiveSessions[j].Agent
+					}
+					return result.ActiveSessions[i].SessionID < result.ActiveSessions[j].SessionID
 				})
 			}
 		}

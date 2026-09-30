@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -16,7 +17,9 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/antigravity"
 	"github.com/entireio/cli/cmd/entire/cli/agent/codex"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/entiredir"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
@@ -63,7 +66,16 @@ Checks performed:
      no longer fire, or a committed Pi/OpenCode extension has gone stale).
      Fix by re-running 'entire enable --force'.
 
-  5. Stuck sessions: sessions stuck in ACTIVE or ENDED phase that need cleanup.
+  5. Retired Gemini CLI hooks: remove Entire hook entries left in
+     .gemini/settings.json. Gemini CLI support was removed; the entries now do
+     nothing but run a no-op on every Gemini event.
+
+  6. Summary provider: warn when summary_generation.provider names a registered
+     agent that cannot generate text (e.g. factoryai-droid), which makes
+     'entire checkpoint explain --generate', 'entire dispatch' and
+     'entire runner setup' fail. Reports the file to change; does not rewrite it.
+
+  7. Stuck sessions: sessions stuck in ACTIVE or ENDED phase that need cleanup.
 
 A session is considered stuck if:
   - It is in ACTIVE phase with no interaction for over 1 hour
@@ -162,12 +174,26 @@ func runSessionsFix(cmd *cobra.Command, force bool) error {
 	// Agent-specific: Codex hook trust state.
 	checkCodexHookTrust(cmd)
 
+	// Agent-specific: Antigravity title-tee (token-usage surface).
+	checkAntigravityTitleTee(cmd)
+
+	// Agent-specific: does agy actually load the workspace hooks?
+	checkAntigravityHooksLoaded(cmd)
+
 	// Agent-specific: Claude Code hook config drift.
 	checkHookDrift(cmd)
 
 	// Retired permission rule that makes ordinary commands need approval.
 	// Fixes rather than only reporting: what it removes is a rule Entire wrote.
 	checkRetiredDenyRule(cmd)
+
+	// Hooks left by removed Gemini CLI support. Fixes rather than only
+	// reporting, for the same reason: every entry it removes is Entire's own.
+	checkRetiredGeminiHooks(cmd)
+
+	// A configured summary provider that cannot generate text. After the hook
+	// checks: it breaks three commands, not capture, so it is the milder fault.
+	checkSummaryProvider(cmd)
 
 	// Where checkpoints land, when the repo's remotes make that ambiguous.
 	printCheckpointDestinationNote(ctx, cmd.OutOrStdout(), "Checkpoint destination: REVIEW")
@@ -759,7 +785,7 @@ func printCappedList(w io.Writer, names []string, render func(string) string) {
 
 // checkAgentDirSymlinks reports a symlink at any directory component Entire
 // creates or writes through for an agent: the agents' own config directories
-// (.claude, .codex, .cursor, .gemini, .factory, .opencode, .pi, .github/hooks)
+// (.claude, .codex, .cursor, .factory, .opencode, .pi, .github/hooks)
 // and the managed skill scaffolds' parents (.claude/skills, .codex/agents, ...).
 //
 // The condition is otherwise invisible after the fact. `entire enable` fails
@@ -1074,7 +1100,7 @@ func agentSymlinkCheckPaths() []string {
 		// The pre-skill subagent Entire scaffolded and now deletes. Uninstall
 		// goes through osroot.LstatNoSymlinks, which refuses a symlinked parent,
 		// so .claude/agents/ has to be here or a link there is refused with
-		// nothing said about it. .codex/agents and .gemini/agents were already
+		// nothing said about it. .codex/agents was already
 		// covered, but only as a side effect of the agent-help template living
 		// under them.
 		add(legacySearchSubagentPath(name))
@@ -1324,6 +1350,158 @@ func checkRetiredDenyRule(cmd *cobra.Command) {
 	}
 }
 
+// checkRetiredGeminiHooks removes the Entire hook entries Gemini CLI support
+// installed in .gemini/settings.json. Nothing else will: that agent is no
+// longer registered, so `entire enable`, `entire agent remove` and the uninstall
+// sweep over installed agents never visit its config. The user's own hooks and
+// settings in the file are kept.
+func checkRetiredGeminiHooks(cmd *cobra.Command) {
+	ctx := cmd.Context()
+	w := cmd.OutOrStdout()
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return // no repository: nothing to check
+	}
+	changed, err := removeRetiredGeminiHooks(worktreeRoot)
+	if err != nil {
+		fmt.Fprintln(w, "Gemini CLI hooks: CHECK FAILED")
+		fmt.Fprintf(w, "  Could not remove Entire hooks left by removed Gemini CLI support: %v\n", err)
+		fmt.Fprintf(w, "  Delete the entries running 'entire hooks gemini ...' from %s by hand.\n", retiredGeminiHookConfigRelPath)
+		return
+	}
+	if changed {
+		fmt.Fprintln(w, "Gemini CLI hooks: RETIRED")
+		fmt.Fprintf(w, "  Entire no longer supports Gemini CLI, but %s still ran Entire hooks.\n", retiredGeminiHookConfigRelPath)
+		fmt.Fprintln(w, "  ✓ Fixed: Entire's entries removed (your other hooks and settings are untouched).")
+		fmt.Fprintln(w, "  The settings file changed — commit or revert it as you prefer.")
+	}
+}
+
+// checkSummaryProvider reports a configured summary_generation.provider naming
+// a registered agent that cannot generate text. See
+// unsupportedSummaryProviderError for how such a value gets written.
+//
+// Worth a check of its own because nothing else says a word about it: the
+// settings loader validates only model-without-provider, `entire status` never
+// mentions summary generation, and the resolver's error surfaces at
+// `checkpoint explain --generate` / `dispatch` / `runner setup` — commands a
+// user may not run for weeks after the edit, by which time the cause is not in
+// view. Read-only; the remedy is the user's choice of provider, and the value
+// may live in a committed settings.json where a rewrite changes everyone's.
+//
+// Two conditions are deliberately out of scope. An UNREGISTERED name is the
+// external-plugin shape, where telling "not installed" from "installed but the
+// external_agents grant is missing" means running discovery — and doctor must
+// not exec a plugin to write a diagnostic (`entire status` already reports the
+// grant rejection). An off-$PATH binary is machine-local and expected, so the
+// resolver reports it at the point of use instead.
+func checkSummaryProvider(cmd *cobra.Command) {
+	ctx := cmd.Context()
+	s, err := loadSummarySettings(ctx)
+	if err != nil {
+		// Not reported: a settings file that will not load is a louder problem
+		// than this check, and doctor's own PreRunE already reads it.
+		logging.Warn(ctx, "could not load settings for summary provider check",
+			slog.String("error", err.Error()))
+		return
+	}
+	if s.SummaryGeneration == nil || s.SummaryGeneration.Provider == "" {
+		return
+	}
+
+	name := types.AgentName(s.SummaryGeneration.Provider)
+	_, registered, capable := summaryCapableAgent(name)
+	// The retired name is unregistered, but unlike a plugin's it is known not
+	// to be coming back, so it is reported rather than left to the resolver.
+	retired := !registered && name == retiredGeminiAgentName && !retiredGeminiNameClaimed()
+	if (!registered && !retired) || capable {
+		return
+	}
+
+	w := cmd.OutOrStdout()
+	sourceFile, isLocal := summaryProviderSourceLayer(ctx, s)
+	fmt.Fprintln(w, "Summary provider: UNUSABLE")
+	if retired {
+		fmt.Fprintf(w, "  summary_generation.provider is %q in %s, but Gemini CLI is no longer supported.\n", name, sourceFile)
+	} else {
+		fmt.Fprintf(w, "  summary_generation.provider is %q in %s, which cannot generate text.\n", name, sourceFile)
+	}
+	fmt.Fprintln(w, "  `entire checkpoint explain --generate`, `entire dispatch`, and")
+	fmt.Fprintln(w, "  `entire runner setup` all fail while it is set.")
+	// The command names an INSTALLED provider, not merely a capable one.
+	// summaryCapableProviderNames is deliberately unfiltered by $PATH — it
+	// answers "what does this field accept" — but a command built from its
+	// first entry is alphabetical, so it says claude-code on a machine with no
+	// claude, and `configure` then rejects it for exactly that. The user this
+	// check fires for is the likeliest to have only one agent installed.
+	installed := listEnabledSummaryProviders(ctx)
+	if len(installed) > 0 {
+		fix := "entire configure --summarize-provider " + string(installed[0].Name)
+		if isLocal {
+			fix += " --local"
+		}
+		fmt.Fprintf(w, "  Fix: %s\n", fix)
+	}
+	if capable := summaryCapableProviderNames(); len(capable) > 0 {
+		// The accepted values, listed as data rather than as something to
+		// paste — a <a|b|c> placeholder is not copy-pasteable, since the shell
+		// reads < as a redirect and | as a pipe.
+		line := "  Supported: " + strings.Join(capable, ", ")
+		if len(installed) == 0 {
+			// No Fix line was printed above, so say why rather than leaving the
+			// reader to wonder where the command went.
+			line += " (none installed; install one first)"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w, "  No `entire` command writes this value, so it was hand-edited or written by an agent.")
+}
+
+// summaryProviderSourceLayer reports which settings file supplies the effective
+// provider, and whether that file is the local layer.
+//
+// The remedy needs it. `entire configure` with no layer flag writes the PROJECT
+// file whenever one exists (settingsTargetFile), so a provider coming from
+// settings.local.json would be "fixed" in the wrong file: the command reports
+// success, the local layer still overrides it, and doctor still reports the
+// fault. Naming the file also answers the question the diagnosis otherwise
+// leaves open — which of two settings files to open.
+//
+// Local wins when it carries the key at all, which is the merge rule the loader
+// applies, so matching on the effective value is enough to identify the source.
+// A read failure or a missing file falls back to the project layer, matching
+// where `configure` would write.
+//
+// LocalLayerRejection is consulted first, and it is not an optimisation: a
+// TRACKED settings.local.json is dropped wholesale by the loader, so its
+// contents are not the effective value however well they match. Reading the
+// file directly cannot see that — it would attribute a provider both files
+// happen to share to the local layer and send the user to edit a file the
+// loader ignores, leaving the project-level fault in place behind a success
+// message. That is the same class of wrong-file advice as the missing --local.
+func summaryProviderSourceLayer(ctx context.Context, merged *settings.EntireSettings) (relPath string, isLocal bool) {
+	if merged == nil || merged.SummaryGeneration == nil {
+		return settings.EntireSettingsFile, false
+	}
+	if merged.LocalLayerRejection() != "" {
+		return settings.EntireSettingsFile, false
+	}
+	localAbs, err := paths.AbsPath(ctx, settings.EntireSettingsLocalFile)
+	if err != nil {
+		return settings.EntireSettingsFile, false
+	}
+	// loadFromFile returns empty settings for a missing file, so absence is
+	// simply "the local layer does not supply it".
+	local, err := loadSummarySettingsFromFile(localAbs)
+	if err != nil {
+		return settings.EntireSettingsFile, false
+	}
+	if local.SummaryGeneration != nil && local.SummaryGeneration.Provider == merged.SummaryGeneration.Provider {
+		return settings.EntireSettingsLocalFile, true
+	}
+	return settings.EntireSettingsFile, false
+}
+
 // checkCodexHookTrust reports whether Codex can discover its effective
 // hooks file, whether its Entire-managed event set is current, and whether the
 // local Codex config has approval records for every declared hook. All checks
@@ -1412,6 +1590,108 @@ func writeCodexHookStatus(w io.Writer, diagnostics codex.HookDiagnostics, active
 		fmt.Fprintln(w, "  Open /hooks inside Codex to approve them.")
 	case len(diagnostics.Trust.Declared) > 0:
 		fmt.Fprintln(w, "✓ Codex hook approval records: PRESENT")
+	}
+}
+
+// antigravityDoctorSubject gates both Antigravity checks the same way: they
+// only apply where Entire's Antigravity hooks are installed and switched on
+// AND agy is on PATH. A teammate's checkout can carry the hooks on a machine
+// that never uses agy; reporting there would be a false positive. One gate,
+// evaluated once.
+//
+// The "enabled": false check is here rather than in AreHooksInstalled because
+// that predicate also drives agent auto-detection and `entire agent list`,
+// where an entry the user switched off is still genuinely present. Only
+// doctor's advice is unwanted for a configuration nobody asked to run.
+func antigravityDoctorSubject(cmd *cobra.Command) (*antigravity.AntigravityAgent, bool) {
+	ag := &antigravity.AntigravityAgent{}
+	installed, err := ag.AreHooksInstalled(cmd.Context())
+	if err != nil || !installed {
+		return nil, false
+	}
+	if disabled, err := ag.HooksDisabled(cmd.Context()); err != nil || disabled {
+		return nil, false
+	}
+	if _, err := exec.LookPath("agy"); err != nil {
+		return nil, false
+	}
+	return ag, true
+}
+
+// checkAntigravityTitleTee warns when Antigravity hooks are installed in this
+// repo but agy's global title slot — agy's only token-usage surface — is not
+// routed through Entire, which leaves token counts missing from checkpoints.
+// Warn-only.
+func checkAntigravityTitleTee(cmd *cobra.Command) {
+	if _, ok := antigravityDoctorSubject(cmd); !ok {
+		return
+	}
+	w := cmd.OutOrStdout()
+	if antigravity.TitleTeeInstalled() {
+		fmt.Fprintln(w, "✓ Antigravity title-tee: OK")
+		return
+	}
+
+	fmt.Fprintln(w, "Antigravity title-tee: NOT CONFIGURED")
+	fmt.Fprintln(w, "  agy's title command isn't routed through Entire, so token counts")
+	fmt.Fprintln(w, "  will be missing for Antigravity checkpoints.")
+	fmt.Fprintln(w, "  Re-run agent setup (`entire agent add antigravity`) to configure it.")
+}
+
+// checkAntigravityHooksLoaded reports two things about the installed hooks.
+//
+// Always, at zero cost: whether the "entire" entry in .agents/hooks.json is
+// the one this host needs. The command's shape is host-specific — agy runs it
+// through cmd.exe on Windows and sh elsewhere — and a file committed from a
+// macOS checkout carries a sh wrapper that cmd.exe tears apart: the hook exits
+// 1, the failure shows only in agy's log, the turn reports SUCCESS and nothing
+// is tracked. The file being present said nothing about that, and a green
+// doctor over zero tracked sessions is worse than no check.
+//
+// Only when ENTIRE_ANTIGRAVITY_DOCTOR_PROBE=1: ask agy itself whether it loads
+// this workspace's hooks (`agy -p /hooks --add-dir <root>`), which catches the
+// untrusted-workspace trap. Opt-in because agy 1.2.7 on Windows was observed
+// to answer that with a full model turn, and the probe must never spend the
+// user's quota by default. Warn-only throughout.
+func checkAntigravityHooksLoaded(cmd *cobra.Command) {
+	ag, ok := antigravityDoctorSubject(cmd)
+	if !ok {
+		return
+	}
+	w := cmd.OutOrStdout()
+
+	if installed, current, err := ag.HooksEntryMatchesHost(cmd.Context()); err == nil && installed && !current {
+		fmt.Fprintln(w, "Antigravity hooks: STALE FOR THIS HOST")
+		fmt.Fprintln(w, "  The \"entire\" entry in .agents/hooks.json is not the command this host")
+		fmt.Fprintln(w, "  needs (agy runs hooks through cmd.exe on Windows and sh elsewhere), so")
+		fmt.Fprintln(w, "  the hooks fail silently and nothing is tracked.")
+		fmt.Fprintln(w, "  Re-run `entire agent add antigravity` to reinstall them for this host.")
+	}
+
+	if os.Getenv(antigravity.DoctorProbeEnv) == "" {
+		return
+	}
+	repoRoot, err := paths.WorktreeRoot(cmd.Context())
+	if err != nil {
+		return
+	}
+	probe, err := antigravity.ProbeLoadedHooks(cmd.Context(), repoRoot)
+	switch {
+	case errors.Is(err, antigravity.ErrHooksProbeVersionUnknown):
+		fmt.Fprintf(w, "Antigravity hooks: NOT VERIFIED (could not determine the agy version from %q; skipping the `/hooks` probe)\n",
+			probe.Version)
+	case errors.Is(err, antigravity.ErrHooksProbeUnsupported):
+		fmt.Fprintf(w, "Antigravity hooks: NOT VERIFIED (agy %s is too old to answer `/hooks` headlessly; %s+ needed — run `agy update`)\n",
+			probe.Version, antigravity.MinHooksProbeVersion)
+	case err != nil:
+		fmt.Fprintf(w, "Antigravity hooks: NOT VERIFIED (%v)\n", err)
+	case probe.Loaded:
+		fmt.Fprintln(w, "✓ Antigravity hooks: LOADED by agy")
+	default:
+		fmt.Fprintln(w, "Antigravity hooks: NOT LOADED by agy")
+		fmt.Fprintln(w, "  .agents/hooks.json exists but agy does not load it for this workspace,")
+		fmt.Fprintln(w, "  so Entire's hooks never fire. Trust the folder in an interactive `agy`")
+		fmt.Fprintln(w, "  session, and pass `--add-dir <repo>` to `agy -p` runs.")
 	}
 }
 

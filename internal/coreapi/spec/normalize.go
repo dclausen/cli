@@ -237,11 +237,15 @@ func filterSecurityRequirements(reqs []any) ([]any, error) {
 // SetRepoVisibilityInputBody) keep their enums so we still reject a bad
 // value before sending it.
 var readModelEnumFields = map[string][]string{
-	"Repo":             {"objectFormat", "provider", "state", "visibility"},
-	"RepoIDResolution": {"provider"},
-	"RepoIndexEntry":   {"permission", "provider"},
-	"RepoReference":    {"provider"},
-	"RepoResolution":   {"provider"},
+	"CreatedRepo":       {"objectFormat", "provider", "state", "visibility"},
+	"Invitation":        {"role", "status"},
+	"Membership":        {"role", "status"},
+	"OrgMemberListItem": {"role", "status"},
+	"Repo":              {"objectFormat", "provider", "state", "visibility"},
+	"RepoIDResolution":  {"provider"},
+	"RepoIndexEntry":    {"permission", "provider"},
+	"RepoReference":     {"provider"},
+	"RepoResolution":    {"provider"},
 }
 
 // readModelOptionalFields lists response read-model fields the spec marks
@@ -256,6 +260,9 @@ var readModelEnumFields = map[string][]string{
 // message when the server omits it. A field must leave this list when the
 // CLI needs it to be *present* to be correct.
 var readModelOptionalFields = map[string][]string{
+	"CreatedOrg":          {"capabilities"},
+	"CreatedProject":      {"capabilities"},
+	"CreatedRepo":         {"capabilities", "provider"},
 	"ListReposOutputBody": {"candidatesIncomplete"},
 	"Org":                 {"capabilities"},
 	"Project":             {"capabilities"},
