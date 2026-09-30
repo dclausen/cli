@@ -36,7 +36,7 @@ func TestGenerateText_PromptViaStdin(t *testing.T) {
 		{
 			name:          "codex",
 			agent:         &codex.CodexAgent{},
-			requiredFlags: []string{"exec", "--skip-git-repo-check"},
+			requiredFlags: []string{"exec", "--skip-git-repo-check", "--ignore-user-config"},
 			extraCheck: func(t *testing.T, args []string) {
 				t.Helper()
 				if len(args) == 0 || args[len(args)-1] != "-" {

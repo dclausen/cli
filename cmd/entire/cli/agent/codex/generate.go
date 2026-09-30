@@ -71,8 +71,16 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 	}
 }
 
+// generateTextArgs builds the codex argv for one text-generation call.
+//
+// --ignore-user-config skips ~/.codex/config.toml. The features below are
+// flags, but MCP servers, a web_search setting, and hooks come from that file,
+// and `-c mcp_servers={}` does not remove configured servers (codex merges
+// -c overrides into the table). Ignoring the file keeps all three out; login
+// lives in auth.json and still works. A custom model provider or profile set
+// in config.toml is not used for summaries as a result.
 func generateTextArgs(disabled []string, model string) []string {
-	args := []string{"exec", "--skip-git-repo-check"}
+	args := []string{"exec", "--skip-git-repo-check", "--ignore-user-config"}
 	for _, feature := range disabled {
 		args = append(args, "--disable", feature)
 	}
