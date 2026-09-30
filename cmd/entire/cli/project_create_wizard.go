@@ -19,6 +19,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/uiform"
 	"github.com/entireio/cli/internal/coreapi"
 	"github.com/entireio/cli/internal/entireclient/contexts"
 )
@@ -143,6 +144,9 @@ type projectCreateState struct {
 	loginNote string
 	// pickedOwner is the accessible owner select's binding; see ownerGroup.
 	pickedOwner string
+	// nav keeps Shift+Tab working off an invalid page in the paged form;
+	// nil in accessible mode, which has no back key.
+	nav *uiform.BackNav
 
 	answers   projectCreateAnswers
 	confirmed bool
@@ -578,6 +582,7 @@ func runProjectCreateForms(cmd *cobra.Command, s *projectCreateState) (bool, err
 		}
 		return true, nil
 	}
+	s.nav = uiform.NewBackNav()
 	return runProjectCreateForm(cmd, s, s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
 }
 
@@ -589,7 +594,13 @@ func runProjectCreateForm(cmd *cobra.Command, s *projectCreateState, groups ...*
 	if err := ctx.Err(); err != nil {
 		return false, fmt.Errorf("project create: %w", err)
 	}
-	render, err := runPromptForm(cmd, NewAccessibleForm(groups...))
+	form := NewAccessibleForm(groups...)
+	if s.nav != nil {
+		// WithProgramOptions replaces huh's option list rather than adding
+		// to it; the one default it drops (output) runPromptForm sets anyway.
+		form = form.WithProgramOptions(s.nav.ProgramOption())
+	}
+	render, err := runPromptForm(cmd, form)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return false, fmt.Errorf("project create: %w", ctxErr)
 	}
@@ -719,6 +730,9 @@ func (s *projectCreateState) nameGroup(dynamic bool) *huh.Group {
 	if !dynamic {
 		return huh.NewGroup(s.accessibleName(in)).Title(projectHeadingName)
 	}
+	// Shift+Tab off an invalid name must not strand the page; see
+	// uiform.BackNav. Enter still validates going forward.
+	in.Validate(uiform.Lenient(s.nav, s.validateName))
 	s.nameGrp = huh.NewGroup(in.Accessor(projectNameAccessor{s: s}))
 	s.refreshPageTitles()
 	return s.nameGrp
