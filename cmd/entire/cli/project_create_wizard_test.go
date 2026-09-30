@@ -712,3 +712,24 @@ func TestProjectOwners_HiddenNamesakeNeedsNoAside(t *testing.T) {
 	assert.Contains(t, s.summary(), "Owner    Solo (organization)\n")
 	assert.Empty(t, s.command(), "resolveOrgRef would still find two orgs named Solo")
 }
+
+// --json does not stop the wizard: like `grant add`, a terminal still gets the
+// prompts (on stderr or the controlling terminal) and stdout carries only the
+// created project, so `project create --json | jq` works interactively.
+func TestProjectCreate_WizardUnderJSONPrintsOnlyTheObject(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	fake := newProjectCoreFixture(t)
+	prompted := false
+	stubProjectCreatePrompt(t, func(*cobra.Command, *projectCreateState) (bool, error) {
+		prompted = true
+		return true, nil
+	})
+
+	out, err := execProjectCreate(t, "widgets", "--json")
+	require.NoError(t, err)
+	assert.True(t, prompted, "--json is not a reason to refuse the wizard")
+	require.NotNil(t, fake.created)
+	var got coreapi.CreatedProject
+	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is the JSON object and nothing else")
+	assert.Equal(t, "widgets", got.Name)
+}
