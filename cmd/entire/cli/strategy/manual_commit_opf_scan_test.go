@@ -1,6 +1,8 @@
 package strategy
 
 import (
+	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -10,6 +12,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/gitdir"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
@@ -141,4 +145,30 @@ func TestCheckpointsAwaitingOPF_V1(t *testing.T) {
 	n, err = CheckpointsAwaitingOPF(t.Context(), repo)
 	require.NoError(t, err)
 	require.Zero(t, n, "a trailered v1 tip no longer waits for OPF")
+}
+
+// A cache that cannot be opened is a real failure, not a scan in progress: the
+// refs are withheld with the cause, and no worker is started, because it would
+// need the same cache.
+func TestPrePushCheckpointRefs_UnusableCacheIsReportedNotPending(t *testing.T) {
+	configureFakeOPF(t, &fakeOPFForRewrite{})
+	bareDir, repo, refs := setupGitRefsOPFRepo(t, "a1b2c3d4e5f6")
+	commonDir, err := gitdir.CommonDir(t.Context())
+	require.NoError(t, err)
+	// A regular file where the cache directory belongs makes it unopenable.
+	require.NoError(t, os.WriteFile(filepath.Join(commonDir, checkpoint.OPFSpanCacheDirName), []byte("x"), 0o600))
+	spawns := swapOPFScanSpawn(t)
+
+	var buf bytes.Buffer
+	oldWriter := stderrWriter
+	stderrWriter = &buf
+	t.Cleanup(func() { stderrWriter = oldWriter })
+
+	require.NoError(t, NewManualCommitStrategy().PrePushFromGitHook(t.Context(), "origin"))
+
+	require.Contains(t, buf.String(), "scan cache", "the real cause must reach the user")
+	require.NotContains(t, buf.String(), opfScanPendingNotice, "an unusable cache is not a scan in progress")
+	require.Empty(t, *spawns, "a worker cannot help without the cache")
+	require.Equal(t, refs, queuedRefs(t, repo))
+	assertRefsAbsentFromRemote(t, bareDir, refs, "nothing may ship without a scan")
 }

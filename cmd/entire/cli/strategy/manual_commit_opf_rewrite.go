@@ -276,15 +276,31 @@ func (e *OPFScanPendingError) Error() string {
 	return "the OpenAI Privacy Filter has not finished scanning these checkpoints"
 }
 
+// OPFCacheUnavailableError: the OPF span cache in the git common dir cannot be
+// opened. Pre-push can then neither use earlier scan results nor hand work to
+// the scan worker, which needs the same cache, so the content is withheld with
+// the real cause instead of being reported as a scan in progress.
+type OPFCacheUnavailableError struct {
+	Cause error
+}
+
+func (e *OPFCacheUnavailableError) Error() string {
+	return fmt.Sprintf("cannot use the OpenAI Privacy Filter scan cache (%v); checkpoints are held "+
+		"until it is fixed. Check permissions and free space in the repository's .git directory, "+
+		"or set ENTIRE_OPF=no on the push to skip OPF for this push only", e.Cause)
+}
+
+func (e *OPFCacheUnavailableError) Unwrap() error { return e.Cause }
+
 // redactBlobsForOPFRewrite produces the OPF-redacted bytes for blobs through the
 // span cache in the git common dir. Without a usable cache it falls back to a
-// one-pass scan when mode allows the model, and reports the content pending
+// one-pass scan when mode allows the model, and returns *OPFCacheUnavailableError
 // when it does not.
 func redactBlobsForOPFRewrite(ctx context.Context, repo *git.Repository, blobs []redact.NamedBlob, mode opfRewriteMode) ([][]byte, error) {
 	cache, cacheErr := checkpoint.OPFSpanCacheForRepo(repo)
 	if cacheErr != nil {
 		if mode == opfApplyCachedOnly {
-			return nil, &OPFScanPendingError{}
+			return nil, &OPFCacheUnavailableError{Cause: cacheErr}
 		}
 		out, err := redact.BatchBytesWithPrivacyFilter(ctx, blobs)
 		return out, opfRewriteRedactError(err)
