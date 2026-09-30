@@ -252,7 +252,7 @@ func exactWorktreeMatches(states []*SessionState, worktreePath string) []*Sessio
 		if state.Kind.IsImported() {
 			continue
 		}
-		if state.WorktreePath == worktreePath {
+		if paths.SameDir(state.WorktreePath, worktreePath) {
 			exact = append(exact, state)
 		}
 	}

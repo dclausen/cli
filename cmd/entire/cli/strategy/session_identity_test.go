@@ -256,6 +256,26 @@ func TestFindSessionsForWorktree_ImportedSessionsNeverLink(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+// A session recorded under a symlinked or unclean spelling of the commit's
+// worktree is still that worktree's session; linking must not miss it.
+func TestExactWorktreeMatches_SameDirUnderAnotherSpelling(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(home, link))
+	states := []*SessionState{
+		{SessionID: "via-link", WorktreePath: link},
+		{SessionID: "trailing", WorktreePath: home + string(filepath.Separator)},
+		{SessionID: "elsewhere", WorktreePath: t.TempDir()},
+		{SessionID: "unset"},
+	}
+	var ids []string
+	for _, st := range exactWorktreeMatches(states, home) {
+		ids = append(ids, st.SessionID)
+	}
+	assert.Equal(t, []string{"via-link", "trailing"}, ids)
+}
+
 // Regression: a commit in a worktree with no sessions of its own, while
 // candidate sessions existed in several other worktrees, declined to link
 // even when only ONE of those sessions had interacted recently — the
