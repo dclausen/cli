@@ -338,6 +338,33 @@ func TestPrePushFromGitHook_UnscannedV1IsHeldForTheWorker(t *testing.T) {
 	require.Equal(t, originalTip, ref.Hash(), "a held v1 must not be rewritten by the hook")
 }
 
+// git-branch users whose checkpoints are held get one pointer to git-refs, not
+// one on every push.
+func TestPrePushFromGitHook_HintsGitRefsOnceForHeldV1(t *testing.T) {
+	configureFakeOPF(t, &fakeOPFForRewrite{})
+	dir, repo, _ := setupV1RepoInDir(t)
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	_, err := git.PlainInit(remoteDir, true)
+	require.NoError(t, err)
+	_, err = repo.CreateRemote(&gitconfig.RemoteConfig{Name: "origin", URLs: []string{remoteDir}})
+	require.NoError(t, err)
+	t.Chdir(dir)
+	paths.ClearWorktreeRootCache()
+	t.Cleanup(paths.ClearWorktreeRootCache)
+	swapOPFScanSpawn(t)
+
+	var buf bytes.Buffer
+	oldWriter := stderrWriter
+	stderrWriter = &buf
+	t.Cleanup(func() { stderrWriter = oldWriter })
+
+	for range 2 {
+		require.NoError(t, NewManualCommitStrategy().PrePushFromGitHook(t.Context(), "origin"))
+	}
+	require.Equal(t, 1, strings.Count(buf.String(), "migrate-checkpoints"), "the hint must appear once, not per push")
+	require.Equal(t, 2, strings.Count(buf.String(), opfScanPendingNotice), "every held push still says why")
+}
+
 // Regression: the no-categories abort must reach the git hook boundary.
 // PrePush deliberately swallows transient checkpoint-push failures, so
 // without this pin a refactor could downgrade the rewrite's fail-closed

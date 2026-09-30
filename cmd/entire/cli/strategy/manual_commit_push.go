@@ -168,6 +168,7 @@ func (s *ManualCommitStrategy) prePush(ctx context.Context, remote string, prote
 				// wait on the model. The worker scans and then pushes it.
 				opfSpan.End()
 				fmt.Fprintln(stderrWriter, opfScanPendingNotice)
+				maybeHintGitRefsForOPF(ctx)
 				maybeSpawnOPFScan(ctx, ps.remote)
 				return nil
 			}

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"path"
 	"slices"
+	"strings"
 	"time"
 
 	git "github.com/go-git/go-git/v6"
@@ -347,4 +348,110 @@ func acquireOPFScanWorkerLock(ctx context.Context) (release func(), held bool) {
 		return noop, errors.Is(err, context.DeadlineExceeded)
 	}
 	return release, false
+}
+
+// opfPendingV1WalkLimit bounds the v1 history walk behind CheckpointsAwaitingOPF,
+// which runs on every `entire status`.
+const opfPendingV1WalkLimit = 1000
+
+// CheckpointsAwaitingOPF counts checkpoint commits on the primary backend that
+// still lack the OPF trailer and have not been pushed: queued refs on git-refs,
+// unpushed v1 commits on git-branch. It reads local refs and the push queue
+// only, so it is safe on a read-only status path. `entire status` reports it,
+// because with scanning in a detached worker that is the one place held work
+// is visible.
+func CheckpointsAwaitingOPF(ctx context.Context, repo *git.Repository) (int, error) {
+	if primaryIsGitRefs(ctx) {
+		queue, err := checkpoint.PushQueueForRepo(ctx, repo)
+		if err != nil {
+			return 0, fmt.Errorf("resolve push queue: %w", err)
+		}
+		queued, err := queue.Peek()
+		if err != nil {
+			return 0, fmt.Errorf("peek push queue: %w", err)
+		}
+		existing, _ := partitionLocalRefs(repo, queued)
+		n := 0
+		for _, refName := range existing {
+			ref, refErr := repo.Reference(refName, true)
+			if refErr != nil {
+				continue
+			}
+			commit, commitErr := repo.CommitObject(ref.Hash())
+			if commitErr == nil && !trailers.HasOPFApplied(commit.Message) {
+				n++
+			}
+		}
+		return n, nil
+	}
+	return v1CommitsAwaitingOPFLocally(repo)
+}
+
+// v1CommitsAwaitingOPFLocally counts v1 commits from the local tip back to the
+// first one that carries the OPF trailer or that some remote-tracking v1 ref
+// already names, without contacting any remote.
+func v1CommitsAwaitingOPFLocally(repo *git.Repository) (int, error) {
+	localTip, err := readV1Tip(repo, plumbing.NewBranchReferenceName(paths.MetadataBranchName))
+	if err != nil {
+		return 0, fmt.Errorf("read local v1: %w", err)
+	}
+	if localTip.IsZero() {
+		return 0, nil
+	}
+	pushed := make(map[plumbing.Hash]struct{})
+	refs, err := repo.References()
+	if err != nil {
+		return 0, fmt.Errorf("list references: %w", err)
+	}
+	suffix := "/" + paths.MetadataBranchName
+	_ = refs.ForEach(func(r *plumbing.Reference) error { //nolint:errcheck // callback never fails
+		if name := r.Name(); name.IsRemote() && strings.HasSuffix(name.String(), suffix) {
+			pushed[r.Hash()] = struct{}{}
+		}
+		return nil
+	})
+	iter, err := repo.Log(&git.LogOptions{From: localTip})
+	if err != nil {
+		return 0, fmt.Errorf("log local v1: %w", err)
+	}
+	defer iter.Close()
+	n := 0
+	walkErr := iter.ForEach(func(c *object.Commit) error {
+		if _, ok := pushed[c.Hash]; ok || trailers.HasOPFApplied(c.Message) || n >= opfPendingV1WalkLimit {
+			return errStop
+		}
+		n++
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, errStop) {
+		return 0, fmt.Errorf("walk local v1: %w", walkErr)
+	}
+	return n, nil
+}
+
+// opfGitRefsHintInterval spaces out the git-refs suggestion below so it reads
+// as a tip, not as a warning on every push.
+const opfGitRefsHintInterval = 30 * 24 * time.Hour
+
+const opfGitRefsHint = "[entire] Tip: with the OpenAI Privacy Filter on, the git-refs checkpoint backend " +
+	"ships each checkpoint as soon as it is scanned instead of the whole branch at once. " +
+	"Switch with `entire doctor migrate-checkpoints`."
+
+// maybeHintGitRefsForOPF suggests the git-refs backend to a git-branch user
+// whose checkpoints were just held for a scan, at most once per
+// opfGitRefsHintInterval per repository. git-branch is fully supported; the
+// hint only points at the backend where one slow checkpoint cannot hold back
+// the rest.
+func maybeHintGitRefsForOPF(ctx context.Context) {
+	if inOPFScanWorker(ctx) {
+		return
+	}
+	commonDir, err := gitdir.CommonDir(ctx)
+	if err != nil {
+		return
+	}
+	if spawnmarker.RecentlySpawned(commonDir, "opf-git-refs-hint", opfGitRefsHintInterval, time.Now()) {
+		return
+	}
+	fmt.Fprintln(stderrWriter, opfGitRefsHint)
 }

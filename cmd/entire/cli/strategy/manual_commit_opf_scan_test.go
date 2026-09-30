@@ -112,3 +112,33 @@ func TestRunOPFScan_ScansAndDeliversV1(t *testing.T) {
 	require.True(t, trailers.HasOPFApplied(commit.Message))
 	require.NotContains(t, treeContents(t, repo, ref.Hash()), "PERSONABC")
 }
+
+func TestCheckpointsAwaitingOPF_GitRefs(t *testing.T) {
+	configureFakeOPF(t, &fakeOPFForRewrite{})
+	_, repo, _ := setupGitRefsOPFRepo(t, "a1b2c3d4e5f6", "b2c3d4e5f6a1")
+
+	n, err := CheckpointsAwaitingOPF(t.Context(), repo)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	require.NoError(t, RewriteQueuedCheckpointRefsWithOPF(t.Context(), repo))
+	n, err = CheckpointsAwaitingOPF(t.Context(), repo)
+	require.NoError(t, err)
+	require.Zero(t, n, "rewritten refs no longer wait for OPF")
+}
+
+func TestCheckpointsAwaitingOPF_V1(t *testing.T) {
+	configureFakeOPF(t, &fakeOPFForRewrite{})
+	dir, repo, _ := setupV1RepoInDir(t)
+	t.Chdir(dir)
+
+	n, err := CheckpointsAwaitingOPF(t.Context(), repo)
+	require.NoError(t, err)
+	require.Positive(t, n, "an unscanned v1 chain waits for OPF")
+
+	_, err = RewriteUnpushedV1WithOPF(t.Context(), repo, "origin")
+	require.NoError(t, err)
+	n, err = CheckpointsAwaitingOPF(t.Context(), repo)
+	require.NoError(t, err)
+	require.Zero(t, n, "a trailered v1 tip no longer waits for OPF")
+}
