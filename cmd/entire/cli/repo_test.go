@@ -478,6 +478,17 @@ func serveProjectRepos(t *testing.T, pages []coreapi.ListProjectReposOutputBody)
 	recCh := make(chan recordedRequest, len(pages))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// A ULID --project needs one GetProject to recover the NAME, which is
+		// what the /et/<project>/<repo> column is built from.
+		if r.URL.Path == "/api/v1/projects/"+testProjectULID {
+			if err := printJSON(w, &coreapi.Project{
+				ID: testProjectULID, Name: "widgets", OwnerId: "01OWNER",
+				OwnerType: coreapi.ProjectOwnerTypeOrg, Region: "us",
+			}); err != nil {
+				t.Errorf("encode project: %v", err)
+			}
+			return
+		}
 		if r.URL.Path != "/api/v1/projects/"+testProjectULID+"/repos" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

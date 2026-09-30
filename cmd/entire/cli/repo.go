@@ -39,12 +39,63 @@ func newRepoCmd() *cobra.Command {
 	return requireSubcommand(cmd)
 }
 
-// repoColumns is the human table/field view of a repo, shared by list and
-// view. CLUSTER/STATE come from optional fields, shown as "-" when unset.
-var repoColumns = []string{"ID", colHeaderName, "PROJECT", colHeaderCluster, "STATE"}
+// repoColumns is the human table for `repo list`, headed the way `repo mirror
+// list` heads the same facts so the two directories read alike.
+//
+// NAME is the /et/<project>/<repo> path, NOT the bare name: a name is unique
+// only inside its project, so the old column printed a string no verb accepts
+// on its own — and `repo view` now takes the path and nothing else, which left
+// the table with no cell a reader could act on. The ULID and project columns
+// went with it; `--json` carries both for anything that needs them.
+//
+// STATUS speaks the placement vocabulary, as `mirror list`'s does: a repo says
+// `active` where a placement says `ready`, and one column should not carry two
+// words for one fact (primaryPlacementStatus). It dashes where the listing
+// returns no state, which happens per repo rather than per project.
+//
+// ACCESS is the one column of `mirror list` left out: it is candidate-only,
+// describing a GitHub repo not yet onboarded, and nothing in a project listing
+// can ever be one — so it would dash on every row, and an always-empty column
+// costs every reader something one reader wants.
+var repoColumns = []string{
+	colName.header, colHeaderCluster, colVisibility.header, colStatus.header,
+}
 
-func repoRow(r coreapi.Repo) []string {
-	return []string{r.ID, r.Name, r.OwningProjectId, r.ClusterHost.Or("-"), r.State.Or("-")}
+// repoRow renders one row against the project the listing was scoped to. The
+// project's NAME comes from resolving the caller's ref once: the repo records
+// carry only its ULID, and a path built from a ULID is not a ref.
+func repoRow(projectName string, r coreapi.Repo) []string {
+	name := r.Name
+	if projectName != "" {
+		name = nativeRepoPath(projectName + "/" + r.Name)
+	}
+	return []string{
+		name,
+		r.ClusterHost.Or("-"),
+		visibilityDisplay(visibilityOf(r.Visibility.Or(""))),
+		orDash(primaryPlacementStatus(r.State.Or(""))),
+	}
+}
+
+// repoRowStyled colours the cells `mirror list` colours for the same facts: the
+// cluster cyan, the visibility by what it says, and the status by its lifecycle
+// (repoDirCellsStyled). One directory should not paint a private or a failed
+// repo one way and the other another.
+func repoRowStyled(st statusStyles, projectName string) func(coreapi.Repo) []string {
+	return func(r coreapi.Repo) []string {
+		cells := repoRow(projectName, r)
+		if !st.colorEnabled {
+			return cells
+		}
+		if cells[1] != "-" {
+			cells[1] = st.render(st.cyan, cells[1])
+		}
+		cells[2] = st.render(visibilityColor(st, visibilityOf(r.Visibility.Or(""))), cells[2])
+		if style, ok := repoStatusColor(st, primaryPlacementStatus(r.State.Or(""))); ok {
+			cells[3] = st.render(style, cells[3])
+		}
+		return cells
+	}
 }
 
 // repoRemoteURL synthesizes the entire:// clone/remote URL for a repo from
@@ -218,14 +269,25 @@ func newRepoListCmd() *cobra.Command {
 			// flushThroughPager swaps stdout for a buffer that never looks
 			// like a TTY; the buffered render passes the pre-styled cells
 			// through unchanged (see preStyleTable).
-			headers, row := preStyleTable(cmd.OutOrStdout(), repoColumns, repoRow)
+			// The project's name is known only once the ref is resolved, which
+			// happens inside the core call below — but the row func has to be
+			// built out here, where the real writer decides color. The closure
+			// reads it at render time, which is always after the resolve.
+			// Styled the way `repo mirror list` styles the same table: yellow
+			// headers via styledHeaders, cells via this view's own styler. The
+			// two directories show the same facts and should not look unalike.
+			var projectName string
+			st := newStatusStyles(cmd.OutOrStdout())
+			headers := styledHeaders(st, repoColumns)
+			row := func(r coreapi.Repo) []string { return repoRowStyled(st, projectName)(r) }
 			if pageModeRequested(cmd) {
 				return flushThroughPager(cmd, noPager, func() error {
 					return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
-						projID, err := resolveProjectRef(ctx, c, project)
+						projID, name, err := resolveProjectRefNamed(ctx, c, project)
 						if err != nil {
 							return err
 						}
+						projectName = name
 						params := coreapi.ListProjectReposParams{ProjectId: projID}
 						if pageToken != "" {
 							params.PageToken = coreapi.NewOptString(pageToken)
@@ -243,10 +305,11 @@ func newRepoListCmd() *cobra.Command {
 			}
 			return flushThroughPager(cmd, noPager, func() error {
 				return runCoreList(cmd, "No repositories found in this project.", headers, row, func(ctx context.Context, c *coreapi.Client) ([]coreapi.Repo, error) {
-					projID, err := resolveProjectRef(ctx, c, project)
+					projID, name, err := resolveProjectRefNamed(ctx, c, project)
 					if err != nil {
 						return nil, err
 					}
+					projectName = name
 					// Rows render in server order with no local filters or
 					// sort, so --limit bounds the fetch directly; without it
 					// the default budget bounds the walk instead.

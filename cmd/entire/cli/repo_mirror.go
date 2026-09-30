@@ -35,7 +35,7 @@ type column struct {
 // Keys are lower-case, single shell tokens (kebab-case for multi-word columns)
 // so a --sort value needs no quoting; headers stay upper-case display text.
 var (
-	colName       = column{key: "name", header: "NAME (owner/repo)"}
+	colName       = column{key: "name", header: colHeaderName}
 	colClusters   = column{key: "clusters", header: "CLUSTERS"}
 	colVisibility = column{key: "visibility", header: "VISIBILITY"}
 	colAccess     = column{key: "access", header: "ACCESS"}
