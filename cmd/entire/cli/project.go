@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -56,7 +57,9 @@ func newProjectCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			if len(args) == 1 {
-				in.name = args[0]
+				// Trimmed once for both paths, as the wizard trims what is
+				// typed into it; a blank name counts as no name.
+				in.name = strings.TrimSpace(args[0])
 			}
 			ot, err := parseProjectOwnerType(in.ownerType)
 			if err != nil {

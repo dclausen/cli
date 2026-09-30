@@ -733,3 +733,19 @@ func TestProjectCreate_WizardUnderJSONPrintsOnlyTheObject(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is the JSON object and nothing else")
 	assert.Equal(t, "widgets", got.Name)
 }
+
+// The name argument is trimmed before either path runs, so the direct path
+// sends what the wizard would, and a blank name counts as missing.
+func TestProjectCreate_NameArgumentIsTrimmed(t *testing.T) {
+	fake := newProjectCoreFixture(t)
+	out, err := execProjectCreate(t, "  widgets  ", "--owner", "acme")
+	require.NoError(t, err)
+	require.NotNil(t, fake.created)
+	assert.Equal(t, "widgets", fake.created.Name)
+	assert.Equal(t, "✓ Created project acme/widgets in us\n", out)
+
+	fake.created = nil
+	_, err = execProjectCreate(t, "   ", "--owner", "acme")
+	require.ErrorContains(t, err, "a project name and --owner are required without an interactive terminal")
+	assert.Nil(t, fake.created)
+}
