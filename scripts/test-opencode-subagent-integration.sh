@@ -16,6 +16,7 @@
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario readonly     # one read-only explore child
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario nested       # a child that delegates again (subagent_depth 2)
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario background   # one background child (experimental flag)
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario resume       # one child resumed via task_id for a second call
 #
 # Env:
 #   OPENCODE_MODEL   model for `opencode run` (default anthropic/claude-haiku-4-5)
@@ -154,7 +155,9 @@ case "$SCENARIO" in
     PROMPT="Use the general subagent (the task tool with subagent_type general) exactly once, in the foreground, and give it exactly this instruction: 'Use the task tool with subagent_type general exactly once, in the foreground, to create docs/green.md containing one paragraph about the colour green. Do not create the file yourself.' Wait for it to finish. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
   background)
     PROMPT="Use the general subagent (the task tool with subagent_type general and background set to true) exactly once to create docs/red.md containing one paragraph about the colour red. After launching it, run the shell command \`sleep 60\` so it has time to finish, then finish. Do not create or edit the file yourself, do not delegate again, do not commit, and do not ask for confirmation." ;;
-  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background)" >&2; exit 2 ;;
+  resume)
+    PROMPT="Use the general subagent (the task tool with subagent_type general) in the foreground to create docs/red.md containing one paragraph about the colour red. When it finishes, call the task tool a second time with subagent_type general and task_id set to the task id that first call returned, asking the same subagent to create docs/blue.md containing one paragraph about the colour blue. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
+  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background|resume)" >&2; exit 2 ;;
 esac
 echo "scenario: $SCENARIO"
 case "$MODE" in
@@ -205,8 +208,29 @@ if [ "$WITH_ENTIRE" = 1 ]; then
   ( cd "$REPO" && entire session list 2>&1 | head -20 ) || true
   echo "-- .entire/tmp exports"
   for f in "$REPO"/.entire/tmp/*.json; do [ -e "$f" ] && ls -la "$f"; done 2>/dev/null || echo "(none)"
+  echo "-- pending task records before the commit"
+  ( cd "$REPO" && entire checkpoint list --pending 2>&1 | head -20 ) || true
   echo "-- commit and inspect checkpoint"
   ( cd "$REPO" && git add -A && git commit -q -m "Add red.md via subagent" 2>&1 && sleep 2 && git log -1 --format='%B' | grep -i entire; entire checkpoint list 2>&1 | head -20 ) || true
+  echo "-- task records in the checkpoint"
+  CP_ID="$(git -C "$REPO" log -1 --format='%(trailers:key=Entire-Checkpoint,valueonly)' | tr -d '[:space:]')"
+  CP_REF="$(git -C "$REPO" for-each-ref --format='%(refname)' "refs/entire/checkpoints/*/$CP_ID" | head -1)"
+  CP_PREFIX=""
+  if [ -z "$CP_REF" ] && git -C "$REPO" rev-parse -q --verify entire/checkpoints/v1 >/dev/null; then
+    CP_REF=entire/checkpoints/v1
+    CP_PREFIX="$(git -C "$REPO" ls-tree -r --name-only "$CP_REF" | grep "/${CP_ID:2}/metadata.json$" | head -1 | sed 's#/metadata.json$##')/"
+  fi
+  if [ -z "$CP_ID" ] || [ -z "$CP_REF" ]; then
+    warn "checkpoint" "no checkpoint for the commit"
+  else
+    TASK_JSONS="$(git -C "$REPO" ls-tree -r --name-only "$CP_REF" | grep "^${CP_PREFIX}tasks/.*/task.json$" || true)"
+    echo "checkpoint $CP_ID: $(printf '%s\n' "$TASK_JSONS" | grep -c . || true) task record(s)"
+    for f in $TASK_JSONS; do
+      dir="${f%/task.json}"
+      transcript="$(git -C "$REPO" ls-tree -r --name-only "$CP_REF" | grep "^$dir/agent-.*\.jsonl$" | head -1 || true)"
+      git -C "$REPO" show "$CP_REF:$f" | jq -c --arg t "${transcript:+yes}" '{tool_use_id, agent_id, files, input_tokens: .token_usage.input_tokens, transcript: ($t // "no"), reason: .transcript_unavailable_reason}'
+    done
+  fi
   echo "-- entire log tail"
   tail -40 "$REPO"/.entire/logs/*.log 2>/dev/null | grep -i -E "subagent|child|session|opencode" | tail -25 || true
 fi
