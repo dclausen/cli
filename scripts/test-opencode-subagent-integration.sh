@@ -22,6 +22,7 @@
 #   OPENCODE_MODEL   model for `opencode run` (default anthropic/claude-haiku-4-5)
 #   ENTIRE_BIN       entire binary to put first on PATH (default: whatever is on PATH)
 #   PROBE_KEEP=1     keep the work directory after the run
+#   PROBE_PLUGIN_DEPS  dir with package.json + node_modules pinning the running opencode
 set -euo pipefail
 
 AGENT_NAME="OpenCode"
@@ -59,7 +60,15 @@ if "$AGENT_BIN" export --help 2>&1 | grep -q 'export session data'; then pass "e
 if "$AGENT_BIN" models 2>/dev/null | grep -qx "$MODEL"; then pass "model available" "$MODEL"; else warn "model available" "$MODEL not listed"; fi
 if [ -f "$HOME/.local/share/opencode/opencode.db" ]; then pass "sqlite store" "$HOME/.local/share/opencode/opencode.db"; else warn "sqlite store" "not found (older storage layout?)"; fi
 if [ "$WITH_ENTIRE" = 1 ]; then
-  if [ -n "${ENTIRE_BIN:-}" ]; then ENTIRE_BIN_DIR="$(dirname "$ENTIRE_BIN")"; export PATH="$ENTIRE_BIN_DIR:$PATH"; fi
+  if [ -n "${ENTIRE_BIN:-}" ]; then
+    # Put exactly this binary first on PATH as `entire` (the plugin's hooks
+    # resolve it by that name). Prepending its directory instead runs
+    # whatever else is named `entire` there, which can be another build.
+    [ -x "$ENTIRE_BIN" ] || { fail "entire binary" "ENTIRE_BIN=$ENTIRE_BIN is not executable"; exit 1; }
+    ENTIRE_BIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/probe-entire-bin.XXXXXX")"
+    ln -s "$(cd "$(dirname "$ENTIRE_BIN")" && pwd)/$(basename "$ENTIRE_BIN")" "$ENTIRE_BIN_DIR/entire"
+    export PATH="$ENTIRE_BIN_DIR:$PATH"
+  fi
   if command -v entire >/dev/null; then pass "entire binary" "$(command -v entire) ($(entire version 2>/dev/null | head -1))"; else fail "entire binary" "not on PATH; set ENTIRE_BIN"; exit 1; fi
 fi
 
@@ -95,18 +104,26 @@ JSON
 fi
 if [ "$SCENARIO" = background ]; then export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; fi
 
-# Reuse the user's global @opencode-ai/plugin tree when it pins the running
-# version; otherwise opencode installs one for this project (slow, silent).
+# Reuse an @opencode-ai/plugin tree that pins the running version: the user's
+# global one, else PROBE_PLUGIN_DEPS (a directory holding package.json and
+# node_modules, e.g. the e2e harness's entire-e2e-opencode-deps-<version>).
+# Otherwise opencode installs one for this project, which is slow and can
+# stall startup before any plugin loads.
 mkdir -p "$REPO/.opencode/plugins"
-GLOBAL_PKG="$HOME/.config/opencode/package.json"
-if [ -f "$GLOBAL_PKG" ] && grep -q "\"$VERSION\"" "$GLOBAL_PKG" && [ -d "$HOME/.config/opencode/node_modules" ]; then
-  cp "$GLOBAL_PKG" "$REPO/.opencode/package.json"
-  [ -f "$HOME/.config/opencode/package-lock.json" ] && cp "$HOME/.config/opencode/package-lock.json" "$REPO/.opencode/"
-  ln -s "$HOME/.config/opencode/node_modules" "$REPO/.opencode/node_modules"
+DEPS_DIR=""
+for candidate in "$HOME/.config/opencode" "${PROBE_PLUGIN_DEPS:-}"; do
+  if [ -n "$candidate" ] && [ -f "$candidate/package.json" ] && grep -q "\"$VERSION\"" "$candidate/package.json" && [ -d "$candidate/node_modules" ]; then
+    DEPS_DIR="$candidate"; break
+  fi
+done
+if [ -n "$DEPS_DIR" ]; then
+  cp "$DEPS_DIR/package.json" "$REPO/.opencode/package.json"
+  [ -f "$DEPS_DIR/package-lock.json" ] && cp "$DEPS_DIR/package-lock.json" "$REPO/.opencode/"
+  ln -s "$DEPS_DIR/node_modules" "$REPO/.opencode/node_modules"
   printf 'node_modules\npackage.json\npackage-lock.json\nbun.lock\n.gitignore\n' > "$REPO/.opencode/.gitignore"
-  pass "plugin deps" "linked from ~/.config/opencode (pin $VERSION)"
+  pass "plugin deps" "linked from $DEPS_DIR (pin $VERSION)"
 else
-  warn "plugin deps" "no matching global tree; opencode will install for itself"
+  warn "plugin deps" "no tree pinning $VERSION (set PROBE_PLUGIN_DEPS); opencode will install for itself"
 fi
 
 # The probe plugin: append every plugin-visible signal as one JSON line.
@@ -163,7 +180,10 @@ echo "scenario: $SCENARIO"
 case "$MODE" in
   run)
     echo "opencode run --model $MODEL <prompt>  (in $REPO)"
-    ( cd "$REPO" && env -u ENTIRE_TEST_TTY PWD="$REPO" "$AGENT_BIN" run --model "$MODEL" "$PROMPT" ) >"$WORK/run.stdout" 2>"$WORK/run.stderr" || warn "opencode run" "exit $? — see $WORK/run.stderr"
+    # </dev/null: `opencode run` reads a non-TTY stdin to the end before it
+    # creates the session, so an inherited pipe that never closes (a
+    # backgrounded shell) stalls it right after "init" with nothing captured.
+    ( cd "$REPO" && env -u ENTIRE_TEST_TTY PWD="$REPO" "$AGENT_BIN" run --model "$MODEL" "$PROMPT" </dev/null ) >"$WORK/run.stdout" 2>"$WORK/run.stderr" || warn "opencode run" "exit $? — see $WORK/run.stderr"
     ;;
   manual)
     echo "Open another terminal, then:  cd $REPO && opencode"
