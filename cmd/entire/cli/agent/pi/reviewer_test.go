@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 )
@@ -69,6 +70,9 @@ func TestPiReviewer_LoadsEntireExtensionFromBinary(t *testing.T) {
 	// No t.Parallel: t.Setenv isolates the cache directory the copy lands in.
 	cacheHome := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	// Prepare opens a shared root over the cache dir; release it so the temp
+	// dir can be removed (an open handle blocks that on Windows).
+	t.Cleanup(osroot.ResetShared)
 
 	if err := NewReviewer().Prepare(context.Background()); err != nil {
 		t.Fatalf("Prepare: %v", err)

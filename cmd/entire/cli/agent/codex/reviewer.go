@@ -29,6 +29,7 @@ import (
 func NewReviewer() *reviewtypes.ReviewerTemplate {
 	return &reviewtypes.ReviewerTemplate{
 		AgentName: "codex",
+		Prepare:   prepareCodexReview,
 		BuildCmd:  buildCodexReviewCmd,
 		Parser:    parseCodexOutput,
 	}
@@ -70,13 +71,26 @@ func buildCodexReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.C
 	promptCfg := cfg
 	promptCfg.Skills = codexNativeSkillInvocations(cfg.Skills)
 	args := []string{codexExecCommand, "--skip-git-repo-check", "--json"}
+	root := ""
 	if review.IsTargetReview() {
-		args = append(args, "-c", untrustedProjectOverride(reviewCheckoutRoot(ctx)))
+		var err error
+		root, err = reviewCheckoutRoot(ctx)
+		if err != nil {
+			// prepareCodexReview already failed the run for this; a nil command
+			// stops Start rather than spawning codex with the checkout trusted.
+			return nil
+		}
+		args = append(args, "-c", untrustedProjectOverride(root))
 	}
 	args = review.AppendModelFlag(args, cfg.Model)
 	args = append(args, "-")
 	prompt := review.ComposeReviewPrompt(promptCfg)
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	// Codex keys trust on its own working directory, so on a target run it
+	// runs from exactly the directory the override names. Left to inherit the
+	// process cwd, a reviewer started from a subdirectory would key trust on a
+	// path the override does not match and fall back to the trusted repo.
+	cmd.Dir = root
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = review.AppendReviewEnv(os.Environ(), "codex", cfg, prompt)
 	return cmd
@@ -97,22 +111,35 @@ func untrustedProjectOverride(root string) string {
 	return "projects={" + string(quoted) + `={trust_level="untrusted"}}`
 }
 
+// prepareCodexReview fails a target review before anything is spawned when
+// the checkout's canonical root cannot be resolved: without it the untrusted
+// override would name the wrong path, and codex would load the branch's
+// project config as trusted.
+func prepareCodexReview(ctx context.Context) error {
+	if !review.IsTargetReview() {
+		return nil
+	}
+	if _, err := reviewCheckoutRoot(ctx); err != nil {
+		return fmt.Errorf("resolve the review checkout for codex: %w", err)
+	}
+	return nil
+}
+
 // reviewCheckoutRoot returns the checkout the reviewer runs in, spelled the
 // way codex keys trust: codex canonicalizes its working directory, so an
 // entry under a symlinked spelling (/tmp vs /private/tmp) would not match.
-func reviewCheckoutRoot(ctx context.Context) string {
+// Any failure is returned; a guessed or uncanonicalized path would produce an
+// override that silently matches nothing.
+func reviewCheckoutRoot(ctx context.Context) (string, error) {
 	root, err := paths.WorktreeRoot(ctx)
 	if err != nil {
-		//nolint:forbidigo // the reviewer runs in the process cwd; no repo means no other root to use
-		root, err = os.Getwd()
-		if err != nil {
-			return ""
-		}
+		return "", fmt.Errorf("worktree root: %w", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		return resolved
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize %s: %w", root, err)
 	}
-	return root
+	return resolved, nil
 }
 
 // codexNativeSkillInvocations rewrites slash-form skill invocations (the

@@ -127,12 +127,17 @@ func TestCodexReviewer_MarksTargetCheckoutUntrusted(t *testing.T) {
 		t.Fatalf("no projects trust override; codex would load the checkout's .codex/config.toml: %v", cmd.Args)
 	}
 
-	root := reviewCheckoutRoot(context.Background())
-	if root == "" {
-		t.Fatal("reviewCheckoutRoot returned empty")
+	root, err := reviewCheckoutRoot(context.Background())
+	if err != nil {
+		t.Fatalf("reviewCheckoutRoot: %v", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(root); err != nil || resolved != root {
 		t.Errorf("reviewCheckoutRoot = %q is not canonical (EvalSymlinks = %q, %v)", root, resolved, err)
+	}
+	// Codex keys trust on its working directory, so it must run from the
+	// directory the override names, not whatever cwd the process inherited.
+	if cmd.Dir != root {
+		t.Errorf("cmd.Dir = %q, want the overridden checkout %q", cmd.Dir, root)
 	}
 	quoted, err := json.Marshal(root)
 	if err != nil {
@@ -154,6 +159,17 @@ func TestCodexReviewer_PlainReviewKeepsCheckoutTrust(t *testing.T) {
 		if arg == "-c" && i+1 < len(cmd.Args) && strings.HasPrefix(cmd.Args[i+1], "projects=") {
 			t.Fatalf("plain review marks the user's checkout untrusted: %v", cmd.Args)
 		}
+	}
+}
+
+// A target review whose checkout cannot be resolved must fail before codex
+// starts, rather than send an override that names no real path.
+func TestCodexReviewer_PrepareFailsTargetReviewOutsideARepo(t *testing.T) {
+	// No t.Parallel: t.Setenv and t.Chdir.
+	t.Setenv(envTargetReview, "/caller")
+	t.Chdir(t.TempDir())
+	if err := NewReviewer().Prepare(context.Background()); err == nil {
+		t.Fatal("Prepare succeeded outside a repository; the override would match nothing")
 	}
 }
 

@@ -54,14 +54,15 @@ const reviewExtensionName = "pi-review/entire-extension.ts"
 // and only warn about --no-approve as an unknown option. Entire's own extension,
 // which normally comes from that same project directory, is loaded from a copy
 // the binary writes (writeReviewExtension) so the review is still captured.
-// If that copy cannot be located, the review runs untracked rather than
-// falling back to discovery.
 func buildPiReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	prompt := review.ComposeReviewPrompt(cfg)
-	args := []string{"--mode", "json", "--print", "--no-approve", "--no-extensions"}
-	if extPath, err := reviewExtensionPath(); err == nil {
-		args = append(args, "--extension", extPath)
+	extPath, err := reviewExtensionPath()
+	if err != nil {
+		// writeReviewExtension resolves the same directory and already failed
+		// the run; a nil command stops Start.
+		return nil
 	}
+	args := []string{"--mode", "json", "--print", "--no-approve", "--no-extensions", "--extension", extPath}
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
 	}
@@ -89,13 +90,14 @@ func writeReviewExtension(context.Context) error {
 }
 
 // reviewExtensionPath is the absolute path of the file writeReviewExtension
-// writes, for pi's argv.
+// writes, for pi's argv. It only resolves the path; building argv must not
+// create or open anything.
 func reviewExtensionPath() (string, error) {
-	root, err := userdirs.CacheRoot()
+	dir, err := userdirs.CacheDirChecked()
 	if err != nil {
 		return "", fmt.Errorf("resolve cache dir: %w", err)
 	}
-	return filepath.Join(root.Name(), filepath.FromSlash(reviewExtensionName)), nil
+	return filepath.Join(dir, filepath.FromSlash(reviewExtensionName)), nil
 }
 
 func parsePiReviewOutput(r io.Reader) <-chan reviewtypes.Event {

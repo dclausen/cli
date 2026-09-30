@@ -97,11 +97,12 @@ func TestReviewer_ArgvShape(t *testing.T) {
 	}
 	cmd := buildReviewCmd(context.Background(), cfg)
 
-	// Expect: claude -p <prompt> --output-format stream-json --verbose
-	// --setting-sources user --settings <hooks JSON> --strict-mcp-config
-	wantSuffix := []string{"--output-format", "stream-json", "--verbose", "--setting-sources", "user", "--settings"}
-	if len(cmd.Args) != 3+len(wantSuffix)+2 {
-		t.Fatalf("expected %d args, got %d: %v", 3+len(wantSuffix)+2, len(cmd.Args), cmd.Args)
+	// Expect: claude -p <prompt> followed by wantSuffix. The settings JSON's
+	// content is asserted in TestReviewer_DoesNotLoadCheckoutSettings.
+	wantSuffix := []string{"--output-format", "stream-json", "--verbose",
+		"--setting-sources", "user", "--settings", reviewHookSettings(), "--strict-mcp-config"}
+	if len(cmd.Args) != 3+len(wantSuffix) {
+		t.Fatalf("expected %d args, got %d: %v", 3+len(wantSuffix), len(cmd.Args), cmd.Args)
 	}
 	if cmd.Args[0] != "claude" {
 		t.Errorf("Args[0] = %q, want %q", cmd.Args[0], "claude")
