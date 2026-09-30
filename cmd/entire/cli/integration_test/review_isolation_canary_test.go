@@ -9,11 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/execx"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
@@ -65,11 +67,15 @@ type reviewCanaryRepo struct {
 	// shimDir holds a wrapper for the agent binary that records the launch and
 	// then execs the real CLI unchanged; it goes first on the review's PATH.
 	shimDir string
+	// startedPastConfig reports, from the review's output so far, that the
+	// agent got past the point where it loads project configuration. nil means
+	// Entire's own startup hook recording a session is the signal.
+	startedPastConfig func(output string) bool
 }
 
 // newReviewCanaryRepo commits the files canary returns on a new branch, pushed
 // to origin. The caller is left on that branch.
-func newReviewCanaryRepo(t *testing.T, agentName, binary string, canary func(t *testing.T, repoDir, marker string) map[string]string) *reviewCanaryRepo {
+func newReviewCanaryRepo(t *testing.T, agentName, binary string, agentConfig map[string]any, canary func(t *testing.T, repoDir, marker string) map[string]string) *reviewCanaryRepo {
 	t.Helper()
 	agentPath, err := exec.LookPath(binary)
 	if err != nil {
@@ -84,18 +90,27 @@ func newReviewCanaryRepo(t *testing.T, agentName, binary string, canary func(t *
 
 	env := NewRepoWithCommit(t)
 	enableReviewAgent(t, env, agentName)
-	env.WriteSettings(map[string]any{
-		"enabled":                true,
+	// Clone-local preferences live in the git common dir, so the --target
+	// review's linked worktree reads the same profile — and its invalid model or
+	// skill — as the main checkout. Committed settings would not apply there.
+	prefs, err := json.Marshal(map[string]any{
 		"review_default_profile": "canary",
 		"review_profiles": map[string]any{
 			"canary": map[string]any{
 				"task":   "Reply with the single word DONE.",
-				"agents": map[string]any{agentName: map[string]any{"skills": []string{"/review"}}},
+				"agents": map[string]any{agentName: agentConfig},
 			},
 		},
 	})
+	if err != nil {
+		t.Fatalf("marshal review preferences: %v", err)
+	}
+	env.WriteFile(filepath.Join(".git", "entire", "preferences.json"), string(prefs))
+	// Commit what `entire enable` wrote, so a --target worktree is enabled too
+	// and Entire's startup hook — the positive control — does its work there.
 	env.GitAdd(".")
-	env.GitCommit("review profile")
+	testutil.RunGit(t, env.RepoDir, "add", "-f", filepath.Join(".entire", "settings.json"))
+	env.GitCommit("enable entire")
 
 	env.SetupBareRemote()
 
@@ -114,8 +129,8 @@ func newReviewCanaryRepo(t *testing.T, agentName, binary string, canary func(t *
 // reviewResult is what one canary review observed.
 type reviewResult struct {
 	output string
-	// startupHooksRan is true once Entire's own SessionStart hook recorded a
-	// session: the agent reached the phase the canary is registered for.
+	// startupHooksRan is true once the agent demonstrably got past loading its
+	// project configuration (see reviewCanaryRepo.startedPastConfig).
 	startupHooksRan bool
 }
 
@@ -155,7 +170,11 @@ func (r *reviewCanaryRepo) review(t *testing.T, extraEnv []string, args ...strin
 		if fileExists(r.marker) {
 			break
 		}
-		if len(sessionStateFiles(stateDir)) > len(before) {
+		if r.startedPastConfig != nil && r.startedPastConfig(out.String()) {
+			res.startupHooksRan = true
+			break
+		}
+		if r.startedPastConfig == nil && len(sessionStateFiles(stateDir)) > len(before) {
 			res.startupHooksRan = true
 			select {
 			case <-time.After(reviewStartupGrace):
@@ -166,6 +185,7 @@ func (r *reviewCanaryRepo) review(t *testing.T, extraEnv []string, args ...strin
 		select {
 		case <-exited:
 			res.output = out.String()
+			res.startupHooksRan = r.startedPastConfig != nil && r.startedPastConfig(res.output)
 			return res
 		case <-deadline:
 			res.output = out.String()
@@ -201,6 +221,11 @@ func fileExists(path string) bool {
 func sessionStateFiles(dir string) []string {
 	matches, _ := filepath.Glob(filepath.Join(dir, "*.json")) //nolint:errcheck // a static pattern cannot be malformed
 	return matches
+}
+
+// strconvQuote encodes s as a double-quoted string literal, valid in JS/TS.
+func strconvQuote(s string) string {
+	return strconv.Quote(s)
 }
 
 // shellQuote single-quotes s for a POSIX shell.
@@ -242,6 +267,9 @@ func claudeSessionStartCanary(t *testing.T, repoDir, marker string) map[string]s
 	return map[string]string{path: string(out)}
 }
 
+// claudeReviewAgentConfig runs Claude's built-in /review.
+var claudeReviewAgentConfig = map[string]any{"skills": []string{"/review"}}
+
 // claudeCanaryEnv keeps the run from authenticating: an invalid API key takes
 // precedence over any login, so no model request succeeds.
 func claudeCanaryEnv() []string {
@@ -252,14 +280,86 @@ func TestReviewIsolation_ClaudeSessionStartHookDoesNotRun(t *testing.T) {
 	requireRealReviewAgent(t, "claude")
 
 	t.Run("current branch", func(t *testing.T) {
-		repo := newReviewCanaryRepo(t, agentClaudeCode, "claude", claudeSessionStartCanary)
+		repo := newReviewCanaryRepo(t, agentClaudeCode, "claude", claudeReviewAgentConfig, claudeSessionStartCanary)
 		repo.assertCanaryDidNotRun(t, repo.review(t, claudeCanaryEnv()))
 	})
 
 	t.Run("--target", func(t *testing.T) {
-		repo := newReviewCanaryRepo(t, agentClaudeCode, "claude", claudeSessionStartCanary)
+		repo := newReviewCanaryRepo(t, agentClaudeCode, "claude", claudeReviewAgentConfig, claudeSessionStartCanary)
 		testutil.RunGit(t, repo.env.RepoDir, "checkout", "-q", "-")
 		testutil.RunGit(t, repo.env.RepoDir, "branch", "-q", "-D", repo.branch)
 		repo.assertCanaryDidNotRun(t, repo.review(t, claudeCanaryEnv(), "--target", repo.branch, "--cleanup-worktree"))
+	})
+}
+
+// piInvalidModel makes pi exit on model resolution, which it does only after
+// discovering and loading extensions, so no request is ever made.
+const piInvalidModel = "entire-test/invalid"
+
+// piReviewAgentConfig names the invalid model; the prompt is the profile task.
+var piReviewAgentConfig = map[string]any{"model": piInvalidModel}
+
+// piPastConfig recognises either outcome that settles the question: pi's
+// model-resolution failure, which comes after extension loading, or — on a pi
+// that predates --no-approve (e.g. 0.70.2) — the review refusing to run with a
+// message to update pi, before pi loads anything.
+func piPastConfig(output string) bool {
+	return strings.Contains(output, `Model "`+piInvalidModel+`" not found`) ||
+		strings.Contains(output, "update pi and retry")
+}
+
+// piExtensionCanary adds a project extension next to Entire's that writes the
+// marker when pi loads it.
+func piExtensionCanary(_ *testing.T, _, marker string) map[string]string {
+	return map[string]string{
+		".pi/extensions/canary/index.ts": "import { writeFileSync } from \"node:fs\";\n" +
+			"writeFileSync(" + strconvQuote(marker) + ", \"ran\");\n" +
+			"export default function () {}\n",
+	}
+}
+
+// piTrustedRepoEnv gives pi a private agent directory whose trust store trusts
+// repoDir. pi releases with project trust load project extensions only in a
+// trusted repo, and a review worktree inherits trust from the nearest trusted
+// ancestor, so this is the setup the attack needs: the user trusts their own
+// repo, and the branch under review is checked out inside it. A private
+// directory also carries no login, so pi cannot make a request.
+func piTrustedRepoEnv(t *testing.T, repoDir string) []string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		t.Fatalf("canonicalize repo dir: %v", err)
+	}
+	trust, err := json.Marshal(map[string]bool{canonical: true})
+	if err != nil {
+		t.Fatalf("marshal pi trust store: %v", err)
+	}
+	agentDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDir, "trust.json"), trust, 0o600); err != nil {
+		t.Fatalf("write pi trust store: %v", err)
+	}
+	return []string{"PI_CODING_AGENT_DIR=" + agentDir}
+}
+
+func TestReviewIsolation_PiProjectExtensionDoesNotLoad(t *testing.T) {
+	requireRealReviewAgent(t, "pi")
+
+	newRepo := func(t *testing.T) (*reviewCanaryRepo, []string) {
+		t.Helper()
+		repo := newReviewCanaryRepo(t, string(agent.AgentNamePi), "pi", piReviewAgentConfig, piExtensionCanary)
+		repo.startedPastConfig = piPastConfig
+		return repo, piTrustedRepoEnv(t, repo.env.RepoDir)
+	}
+
+	t.Run("current branch", func(t *testing.T) {
+		repo, env := newRepo(t)
+		repo.assertCanaryDidNotRun(t, repo.review(t, env))
+	})
+
+	t.Run("--target", func(t *testing.T) {
+		repo, env := newRepo(t)
+		testutil.RunGit(t, repo.env.RepoDir, "checkout", "-q", "-")
+		testutil.RunGit(t, repo.env.RepoDir, "branch", "-q", "-D", repo.branch)
+		repo.assertCanaryDidNotRun(t, repo.review(t, env, "--target", repo.branch, "--cleanup-worktree"))
 	})
 }
