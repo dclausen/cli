@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -248,7 +249,18 @@ func retainRepoCreation(result, snapshot *coreapi.Repo) {
 
 // reportRepoCreation reports the successful POST even when waiting failed,
 // unlike runCoreMutation. A nonzero exit does not mean another POST is safe.
-func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, noWait bool, waitErr error) error {
+//
+// ref is the repo's /et/<project>/<repo> ref, or empty when it is not known.
+// The repo is named and addressed by it; the ID stands in only where nothing
+// else can address the repo, and is always given for support to act on.
+func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, ref string, noWait bool, waitErr error) error {
+	addr := cmp.Or(ref, result.ID)
+	// Without a path the ID is the only handle on the new repo, so the name
+	// carries it; with one, the <project>/<repo> it names is enough.
+	shown := fmt.Sprintf("%s (%s)", result.Name, result.ID)
+	if ref != "" {
+		shown = strings.TrimPrefix(ref, "/"+nativeCloneForge+"/")
+	}
 	// repoRemoteURL answers "" for both an invalid host and a repo still
 	// provisioning; warn so the missing remote does not suggest waiting.
 	if host := strings.TrimSpace(result.ClusterHost.Or("")); host != "" {
@@ -265,7 +277,7 @@ func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, noWait bool, w
 			outputErr = printJSON(cmd.OutOrStdout(), wire)
 		}
 	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created repository %s (%s)\n  Last observed state: %s\n", result.Name, result.ID, result.State.Or("unavailable"))
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created repository %s\n  Last observed state: %s\n", shown, result.State.Or("unavailable"))
 		if reason := result.ProvisionReason.Or(""); reason != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Provision reason: "+reason)
 		}
@@ -274,12 +286,12 @@ func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, noWait bool, w
 		}
 	}
 	if waitErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Repository creation succeeded: %s (%s). Readiness was not confirmed: %v\n", result.Name, result.ID, renderRepoReadError(waitErr))
-		fmt.Fprintf(cmd.ErrOrStderr(), "Inspect repository details with: entire repo view %s\nCheck readiness with: entire repo view %s --authoritative\nWhen that command reports active, retry the intended push or mirror creation. If readiness remains unavailable, contact support with this repository ID. Do not create the repository again. For future creates, --no-wait skips readiness checks.\n", result.ID, result.ID)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Repository creation succeeded: %s. Readiness was not confirmed: %v\n", shown, renderRepoReadError(waitErr))
+		fmt.Fprintf(cmd.ErrOrStderr(), "Inspect repository details with: entire repo view %s\nCheck readiness with: entire repo view %s --authoritative\nWhen that command reports active, retry the intended push or mirror creation. If readiness remains unavailable, contact support with this repository ID (%s). Do not create the repository again. For future creates, --no-wait skips readiness checks.\n", addr, addr, result.ID)
 		return NewSilentError(errors.Join(waitErr, outputErr))
 	}
 	if noWait && (result.State.Or("") != repoStateActive || result.Foreign.Or(false)) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait). Check readiness with: entire repo view %s --authoritative\n", result.ID)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Repository readiness is unconfirmed (--no-wait). Check readiness with: entire repo view %s --authoritative\n", addr)
 	}
 	return outputErr
 }
