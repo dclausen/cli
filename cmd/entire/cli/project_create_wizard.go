@@ -138,9 +138,11 @@ type projectCreateState struct {
 	// ownerNote explains on the owner page why no owner was pre-selected.
 	ownerNote string
 
-	// login names the acting login on the owner page when several are saved,
+	// loginNote names the acting login on the owner page (wizardLoginNote),
 	// in place of the "Using context" notice printed above the form.
-	login string
+	loginNote string
+	// pickedOwner is the accessible owner select's binding; see ownerGroup.
+	pickedOwner string
 
 	answers   projectCreateAnswers
 	confirmed bool
@@ -493,7 +495,7 @@ var projectCreatePrompt = runProjectCreateForms
 func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 	// The wizard names the acting login on its first page instead, so nothing
 	// is printed above the form.
-	login := projectCreateLogin()
+	loginNote := wizardLoginNote()
 	auth.SilenceContextNotice()
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
 		stop := startSpinner(cmd.ErrOrStderr(), "Loading owners and regions")
@@ -508,7 +510,7 @@ func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 		if err != nil {
 			return err
 		}
-		s.login = login
+		s.loginNote = loginNote
 		ok, err := projectCreatePrompt(cmd, s)
 		if err != nil || !ok {
 			return err
@@ -523,10 +525,11 @@ func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 	})
 }
 
-// projectCreateLogin is the acting login's name under the same rule as the
-// "Using context" notice it replaces: only when several logins are saved and
-// none was picked for this invocation with --context.
-func projectCreateLogin() string {
+// wizardLoginNote is the "Using context 'x'." line a wizard shows on its first
+// page in place of the notice printed above the form, which the wizard
+// silences. Same rule as that notice: only when several logins are saved and
+// none was picked for this invocation with --context; empty otherwise.
+func wizardLoginNote() string {
 	if contexts.Requested() {
 		return ""
 	}
@@ -538,7 +541,7 @@ func projectCreateLogin() string {
 	if err != nil || !ok {
 		return ""
 	}
-	return c.Name
+	return fmt.Sprintf("Using context '%s'.", c.Name)
 }
 
 // currentFolderName is the name the wizard suggests when none was given: the
@@ -562,17 +565,20 @@ func runProjectCreateForms(cmd *cobra.Command, s *projectCreateState) (bool, err
 		// region's starting cursor are read at build time, so building them
 		// up front showed the answers from before the owner was picked.
 		for _, stage := range []func() []*huh.Group{
-			func() []*huh.Group { return []*huh.Group{s.ownerGroup()} },
+			func() []*huh.Group { return []*huh.Group{s.ownerGroup(true)} },
 			func() []*huh.Group { return []*huh.Group{s.nameGroup(false), s.regionGroup(false)} },
 			func() []*huh.Group { return []*huh.Group{s.summaryGroup(false)} },
 		} {
 			if ok, err := runProjectCreateForm(cmd, s, stage()...); !ok || err != nil {
 				return ok, err
 			}
+			// Applied once the owner stage has run (a no-op after the
+			// others), so the region default follows it.
+			s.setOwner(s.pickedOwner)
 		}
 		return true, nil
 	}
-	return runProjectCreateForm(cmd, s, s.ownerGroup(), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
+	return runProjectCreateForm(cmd, s, s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
 }
 
 // runProjectCreateForm runs one form and classifies how it ended: a cancelled
@@ -602,7 +608,11 @@ func (s *projectCreateState) confirm(render io.Writer) bool {
 	return s.confirmed
 }
 
-func (s *projectCreateState) ownerGroup() *huh.Group {
+// ownerGroup offers the owners. In accessible mode huh drops a select's
+// description, so the notes go into the title, and it keeps the current
+// choice as the default only for a plain pointer binding, so the select binds
+// pickedOwner and the caller applies it through setOwner afterwards.
+func (s *projectCreateState) ownerGroup(accessible bool) *huh.Group {
 	width := 0
 	for _, o := range s.owners {
 		width = max(width, utf8.RuneCountInString(o.ref))
@@ -611,16 +621,20 @@ func (s *projectCreateState) ownerGroup() *huh.Group {
 	for i, o := range s.owners {
 		opts[i] = huh.NewOption(o.label(width), o.key)
 	}
-	sel := huh.NewSelect[string]().
-		Title("Who will own this project?").
-		Options(opts...).
-		Accessor(projectOwnerAccessor{s: s})
+	const question = "Who will own this project?"
+	sel := huh.NewSelect[string]().Title(question)
+	if accessible {
+		s.pickedOwner = s.answers.ownerKey
+		sel.Options(opts...).Value(&s.pickedOwner)
+	} else {
+		sel.Options(opts...).Accessor(projectOwnerAccessor{s: s})
+	}
 	var notes []string
 	if s.ownerNote != "" {
 		notes = append(notes, s.ownerNote)
 	}
-	if s.login != "" {
-		notes = append(notes, fmt.Sprintf("Using context '%s'.", s.login))
+	if s.loginNote != "" {
+		notes = append(notes, s.loginNote)
 	}
 	switch s.hiddenOrgs {
 	case 0:
@@ -629,7 +643,11 @@ func (s *projectCreateState) ownerGroup() *huh.Group {
 	default:
 		notes = append(notes, fmt.Sprintf("%d organizations hidden: you can't create projects in them.", s.hiddenOrgs))
 	}
-	if len(notes) > 0 {
+	switch {
+	case len(notes) == 0:
+	case accessible:
+		sel.Title(question + "\n" + strings.Join(notes, "\n"))
+	default:
 		sel.Description(strings.Join(notes, "\n"))
 	}
 	return huh.NewGroup(sel).Title("Owner")

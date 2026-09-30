@@ -577,3 +577,25 @@ func TestProjectCreate_WizardHonoursExplicitOwnerType(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, seeded.personal, "the default --owner-type does not exclude the account")
 }
+
+// In accessible mode huh prints a select's title but not its description, and
+// keeps a default only for a plain pointer binding: the owner page's notes move
+// into the title there, and the pre-selected owner is still what Enter keeps.
+//
+// Not parallel: sets ACCESSIBLE.
+func TestProjectCreateState_AccessibleOwnerPage(t *testing.T) {
+	t.Setenv("ACCESSIBLE", "1")
+	s, err := newProjectCreateState(wizardTestData(), projectCreateInput{owner: "beta"}, "")
+	require.NoError(t, err)
+	s.loginNote = "Using context 'eu'."
+
+	var out bytes.Buffer
+	sel := s.ownerGroup(true)
+	require.NoError(t, NewAccessibleForm(sel).WithOutput(&out).WithInput(strings.NewReader("\n")).Run())
+	assert.Contains(t, out.String(), "Using context 'eu'.")
+	assert.Contains(t, out.String(), "1 organization hidden: you can't create projects in it.")
+
+	assert.Equal(t, "org:"+testWizardBetaULID, s.pickedOwner, "Enter keeps the pre-selected owner")
+	s.setOwner(s.pickedOwner)
+	assert.Equal(t, "eu", s.answers.region, "and applying it moves the region")
+}
