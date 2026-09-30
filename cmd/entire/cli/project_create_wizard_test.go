@@ -252,7 +252,7 @@ func (f *fakeProjectCore) handler(t *testing.T) http.HandlerFunc {
 			w.WriteHeader(http.StatusCreated)
 			ownerName := "acme"
 			if body.OwnerType == coreapi.CreateProjectInputBodyOwnerTypeAccount {
-				ownerName = "alice"
+				ownerName = "github:alice" // the server's own spelling for an account
 			}
 			ownerField := `"ownerName":"` + ownerName + `",`
 			if f.omitOwnerName {
@@ -532,4 +532,48 @@ func TestProjectCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
 	assert.Contains(t, out.String(), `Project name (press Enter for "widgets")`)
 	assert.Contains(t, out.String(), `Acme already has a project named "widgets"`)
 	assert.Equal(t, "fresh", s.answers.name)
+}
+
+// An explicit --owner-type limits --owner to rows of that kind; left at its
+// default it does not stop --owner naming the caller's own account.
+func TestNewProjectCreateState_OwnerTypeFiltersTheMatch(t *testing.T) {
+	t.Parallel()
+	org, account := coreapi.CreateProjectInputBodyOwnerTypeOrg, coreapi.CreateProjectInputBodyOwnerTypeAccount
+
+	_, err := newProjectCreateState(wizardTestData(), projectCreateInput{owner: "acme", ownerKind: account}, "")
+	require.EqualError(t, err, `--owner "acme" is not your account`)
+	_, err = newProjectCreateState(wizardTestData(), projectCreateInput{owner: "github:alice", ownerKind: org}, "")
+	require.EqualError(t, err, `--owner "github:alice" is not an organization you can create projects in`)
+
+	s, err := newProjectCreateState(wizardTestData(), projectCreateInput{owner: "acme", ownerKind: org}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "Acme", s.owner().ref)
+	s, err = newProjectCreateState(wizardTestData(), projectCreateInput{owner: "github:alice", ownerKind: account}, "")
+	require.NoError(t, err)
+	assert.True(t, s.owner().personal)
+
+	// No explicit type: any kind matches.
+	s, err = newProjectCreateState(wizardTestData(), projectCreateInput{owner: "github:alice"}, "")
+	require.NoError(t, err)
+	assert.True(t, s.owner().personal)
+}
+
+// The command passes an explicit --owner-type through to the wizard, and only
+// an explicit one.
+func TestProjectCreate_WizardHonoursExplicitOwnerType(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	fake := newProjectCoreFixture(t)
+
+	_, err := execProjectCreate(t, "--owner", "acme", "--owner-type", "account")
+	require.EqualError(t, err, `--owner "acme" is not your account`)
+	assert.Nil(t, fake.created)
+
+	var seeded projectOwner
+	stubProjectCreatePrompt(t, func(_ *cobra.Command, s *projectCreateState) (bool, error) {
+		seeded = s.owner()
+		return false, nil
+	})
+	_, err = execProjectCreate(t, "--owner", "github:alice")
+	require.NoError(t, err)
+	assert.True(t, seeded.personal, "the default --owner-type does not exclude the account")
 }

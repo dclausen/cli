@@ -62,6 +62,9 @@ func newProjectCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if cmd.Flags().Changed("owner-type") {
+				in.ownerKind = ot
+			}
 			if in.complete() {
 				return createProjectDirect(cmd, in, ot)
 			}

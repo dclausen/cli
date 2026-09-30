@@ -37,6 +37,10 @@ type projectCreateInput struct {
 	owner     string
 	ownerType string
 	region    string
+	// ownerKind is the parsed --owner-type, set only when the flag was given:
+	// the wizard then offers --owner only rows of that kind. Left unset, the
+	// flag's "org" default does not stop --owner naming the caller's account.
+	ownerKind coreapi.CreateProjectInputBodyOwnerType
 }
 
 // complete reports whether the command line names everything a project needs,
@@ -287,9 +291,15 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 
 	ownerKey := projectOwnerKeyPersonal
 	if in.owner != "" {
-		matches := s.matchOwner(in.owner)
+		matches := s.matchOwner(in.owner, in.ownerKind)
 		switch len(matches) {
 		case 0:
+			switch in.ownerKind {
+			case coreapi.CreateProjectInputBodyOwnerTypeOrg:
+				return nil, fmt.Errorf("--owner %q is not an organization you can create projects in", in.owner)
+			case coreapi.CreateProjectInputBodyOwnerTypeAccount:
+				return nil, fmt.Errorf("--owner %q is not your account", in.owner)
+			}
 			return nil, fmt.Errorf("--owner %q is not an owner you can create projects under", in.owner)
 		case 1:
 			ownerKey = matches[0].key
@@ -305,9 +315,14 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 
 // matchOwner finds the rows a --owner value names, mirroring resolveOrgRef: an
 // id, else names matched exactly, else case-folded. Several rows sharing the
-// name are all returned for the caller to treat as ambiguous.
-func (s *projectCreateState) matchOwner(ref string) []projectOwner {
-	for _, o := range s.owners {
+// name are all returned for the caller to treat as ambiguous. A non-empty kind
+// (an explicit --owner-type) limits the match to rows of that kind.
+func (s *projectCreateState) matchOwner(ref string, kind coreapi.CreateProjectInputBodyOwnerType) []projectOwner {
+	owners := s.owners
+	if kind != "" {
+		owners = slices.DeleteFunc(slices.Clone(owners), func(o projectOwner) bool { return o.kind != kind })
+	}
+	for _, o := range owners {
 		if o.id == ref {
 			return []projectOwner{o}
 		}
@@ -319,7 +334,7 @@ func (s *projectCreateState) matchOwner(ref string) []projectOwner {
 		return o.ref
 	}
 	var exact, folded []projectOwner
-	for _, o := range s.owners {
+	for _, o := range owners {
 		switch n := name(o); {
 		case n == "":
 		case n == ref:
@@ -502,7 +517,9 @@ func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 		if err != nil {
 			return err
 		}
-		return printProjectCreated(cmd, &created.Response, s.owner().shownRef())
+		// Named the way the direct path names it: the server's owner name
+		// first, then the wizard's own (never the "you" stand-in).
+		return printProjectCreated(cmd, &created.Response, created.Response.OwnerName.Or(s.owner().shownRef()))
 	})
 }
 
