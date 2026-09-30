@@ -232,8 +232,12 @@ the commands are always runnable in every build.
   only orgs whose `canCreateProject` is set; the region defaults to the
   owner's, and the name is checked against the caller's visible projects,
   fetched once up front because huh validates on the UI loop. Accessible mode
-  runs each stage as its own form, since huh's accessible runner evaluates
-  neither `OptionsFunc` nor `DescriptionFunc`
+  runs each stage as its own form, built only when it runs, since huh's
+  accessible runner evaluates neither `OptionsFunc` nor `DescriptionFunc`.
+  The "Using context" notice is shown on the owner page instead of above the
+  form, under the same several-logins rule. An owner with no `--owner`
+  spelling but its ULID (an account with no handle, an org sharing its name)
+  gets no command in the summary and no owner in the success line
 - `repo`: control-plane repository lifecycle — `create`, `list --project`,
   `view`, `edit`, `delete`, `clone`, plus the `mirror`, `remote`,
   `visibility`, `protection` and `grant` subtrees (`repo grant` mirrors

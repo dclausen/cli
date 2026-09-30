@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"charm.land/huh/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -212,6 +214,8 @@ type fakeProjectCore struct {
 	mu       sync.Mutex
 	requests []string
 	created  *coreapi.CreateProjectInputBody
+	// omitOwnerName leaves the optional ownerName out of the create response.
+	omitOwnerName bool
 }
 
 func (f *fakeProjectCore) handler(t *testing.T) http.HandlerFunc {
@@ -250,8 +254,12 @@ func (f *fakeProjectCore) handler(t *testing.T) http.HandlerFunc {
 			if body.OwnerType == coreapi.CreateProjectInputBodyOwnerTypeAccount {
 				ownerName = "alice"
 			}
-			reply(`{"id":"01HZX7QPR0JECT000000000000","name":"` + body.Name + `","ownerId":"` + body.OwnerId +
-				`","ownerName":"` + ownerName + `","ownerType":"` + string(body.OwnerType) + `","region":"` + body.Region.Or("us") +
+			ownerField := `"ownerName":"` + ownerName + `",`
+			if f.omitOwnerName {
+				ownerField = ""
+			}
+			reply(`{"id":"01HZX7QPR0JECT000000000000","name":"` + body.Name + `","ownerId":"` + body.OwnerId + `",` +
+				ownerField + `"ownerType":"` + string(body.OwnerType) + `","region":"` + body.Region.Or("us") +
 				`","createdAt":"2026-01-01T00:00:00Z"}`)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -404,4 +412,124 @@ func TestProjectCreateState_DeclinedSummary(t *testing.T) {
 	s.confirmed = false
 	assert.False(t, s.confirm(&w))
 	assert.Equal(t, "Project create cancelled.\n", w.String())
+}
+
+// Each page recaps what was already decided, one answer per line, and follows
+// a changed answer.
+func TestProjectCreateState_Decided(t *testing.T) {
+	t.Parallel()
+	s, err := newProjectCreateState(wizardTestData(), projectCreateInput{name: " widgets ", owner: "acme"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "✓ Owner  Acme (organization)", s.decided(projectStageOwner))
+	assert.Equal(t, "✓ Owner  Acme (organization)\n✓ Name   widgets", s.decided(projectStageName))
+
+	s.setOwner(projectOwnerKeyPersonal)
+	s.answers.name = "tools"
+	assert.Equal(t, "✓ Owner  github:alice (you)\n✓ Name   tools", s.decided(projectStageName))
+	assert.NotContains(t, s.decided(projectStageName), testWizardAccountULID)
+
+	// The settled answers come first, the page heading last.
+	lines := strings.Split(ansi.Strip(s.pageTitle(projectStageName, projectHeadingRegion)), "\n")
+	assert.Equal(t, []string{"✓ Owner  github:alice (you)", "✓ Name   tools", "Region"}, lines)
+}
+
+// The live page headings follow an owner or name change.
+func TestProjectCreateState_PageTitlesFollowAnswers(t *testing.T) {
+	t.Parallel()
+	s, err := newProjectCreateState(wizardTestData(), projectCreateInput{name: "widgets", owner: "acme"}, "")
+	require.NoError(t, err)
+	s.nameGroup(true)
+	s.regionGroup(true)
+	heading := func(g *huh.Group) string { return ansi.Strip(g.Header()) }
+	assert.Contains(t, heading(s.regionGrp), "✓ Owner  Acme (organization)\n✓ Name   widgets")
+
+	projectOwnerAccessor{s: s}.Set(projectOwnerKeyPersonal)
+	projectNameAccessor{s: s}.Set("tools")
+	assert.Contains(t, heading(s.nameGrp), "✓ Owner  github:alice (you)")
+	assert.Contains(t, heading(s.regionGrp), "✓ Owner  github:alice (you)\n✓ Name   tools")
+	assert.Equal(t, "tools", s.answers.name)
+}
+
+// A ULID --owner is accepted, but when the server does not name the owner the
+// success line leaves it out rather than echo the id.
+func TestProjectCreate_ULIDOwnerIsNeverEchoed(t *testing.T) {
+	fake := newProjectCoreFixture(t)
+	fake.omitOwnerName = true
+
+	out, err := execProjectCreate(t, "widgets", "--owner", testWizardAcmeULID)
+	require.NoError(t, err)
+	assert.Equal(t, "✓ Created project widgets in us\n", out)
+
+	out, err = execProjectCreate(t, "widgets", "--owner", "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "✓ Created project acme/widgets in us\n", out, "a typed name is still a fine fallback")
+}
+
+// An account with no handle is shown as "you", but "you" is not something
+// --owner accepts, so it is neither matched nor offered as a command.
+func TestProjectCreateState_AccountWithoutHandle(t *testing.T) {
+	t.Parallel()
+	d := wizardTestData()
+	d.me.Global.Handle = coreapi.OptString{}
+	s, err := newProjectCreateState(d, projectCreateInput{name: "widgets"}, "")
+	require.NoError(t, err)
+
+	o := s.owner()
+	assert.Equal(t, "you", o.ref)
+	assert.Empty(t, o.shownRef(), "the success line leaves the owner out")
+	assert.Empty(t, s.command())
+	assert.Contains(t, s.summary(), "Command  (none: this owner can only be picked here)")
+	assert.NotContains(t, s.summary(), "--owner you")
+
+	_, err = newProjectCreateState(d, projectCreateInput{owner: "you"}, "")
+	require.ErrorContains(t, err, "is not an owner you can create projects under")
+}
+
+// Org names are not unique. A shared name is not guessed at: --owner leaves
+// the choice to the picker, and the summary offers no command the direct path
+// would refuse as ambiguous.
+func TestProjectCreateState_SameNamedOrgs(t *testing.T) {
+	t.Parallel()
+	d := wizardTestData()
+	const otherAcme = "01HZX7QACME200000000000000"
+	d.orgs = append(d.orgs, wizardTestOrg(otherAcme, "Acme", "eu", true))
+
+	s, err := newProjectCreateState(d, projectCreateInput{owner: "Acme"}, "")
+	require.NoError(t, err)
+	assert.True(t, s.owner().personal, "no guess between the two")
+	assert.Equal(t, `2 organizations are named "Acme"; pick the one you mean.`, s.ownerNote)
+	assert.NotContains(t, s.ownerNote, otherAcme)
+
+	s.setOwner("org:" + otherAcme)
+	assert.Empty(t, s.command())
+	assert.Equal(t, "Acme", s.owner().shownRef(), "the success line still names it")
+
+	s.setOwner("org:" + testWizardBetaULID)
+	assert.Contains(t, s.command(), "--owner beta", "a unique name keeps its command")
+
+	// The ULID still picks exactly one.
+	s, err = newProjectCreateState(d, projectCreateInput{owner: otherAcme}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "org:"+otherAcme, s.owner().key)
+	assert.Empty(t, s.ownerNote)
+}
+
+// huh's accessible runner validates an empty answer before keeping the current
+// value, so the pre-filled name has to validate as itself.
+func TestProjectCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
+	t.Parallel()
+	s, err := newProjectCreateState(wizardTestData(), projectCreateInput{name: "tools", owner: "acme"}, "")
+	require.NoError(t, err)
+	in := s.accessibleName(huh.NewInput())
+	require.NoError(t, in.RunAccessible(io.Discard, strings.NewReader("\n")))
+	assert.Equal(t, "tools", s.answers.name)
+
+	// The kept value is still checked: a taken name is refused.
+	s.answers.name = "widgets"
+	var out bytes.Buffer
+	in = s.accessibleName(huh.NewInput())
+	require.NoError(t, in.RunAccessible(&out, strings.NewReader("\nfresh\n")))
+	assert.Contains(t, out.String(), `Project name (press Enter for "widgets")`)
+	assert.Contains(t, out.String(), `Acme already has a project named "widgets"`)
+	assert.Equal(t, "fresh", s.answers.name)
 }

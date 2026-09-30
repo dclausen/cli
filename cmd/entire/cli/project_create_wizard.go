@@ -12,12 +12,15 @@ import (
 	"unicode/utf8"
 
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/internal/coreapi"
+	"github.com/entireio/cli/internal/entireclient/contexts"
 )
 
 // projectNameMaxLen mirrors CreateProjectInputBody.name's maxLength, so the
@@ -46,12 +49,26 @@ func (in projectCreateInput) complete() bool {
 // org name or a provider-qualified handle); key and id are internal, the id
 // being what the create request needs.
 type projectOwner struct {
-	key      string
-	kind     coreapi.CreateProjectInputBodyOwnerType
-	id       string
-	ref      string
+	key  string
+	kind coreapi.CreateProjectInputBodyOwnerType
+	id   string
+	ref  string
+	// flagRef is how --owner can name this owner, or empty when nothing but
+	// its id can: an account with no handle, or an org sharing its exact name
+	// with another the caller sees (the direct path refuses such a name as
+	// ambiguous).
+	flagRef  string
 	region   string // the owner's jurisdiction: the region picker's default
 	personal bool
+}
+
+// shownRef names the owner in the success line, or empty when all there is to
+// show is the "you" stand-in for an account with no handle.
+func (o projectOwner) shownRef() string {
+	if o.personal && o.flagRef == "" {
+		return ""
+	}
+	return o.ref
 }
 
 // label is the owner's picker row, padded so the kind column lines up.
@@ -109,6 +126,17 @@ type projectCreateState struct {
 	// binding value and, on a cache hit, leaves the cursor where it was: going
 	// back to an owner picked before would then keep the other owner's region.
 	ownerChanges int
+
+	// nameGrp and regionGrp are the live pages whose headings recap earlier
+	// answers; nil outside the paged form.
+	nameGrp, regionGrp *huh.Group
+
+	// ownerNote explains on the owner page why no owner was pre-selected.
+	ownerNote string
+
+	// login names the acting login on the owner page when several are saved,
+	// in place of the "Using context" notice printed above the form.
+	login string
 
 	answers   projectCreateAnswers
 	confirmed bool
@@ -176,18 +204,22 @@ const projectOwnerKeyPersonal = "account"
 // many orgs were left out.
 func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOwner, int) {
 	profile := profileFromMe(me)
-	ref := authIdentityLabel(profile)
-	if ref == "" {
-		ref = "you"
-	}
+	handle := authIdentityLabel(profile)
 	owners := []projectOwner{{
 		key:      projectOwnerKeyPersonal,
 		kind:     coreapi.CreateProjectInputBodyOwnerTypeAccount,
 		id:       me.Global.AccountId,
-		ref:      ref,
+		ref:      cmp.Or(handle, "you"),
+		flagRef:  handle,
 		region:   profile.Jurisdiction,
 		personal: true,
 	}}
+	// Counted over every org, creatable or not: that is the listing
+	// resolveOrgRef reads when the summary's command is run.
+	named := make(map[string]int, len(orgs))
+	for _, o := range orgs {
+		named[o.Name]++
+	}
 	creatable := make([]coreapi.Org, 0, len(orgs))
 	for _, o := range orgs {
 		// An org that reports no capabilities is offered: the server still
@@ -200,13 +232,17 @@ func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOw
 		return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})
 	for _, o := range creatable {
-		owners = append(owners, projectOwner{
+		owner := projectOwner{
 			key:    "org:" + o.ID,
 			kind:   coreapi.CreateProjectInputBodyOwnerTypeOrg,
 			id:     o.ID,
 			ref:    o.Name,
 			region: o.Region,
-		})
+		}
+		if named[o.Name] == 1 {
+			owner.flagRef = o.Name
+		}
+		owners = append(owners, owner)
 	}
 	return owners, len(orgs) - len(creatable)
 }
@@ -251,30 +287,51 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 
 	ownerKey := projectOwnerKeyPersonal
 	if in.owner != "" {
-		o, ok := s.matchOwner(in.owner)
-		if !ok {
+		matches := s.matchOwner(in.owner)
+		switch len(matches) {
+		case 0:
 			return nil, fmt.Errorf("--owner %q is not an owner you can create projects under", in.owner)
+		case 1:
+			ownerKey = matches[0].key
+		default:
+			// Same-named orgs: the picker is where they can be told apart,
+			// so start there rather than guess or name ids.
+			s.ownerNote = fmt.Sprintf("%d organizations are named %q; pick the one you mean.", len(matches), in.owner)
 		}
-		ownerKey = o.key
 	}
 	s.setOwner(ownerKey)
 	return s, nil
 }
 
-// matchOwner finds the row a --owner value names: an org by name (exact, then
-// case-folded) or id, or the caller's account by handle or id.
-func (s *projectCreateState) matchOwner(ref string) (projectOwner, bool) {
+// matchOwner finds the rows a --owner value names, mirroring resolveOrgRef: an
+// id, else names matched exactly, else case-folded. Several rows sharing the
+// name are all returned for the caller to treat as ambiguous.
+func (s *projectCreateState) matchOwner(ref string) []projectOwner {
 	for _, o := range s.owners {
-		if o.ref == ref || o.id == ref {
-			return o, true
+		if o.id == ref {
+			return []projectOwner{o}
 		}
 	}
+	name := func(o projectOwner) string {
+		if o.personal {
+			return o.flagRef
+		}
+		return o.ref
+	}
+	var exact, folded []projectOwner
 	for _, o := range s.owners {
-		if strings.EqualFold(o.ref, ref) {
-			return o, true
+		switch n := name(o); {
+		case n == "":
+		case n == ref:
+			exact = append(exact, o)
+		case strings.EqualFold(n, ref):
+			folded = append(folded, o)
 		}
 	}
-	return projectOwner{}, false
+	if len(exact) > 0 {
+		return exact
+	}
+	return folded
 }
 
 func (s *projectCreateState) owner() projectOwner {
@@ -296,6 +353,7 @@ func (s *projectCreateState) setOwner(key string) {
 	}
 	s.answers.ownerKey = key
 	s.ownerChanges++
+	defer s.refreshPageTitles()
 	if s.regionPinned {
 		return
 	}
@@ -363,10 +421,14 @@ func (s *projectCreateState) regionDisplay() string {
 }
 
 // command is the flag form of the answers, so the summary teaches the
-// non-interactive spelling.
+// non-interactive spelling. Empty when the owner has no --owner spelling
+// short of its id, which the wizard never shows.
 func (s *projectCreateState) command() string {
 	o := s.owner()
-	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.name)), "--owner", shellArg(o.ref)}
+	if o.flagRef == "" {
+		return ""
+	}
+	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.name)), "--owner", shellArg(o.flagRef)}
 	if o.kind == coreapi.CreateProjectInputBodyOwnerTypeAccount {
 		parts = append(parts, "--owner-type", ownerTypeAccount)
 	}
@@ -379,8 +441,10 @@ func (s *projectCreateState) summary() string {
 		{"Name", strings.TrimSpace(s.answers.name)},
 		{"Owner", s.ownerDisplay()},
 		{"Region", s.regionDisplay()},
-		{"Command", s.command()},
 	}
+	// The row count must not change while the form runs (huh sizes pages up
+	// front; see summaryGroup), so a missing command keeps its row.
+	rows = append(rows, [2]string{"Command", cmp.Or(s.command(), "(none: this owner can only be picked here)")})
 	var b strings.Builder
 	for i, r := range rows {
 		if i > 0 {
@@ -412,10 +476,16 @@ var projectCreatePrompt = runProjectCreateForms
 // runProjectCreateWizard is the prompting path of `project create`: load the
 // choices, ask, then create what the summary showed.
 func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
+	// The wizard names the acting login on its first page instead, so nothing
+	// is printed above the form.
+	login := projectCreateLogin()
+	auth.SilenceContextNotice()
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
 		stop := startSpinner(cmd.ErrOrStderr(), "Loading owners and regions")
 		d, err := loadProjectCreateData(ctx, c)
-		stop(err == nil)
+		// Always erase the spinner line: the form replaces it, and a lingering
+		// "✓ Loading…" above the form is noise.
+		stop(false)
 		if err != nil {
 			return err
 		}
@@ -423,6 +493,7 @@ func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 		if err != nil {
 			return err
 		}
+		s.login = login
 		ok, err := projectCreatePrompt(cmd, s)
 		if err != nil || !ok {
 			return err
@@ -431,8 +502,26 @@ func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 		if err != nil {
 			return err
 		}
-		return printProjectCreated(cmd, &created.Response, s.owner().ref)
+		return printProjectCreated(cmd, &created.Response, s.owner().shownRef())
 	})
+}
+
+// projectCreateLogin is the acting login's name under the same rule as the
+// "Using context" notice it replaces: only when several logins are saved and
+// none was picked for this invocation with --context.
+func projectCreateLogin() string {
+	if contexts.Requested() {
+		return ""
+	}
+	all, _, err := auth.StoredContexts()
+	if err != nil || len(all) < 2 {
+		return ""
+	}
+	c, ok, err := auth.ActiveContext()
+	if err != nil || !ok {
+		return ""
+	}
+	return c.Name
 }
 
 // currentFolderName is the name the wizard suggests when none was given: the
@@ -452,18 +541,21 @@ func currentFolderName(ctx context.Context) string {
 func runProjectCreateForms(cmd *cobra.Command, s *projectCreateState) (bool, error) {
 	s.confirmed = true
 	if IsAccessibleMode() {
-		for _, groups := range [][]*huh.Group{
-			{s.ownerGroup()},
-			{s.nameGroup(), s.regionGroup(false)},
-			{s.summaryGroup(false)},
+		// Each stage is built only when it runs: the summary's text and the
+		// region's starting cursor are read at build time, so building them
+		// up front showed the answers from before the owner was picked.
+		for _, stage := range []func() []*huh.Group{
+			func() []*huh.Group { return []*huh.Group{s.ownerGroup()} },
+			func() []*huh.Group { return []*huh.Group{s.nameGroup(false), s.regionGroup(false)} },
+			func() []*huh.Group { return []*huh.Group{s.summaryGroup(false)} },
 		} {
-			if ok, err := runProjectCreateForm(cmd, s, groups...); !ok || err != nil {
+			if ok, err := runProjectCreateForm(cmd, s, stage()...); !ok || err != nil {
 				return ok, err
 			}
 		}
 		return true, nil
 	}
-	return runProjectCreateForm(cmd, s, s.ownerGroup(), s.nameGroup(), s.regionGroup(true), s.summaryGroup(true))
+	return runProjectCreateForm(cmd, s, s.ownerGroup(), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
 }
 
 // runProjectCreateForm runs one form and classifies how it ended: a cancelled
@@ -506,29 +598,119 @@ func (s *projectCreateState) ownerGroup() *huh.Group {
 		Title("Who will own this project?").
 		Options(opts...).
 		Accessor(projectOwnerAccessor{s: s})
+	var notes []string
+	if s.ownerNote != "" {
+		notes = append(notes, s.ownerNote)
+	}
+	if s.login != "" {
+		notes = append(notes, fmt.Sprintf("Using context '%s'.", s.login))
+	}
 	switch s.hiddenOrgs {
 	case 0:
 	case 1:
-		sel.Description("1 organization hidden: you can't create projects in it.")
+		notes = append(notes, "1 organization hidden: you can't create projects in it.")
 	default:
-		sel.Description(fmt.Sprintf("%d organizations hidden: you can't create projects in them.", s.hiddenOrgs))
+		notes = append(notes, fmt.Sprintf("%d organizations hidden: you can't create projects in them.", s.hiddenOrgs))
+	}
+	if len(notes) > 0 {
+		sel.Description(strings.Join(notes, "\n"))
 	}
 	return huh.NewGroup(sel).Title("Owner")
 }
 
-func (s *projectCreateState) nameGroup() *huh.Group {
-	return huh.NewGroup(
-		huh.NewInput().
-			Title("Project name").
-			Value(&s.answers.name).
-			Validate(s.validateName),
-	).Title("Name")
+// Stages whose answers a later page recaps, in the order the wizard asks them.
+const (
+	projectStageOwner = iota + 1
+	projectStageName
+)
+
+// decided lists the answers given before a page, one per line, so each page
+// shows what is already settled:
+//
+//	✓ Owner  acme (organization)
+//	✓ Name   widgets
+func (s *projectCreateState) decided(stages int) string {
+	lines := []string{"✓ Owner  " + s.ownerDisplay()}
+	if stages >= projectStageName {
+		lines = append(lines, "✓ Name   "+strings.TrimSpace(s.answers.name))
+	}
+	return strings.Join(lines, "\n")
 }
 
-// regionGroup offers the jurisdictions. dynamic re-selects the owner's region
-// whenever the owner changes: huh re-runs an OptionsFunc when its binding
-// changes and then moves the cursor to the bound value, which setOwner has
-// already moved. See ownerChanges for why the binding is a counter.
+// decidedDim sets the recap apart from the heading it sits above.
+var decidedDim = lipgloss.NewStyle().Faint(true)
+
+// pageTitle is a page's heading with the recap, dimmed, above it:
+//
+//	✓ Owner  acme (organization)
+//	✓ Name   widgets
+//	Region
+func (s *projectCreateState) pageTitle(stages int, heading string) string {
+	// Line by line: rendering the block at once pads every line to the
+	// widest one.
+	lines := strings.Split(s.decided(stages), "\n")
+	for i, l := range lines {
+		lines[i] = decidedDim.Render(l)
+	}
+	return strings.Join(append(lines, heading), "\n")
+}
+
+// Page headings, which the recap sits above.
+const (
+	projectHeadingName   = "Name"
+	projectHeadingRegion = "Region"
+)
+
+// refreshPageTitles rewrites the recapping headings after an answer changes.
+// A group title has no TitleFunc, but huh reads it afresh on every render, so
+// rewriting it on the live group is enough. The line count never changes, so
+// the page heights huh measured up front stay right.
+func (s *projectCreateState) refreshPageTitles() {
+	if s.nameGrp != nil {
+		s.nameGrp.Title(s.pageTitle(projectStageOwner, projectHeadingName))
+	}
+	if s.regionGrp != nil {
+		s.regionGrp.Title(s.pageTitle(projectStageName, projectHeadingRegion))
+	}
+}
+
+// nameGroup asks for the name. dynamic recaps the chosen owner above the
+// heading, kept current through refreshPageTitles; the accessible runner
+// leaves earlier answers on screen already, so it gets none.
+func (s *projectCreateState) nameGroup(dynamic bool) *huh.Group {
+	in := huh.NewInput().
+		Title("Project name").
+		Validate(s.validateName)
+	if !dynamic {
+		return huh.NewGroup(s.accessibleName(in)).Title(projectHeadingName)
+	}
+	s.nameGrp = huh.NewGroup(in.Accessor(projectNameAccessor{s: s}))
+	s.refreshPageTitles()
+	return s.nameGrp
+}
+
+// accessibleName adapts the name input to huh's accessible runner, which keeps
+// the current value on an empty answer but validates the empty answer first,
+// so a pre-filled name could not be accepted. It also never shows the value it
+// would keep, so the question names it.
+func (s *projectCreateState) accessibleName(in *huh.Input) *huh.Input {
+	in.Value(&s.answers.name)
+	current := strings.TrimSpace(s.answers.name)
+	if current == "" {
+		return in
+	}
+	return in.
+		Title(fmt.Sprintf("Project name (press Enter for %q)", current)).
+		Validate(func(v string) error {
+			return s.validateName(cmp.Or(strings.TrimSpace(v), current))
+		})
+}
+
+// regionGroup offers the jurisdictions. dynamic recaps the owner and name
+// above the heading and re-selects the owner's region whenever the owner
+// changes: huh re-runs an OptionsFunc when its binding changes and then moves
+// the cursor to the bound value, which setOwner has already moved. See
+// ownerChanges for why the binding is a counter.
 func (s *projectCreateState) regionGroup(dynamic bool) *huh.Group {
 	opts := make([]huh.Option[string], len(s.regions))
 	for i, r := range s.regions {
@@ -536,24 +718,30 @@ func (s *projectCreateState) regionGroup(dynamic bool) *huh.Group {
 	}
 	sel := huh.NewSelect[string]().
 		Title("Where should its data live?").
-		Description("Defaults to the owner's region.").
 		Value(&s.answers.region)
-	if dynamic {
-		sel.OptionsFunc(func() []huh.Option[string] { return opts }, &s.ownerChanges)
-	} else {
-		sel.Options(opts...)
+	if !dynamic {
+		return huh.NewGroup(sel.Options(opts...)).Title(projectHeadingRegion)
 	}
-	return huh.NewGroup(sel).Title("Region")
+	// An OptionsFunc otherwise gets huh's fixed default height, padding the
+	// list with empty rows. The options never change, only the cursor does, so
+	// size it to them: the height counts the title line too.
+	sel.Height(len(opts)+1).
+		OptionsFunc(func() []huh.Option[string] { return opts }, &s.ownerChanges)
+	s.regionGrp = huh.NewGroup(sel)
+	s.refreshPageTitles()
+	return s.regionGrp
 }
 
 // summaryGroup shows what will be created and asks to go ahead. dynamic keeps
 // the summary current as earlier pages are revisited.
 func (s *projectCreateState) summaryGroup(dynamic bool) *huh.Group {
-	note := huh.NewNote().Title("Summary")
+	// The static text matters even when dynamic: huh sizes every page from
+	// the first render, before a DescriptionFunc has run, so an empty
+	// description left the page too short and scrolled the Name row out of
+	// view. The row count never changes, so the initial text sizes it right.
+	note := huh.NewNote().Description(s.summary())
 	if dynamic {
 		note.DescriptionFunc(s.summary, &s.answers)
-	} else {
-		note.Description(s.summary())
 	}
 	return huh.NewGroup(
 		note,
@@ -571,3 +759,15 @@ type projectOwnerAccessor struct{ s *projectCreateState }
 
 func (a projectOwnerAccessor) Get() string  { return a.s.answers.ownerKey }
 func (a projectOwnerAccessor) Set(v string) { a.s.setOwner(v) }
+
+// projectNameAccessor keeps the region page's recap in step with the name.
+type projectNameAccessor struct{ s *projectCreateState }
+
+func (a projectNameAccessor) Get() string { return a.s.answers.name }
+func (a projectNameAccessor) Set(v string) {
+	if v == a.s.answers.name {
+		return
+	}
+	a.s.answers.name = v
+	a.s.refreshPageTitles()
+}

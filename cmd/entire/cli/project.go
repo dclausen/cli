@@ -113,23 +113,33 @@ func createProjectDirect(cmd *cobra.Command, in projectCreateInput, ot coreapi.C
 		}
 		project := &created.Response
 		// A ULID --owner is accepted but never echoed: name the owner the way
-		// the server does, falling back to what was typed.
-		return printProjectCreated(cmd, project, project.OwnerName.Or(in.owner))
+		// the server does, falling back to what was typed only when that is a
+		// name, and otherwise to no owner at all.
+		owner := project.OwnerName.Or("")
+		if owner == "" && !looksLikeULID(in.owner) {
+			owner = in.owner
+		}
+		return printProjectCreated(cmd, project, owner)
 	})
 }
 
 // printProjectCreated renders a created project the way runCoreMutation renders
 // any mutation: the wire object under --json, else a ✓ line naming the project
 // by owner and name, never by id.
+// An empty owner leaves the owner out rather than print a stand-in.
 func printProjectCreated(cmd *cobra.Command, project *coreapi.CreatedProject, owner string) error {
 	if jsonRequested(cmd) {
 		return printJSON(cmd.OutOrStdout(), project)
 	}
+	ref := project.Name
+	if owner != "" {
+		ref = owner + "/" + project.Name
+	}
 	if project.Region != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s/%s in %s\n", owner, project.Name, project.Region)
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s in %s\n", ref, project.Region)
 		return nil
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s/%s\n", owner, project.Name)
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s\n", ref)
 	return nil
 }
 
