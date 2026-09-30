@@ -496,7 +496,7 @@ func TestProjectCreateState_SameNamedOrgs(t *testing.T) {
 
 	s, err := newProjectCreateState(d, projectCreateInput{owner: "Acme"}, "")
 	require.NoError(t, err)
-	assert.True(t, s.owner().personal, "no guess between the two")
+	assert.Equal(t, "org:"+testWizardAcmeULID, s.owner().key, "starts on the first of the two, never the personal row")
 	assert.Equal(t, `2 organizations are named "Acme"; pick the one you mean.`, s.ownerNote)
 	assert.NotContains(t, s.ownerNote, otherAcme)
 
@@ -598,4 +598,29 @@ func TestProjectCreateState_AccessibleOwnerPage(t *testing.T) {
 	assert.Equal(t, "org:"+testWizardBetaULID, s.pickedOwner, "Enter keeps the pre-selected owner")
 	s.setOwner(s.pickedOwner)
 	assert.Equal(t, "eu", s.answers.region, "and applying it moves the region")
+}
+
+// An explicit --owner-type org with no --owner starts on the first org, and on
+// the personal row only when no org is offered. The accessible picker starts
+// from the same owner.
+func TestNewProjectCreateState_OwnerTypeOrgPreselectsAnOrg(t *testing.T) {
+	t.Parallel()
+	org := coreapi.CreateProjectInputBodyOwnerTypeOrg
+
+	s, err := newProjectCreateState(wizardTestData(), projectCreateInput{ownerKind: org}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "Acme", s.owner().ref, "the first org in picker order")
+	assert.Equal(t, "us", s.answers.region, "with its region")
+	s.ownerGroup(true)
+	assert.Equal(t, "org:"+testWizardAcmeULID, s.pickedOwner, "the accessible picker starts there too")
+
+	d := wizardTestData()
+	d.orgs = nil
+	s, err = newProjectCreateState(d, projectCreateInput{ownerKind: org}, "")
+	require.NoError(t, err)
+	assert.True(t, s.owner().personal, "no org offered: the personal row")
+
+	s, err = newProjectCreateState(wizardTestData(), projectCreateInput{}, "")
+	require.NoError(t, err)
+	assert.True(t, s.owner().personal, "without --owner-type the personal row stays first")
 }

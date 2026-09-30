@@ -296,6 +296,13 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 	}
 
 	ownerKey := projectOwnerKeyPersonal
+	if in.owner == "" && in.ownerKind == coreapi.CreateProjectInputBodyOwnerTypeOrg {
+		// An explicit --owner-type org asks for an org: start on the first
+		// one offered, or on the personal row when there is none.
+		if i := slices.IndexFunc(s.owners, func(o projectOwner) bool { return !o.personal }); i >= 0 {
+			ownerKey = s.owners[i].key
+		}
+	}
 	if in.owner != "" {
 		matches := s.matchOwner(in.owner, in.ownerKind)
 		switch len(matches) {
@@ -310,8 +317,11 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 		case 1:
 			ownerKey = matches[0].key
 		default:
-			// Same-named orgs: the picker is where they can be told apart,
-			// so start there rather than guess or name ids.
+			// Same-named orgs: the picker is where they can be told apart, so
+			// start there on the first of them, which is what was asked for
+			// either way; the summary shows which one it is. Never the
+			// personal row, which Enter would then create under.
+			ownerKey = matches[0].key
 			s.ownerNote = fmt.Sprintf("%d organizations are named %q; pick the one you mean.", len(matches), in.owner)
 		}
 	}
