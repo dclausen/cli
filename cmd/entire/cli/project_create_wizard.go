@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"charm.land/huh/v2"
@@ -65,6 +66,22 @@ type projectOwner struct {
 	flagRef  string
 	region   string // the owner's jurisdiction: the region picker's default
 	personal bool
+	// created tells an org whose name is shared apart from the others, since
+	// its id is never shown: the day it was created. Empty otherwise.
+	created string
+}
+
+// orgKind describes an org row: "organization, us", plus the creation day
+// when its name is shared.
+func (o projectOwner) orgKind() string {
+	parts := []string{"organization"}
+	if o.region != "" {
+		parts = append(parts, o.region)
+	}
+	if o.created != "" {
+		parts = append(parts, "created "+o.created)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // shownRef names the owner in the success line, or empty when all there is to
@@ -78,14 +95,9 @@ func (o projectOwner) shownRef() string {
 
 // label is the owner's picker row, padded so the kind column lines up.
 func (o projectOwner) label(width int) string {
-	var kind string
-	switch {
-	case o.personal:
-		kind = "you — personal project"
-	case o.region != "":
-		kind = "organization, " + o.region
-	default:
-		kind = "organization"
+	kind := "you — personal project"
+	if !o.personal {
+		kind = o.orgKind()
 	}
 	return fmt.Sprintf("%-*s  (%s)", width, o.ref, kind)
 }
@@ -238,8 +250,13 @@ func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOw
 			creatable = append(creatable, o)
 		}
 	}
+	// Same-named orgs sort oldest first, so the one --owner pre-selects
+	// among them is predictable.
 	slices.SortStableFunc(creatable, func(a, b coreapi.Org) int {
-		return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+		return cmp.Or(
+			cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)),
+			a.CreatedAt.Compare(b.CreatedAt),
+		)
 	})
 	for _, o := range creatable {
 		owner := projectOwner{
@@ -251,6 +268,8 @@ func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOw
 		}
 		if named[o.Name] == 1 {
 			owner.flagRef = o.Name
+		} else {
+			owner.created = o.CreatedAt.UTC().Format(time.DateOnly)
 		}
 		owners = append(owners, owner)
 	}
@@ -317,10 +336,11 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 		case 1:
 			ownerKey = matches[0].key
 		default:
-			// Same-named orgs: the picker is where they can be told apart, so
-			// start there on the first of them, which is what was asked for
-			// either way; the summary shows which one it is. Never the
-			// personal row, which Enter would then create under.
+			// Same-named orgs: the picker is where they can be told apart
+			// (their rows and the summary add the creation day), so start
+			// there on the first of them, the oldest, which is what was asked
+			// for either way. Never the personal row, which Enter would then
+			// create under.
 			ownerKey = matches[0].key
 			s.ownerNote = fmt.Sprintf("%d organizations are named %q; pick the one you mean.", len(matches), in.owner)
 		}
@@ -440,6 +460,10 @@ func (s *projectCreateState) ownerDisplay() string {
 	o := s.owner()
 	if o.personal {
 		return o.ref + " (you)"
+	}
+	if o.created != "" {
+		// A shared name alone would not say which org this is.
+		return o.ref + " (organization, created " + o.created + ")"
 	}
 	return o.ref + " (organization)"
 }

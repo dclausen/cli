@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -623,4 +624,41 @@ func TestNewProjectCreateState_OwnerTypeOrgPreselectsAnOrg(t *testing.T) {
 	s, err = newProjectCreateState(wizardTestData(), projectCreateInput{}, "")
 	require.NoError(t, err)
 	assert.True(t, s.owner().personal, "without --owner-type the personal row stays first")
+}
+
+// Two orgs sharing a name and a region would read identically with ids never
+// shown, so their rows and the summary add the day each was created, and the
+// oldest comes first (the one --owner pre-selects).
+func TestProjectCreateState_SameNamedOrgsAreToldApartByCreationDay(t *testing.T) {
+	t.Parallel()
+	d := wizardTestData()
+	const newer = "01HZX7QACME300000000000000"
+	older := wizardTestOrg(testWizardAcmeULID, "Acme", "us", true)
+	older.CreatedAt = time.Date(2025, 3, 1, 9, 0, 0, 0, time.UTC)
+	later := wizardTestOrg(newer, "Acme", "us", true)
+	later.CreatedAt = time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	d.orgs = []coreapi.Org{later, older, wizardTestOrg(testWizardBetaULID, "beta", "eu", true)}
+
+	s, err := newProjectCreateState(d, projectCreateInput{owner: "Acme"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, "org:"+testWizardAcmeULID, s.owner().key, "the oldest of the two")
+
+	labels := make([]string, len(s.owners))
+	for i, o := range s.owners {
+		labels[i] = o.label(12)
+	}
+	assert.Equal(t, []string{
+		"github:alice  (you — personal project)",
+		"Acme          (organization, us, created 2025-03-01)",
+		"Acme          (organization, us, created 2026-07-14)",
+		"beta          (organization, eu)",
+	}, labels, "only the shared name gets a date")
+	assert.Contains(t, s.summary(), "Owner    Acme (organization, created 2025-03-01)")
+
+	s.setOwner("org:" + newer)
+	assert.Contains(t, s.summary(), "Owner    Acme (organization, created 2026-07-14)")
+	assert.Contains(t, s.decided(projectStageOwner), "created 2026-07-14", "the recap too")
+	for _, id := range []string{testWizardAcmeULID, newer} {
+		assert.NotContains(t, s.summary(), id)
+	}
 }
