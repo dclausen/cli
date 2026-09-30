@@ -121,6 +121,16 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// Resume and attach ask claude for its config home (see
+	// agent.EnableHomeProbes). A spawned binary is not under `go test`, so
+	// without this it would start whatever claude the developer has on PATH;
+	// a test that exercises the probe points it at a fake one instead.
+	if err := os.Setenv("ENTIRE_TEST_CLAUDE_CONFIG_PROBE", "off"); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to disable the claude config probe: %v\n", err)
+		os.RemoveAll(tmpDir)
+		os.Exit(1)
+	}
+
 	moduleRoot := findModuleRoot()
 	buildCmd := exec.CommandContext(context.Background(), "go", "build", "-o", testBinaryPath, ".")
 	buildCmd.Dir = filepath.Join(moduleRoot, "cmd", "entire")

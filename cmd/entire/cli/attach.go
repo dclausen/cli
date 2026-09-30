@@ -205,6 +205,9 @@ func attachPrompts(meta transcriptMetadata) []string {
 }
 
 func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentName types.AgentName, opts attachOptions) error {
+	// Restores and looks up agent transcripts from the user's shell, where a
+	// home an agent reads from its own settings is invisible to the environment.
+	agent.EnableHomeProbes()
 	// The logger arrives in ctx from the root PersistentPreRun, and main.go
 	// closes it — the only close site, covering every path ExecuteContextC
 	// returns from — so attach neither builds nor closes one, the way

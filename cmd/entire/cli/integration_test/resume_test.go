@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1207,6 +1208,75 @@ func TestResume_HonorsClaudeConfigDir(t *testing.T) {
 	}
 	if len(restored) != 1 {
 		t.Fatalf("expected the transcript under %s/projects/<repo>/, got %v", configDir, restored)
+	}
+	stray, err := filepath.Glob(filepath.Join(fakeHome, ".claude", "projects", "*", session.ID+".jsonl"))
+	if err != nil {
+		t.Fatalf("glob home fallback: %v", err)
+	}
+	if len(stray) != 0 {
+		t.Errorf("transcript also landed under the home fallback: %v", stray)
+	}
+}
+
+// TestResume_AsksClaudeForItsConfigDir covers the relocation the environment
+// cannot see: a CLAUDE_CONFIG_DIR set only in Claude's settings files. Resume
+// asks claude itself (the SDK initialize reply), and a fake claude stands in
+// for it here, answering with a config home that appears nowhere in the
+// child's environment.
+func TestResume_AsksClaudeForItsConfigDir(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake claude is a shell script")
+	}
+	env := NewFeatureBranchEnv(t)
+
+	session := env.NewSession()
+	if err := env.SimulateUserPromptSubmit(session.ID); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+	content := rubyPuts
+	env.WriteFile("hello.rb", content)
+	session.CreateTranscript(
+		"Create a hello script",
+		[]FileChange{{Path: "hello.rb", Content: content}},
+	)
+	if err := env.SimulateStop(session.ID, session.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+	env.GitCommitWithShadowHooks("Create a hello script", "hello.rb")
+	featureBranch := env.GetCurrentBranch()
+	env.GitCheckoutBranch(masterBranch)
+
+	configDir := t.TempDir()
+	fakeHome := t.TempDir()
+	fakeClaude := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\nread -r _\n" +
+		`printf '%s\n' '{"type":"control_response","response":{"subtype":"success","request_id":"entire-config-dir","response":{"user_output_styles_dir":"` +
+		filepath.Join(configDir, "output-styles") + `"}}}'` + "\nsleep 30\n"
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+
+	cmd := execx.NonInteractive(t.Context(), getTestBinary(), "session", "resume", featureBranch)
+	cmd.Dir = env.RepoDir
+	cmd.Env = append(testutil.GitIsolatedEnv(),
+		"ENTIRE_TEST_CLAUDE_PROJECT_DIR=", // empty so the real resolution runs
+		"ENTIRE_TEST_CLAUDE_CONFIG_PROBE="+fakeClaude,
+		"HOME="+fakeHome,
+		"USERPROFILE="+fakeHome,
+	)
+	outputBytes, err := cmd.CombinedOutput()
+	output := string(outputBytes)
+	if err != nil {
+		t.Fatalf("resume failed: %v\nOutput: %s", err, output)
+	}
+
+	restored, err := filepath.Glob(filepath.Join(configDir, "projects", "*", session.ID+".jsonl"))
+	if err != nil {
+		t.Fatalf("glob restored transcript: %v", err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("expected the transcript under claude's reported config home %s, got %v\nOutput: %s", configDir, restored, output)
 	}
 	stray, err := filepath.Glob(filepath.Join(fakeHome, ".claude", "projects", "*", session.ID+".jsonl"))
 	if err != nil {

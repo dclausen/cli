@@ -25,6 +25,7 @@ var testOverrideConsts = map[string]string{
 	"piSessionDirEnvVar":         "ENTIRE_TEST_PI_SESSION_DIR",
 	"cursorChatsDirEnv":          "ENTIRE_TEST_CURSOR_CHATS_DIR",
 	"antigravityTestBrainDirEnv": "ENTIRE_TEST_ANTIGRAVITY_BRAIN_DIR",
+	"configProbeEnvVar":          "ENTIRE_TEST_CLAUDE_CONFIG_PROBE",
 }
 
 // nonRelocationReads are environment reads that are not an agent relocation

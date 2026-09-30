@@ -95,10 +95,16 @@ func (c *ClaudeCodeAgent) ProtectedDirs() []string { return []string{".claude"} 
 // resolving it in one place keeps Entire looking where Claude actually wrote.
 const claudeConfigDirEnvVar = "CLAUDE_CONFIG_DIR"
 
-// resolveClaudeConfigDir returns Claude Code's configuration directory:
-// $CLAUDE_CONFIG_DIR when set, else ~/.claude. See agent.ResolveHome for the
-// override policy.
+// resolveClaudeConfigDir returns Claude Code's configuration directory. Where
+// home probes are enabled (commands run from the user's shell, see
+// agent.EnableHomeProbes) that is claude's own answer, which also covers a
+// CLAUDE_CONFIG_DIR set in its settings files; otherwise, and whenever the
+// probe fails, it is $CLAUDE_CONFIG_DIR when set, else ~/.claude. See
+// agent.ResolveHome for the override policy.
 func resolveClaudeConfigDir() (string, error) {
+	if dir := probedConfigDir(); dir != "" {
+		return dir, nil
+	}
 	return agent.ResolveHome(claudeConfigDirEnvVar, ".claude") //nolint:wrapcheck // the error already names the override and its value
 }
 
