@@ -269,7 +269,8 @@ to agree with where the agent wrote, and a relative value resolves against the
 repo root inside a hook and against the user's cwd in `session resume`. The
 list is static and `ResolveHome` refuses a name missing from it, so the test
 harnesses that scrub it through `agent.RelocationEnvVars()` cannot fall behind
-an agent that starts honoring a new one.
+an agent that starts honoring a new one. Several callers fail open on a refused
+value, so `entire status` names each one (`agent.RefusedRelocationEnvVars`).
 
 Rejecting beats falling through to the platform default: for the config
 directory that default is the developer's REAL `~/.config/entire`, so quietly

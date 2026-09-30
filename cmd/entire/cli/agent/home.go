@@ -88,3 +88,20 @@ func LookupOverride(envVar string) (dir string, ok bool, err error) {
 	}
 	return dir, true, nil
 }
+
+// RefusedRelocationEnvVars returns one error for every relocation variable that
+// is set to a value ResolveHome refuses, in relocationEnvVars order.
+//
+// Several callers fail open on that refusal (transcript-owner matching, Codex
+// hook-root and trust inspection) and log it only at debug, so without a place
+// that reports it a refused variable looks exactly like an unset one until
+// `session resume` fails. `entire status` prints this list for that reason.
+func RefusedRelocationEnvVars() []error {
+	var refused []error
+	for _, envVar := range relocationEnvVars {
+		if _, _, err := LookupOverride(envVar); err != nil {
+			refused = append(refused, err)
+		}
+	}
+	return refused
+}

@@ -102,3 +102,19 @@ func TestLookupOverride_RefusesAnUnlistedVariable(t *testing.T) {
 		t.Fatalf("LookupOverride() error = %v; want a refusal pointing at the list", err)
 	}
 }
+
+func TestRefusedRelocationEnvVars(t *testing.T) {
+	for _, envVar := range relocationEnvVars {
+		t.Setenv(envVar, "")
+	}
+	if refused := RefusedRelocationEnvVars(); len(refused) != 0 {
+		t.Fatalf("RefusedRelocationEnvVars() = %v with every variable unset, want none", refused)
+	}
+
+	t.Setenv("CODEX_HOME", filepath.Join("relative", "codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	refused := RefusedRelocationEnvVars()
+	if len(refused) != 1 || !strings.Contains(refused[0].Error(), "CODEX_HOME") {
+		t.Fatalf("RefusedRelocationEnvVars() = %v, want exactly the relative CODEX_HOME", refused)
+	}
+}
