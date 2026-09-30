@@ -125,9 +125,10 @@ default. Active means provisioning completed; later pushes or mirror
 creation can still fail for other reasons.
 
 With both a name and --project the repository is created directly.
-Otherwise, in an interactive terminal and without --json, a wizard asks
-for the project, name, visibility and advanced options, starting from
-whatever was given, and shows a summary before creating anything.
+Otherwise, in an interactive terminal, a wizard asks for the project,
+name, visibility and advanced options, starting from whatever was given,
+and shows a summary before creating anything. With --json the prompts
+stay off stdout, which carries only the repository object.
 
 --visibility sets the repository's visibility right after creation: public
 grants read-only (pull) access to any authenticated Entire user, private
@@ -183,9 +184,10 @@ and recovery instructions go to stderr.`,
 			if req.name == "" || projectRef == "" {
 				// Settled from the command line alone, before any request: a
 				// run that cannot be prompted must not cost a lookup. --json
-				// asks for machine output, so it never prompts either: a
-				// script run under a pty must not hang on a form.
-				if jsonRequested(cmd) || !interactive.CanPromptInteractively() {
+				// still prompts in a terminal, as `grant add` does: the form
+				// renders on stderr or the controlling terminal and stdout
+				// carries only the result.
+				if !interactive.CanPromptInteractively() {
 					cmd.SilenceUsage = true
 					return errRepoCreateNeedsInput
 				}

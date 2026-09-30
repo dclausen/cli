@@ -854,21 +854,22 @@ func TestRepoCreate_VisibilityAfterWaitTimeout(t *testing.T) {
 	require.NotContains(t, stderr, "setting its visibility to public failed")
 }
 
-// --json asks for machine output, so it never opens the wizard, even in a
-// terminal: a script run under a pty must not hang on a form.
+// --json still runs the wizard in a terminal, as `grant add` prompts: the
+// form renders off stdout, which carries the repository object and nothing
+// else.
 //
 // Not parallel: sets env vars and swaps package-level seams.
-func TestRepoCreate_JSONNeverPrompts(t *testing.T) {
-	t.Setenv(interactive.EnvTestTTY, "1")
-	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+func TestRepoCreateWizard_UnderJSONPrintsOnlyTheObject(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), createdVisibility: "private"}
 	f.serve()
-	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
-		t.Error("the wizard must not open under --json")
-		return false, nil
-	})
-	_, _, err := execRepoCreateArgs(t, "web", "--json")
-	require.ErrorIs(t, err, errRepoCreateNeedsInput)
-	require.Zero(t, f.requestCount(), "refused before any request")
+	answerRepoCreatePrompts(t, "1", "web\n2\n", "")
+	stdout, _, err := execRepoCreateArgs(t, "--json")
+	require.NoError(t, err)
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &obj), "stdout is the repository object and nothing else:\n%s", stdout)
+	require.Equal(t, testCreatedRepoID, obj["id"])
+	require.Equal(t, "public", obj["visibility"])
+	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies)
 }
 
 // A repo whose provisioning failed gets no visibility write: that would pile a
