@@ -194,11 +194,11 @@ func ExtractTextFromParts(parts []Part) string {
 	return strings.Join(texts, "\n")
 }
 
-// onlySyntheticText reports whether every text part is synthetic: a user
+// OnlySyntheticText reports whether every text part is synthetic: a user
 // message OpenCode wrote itself (a background task's `<task … state=…>`
 // result), not a prompt. A real prompt carrying synthetic attachment text
 // alongside the user's own words is kept.
-func onlySyntheticText(parts []Part) bool {
+func OnlySyntheticText(parts []Part) bool {
 	sawText := false
 	for _, part := range parts {
 		if part.Type != partTypeText || part.Text == "" {
@@ -265,7 +265,7 @@ func ExtractAllUserPrompts(data []byte) ([]string, error) {
 
 	var prompts []string
 	for _, msg := range session.Messages {
-		if msg.Info.Role != roleUser || onlySyntheticText(msg.Parts) {
+		if msg.Info.Role != roleUser || OnlySyntheticText(msg.Parts) {
 			continue
 		}
 		content := ExtractTextFromParts(msg.Parts)
