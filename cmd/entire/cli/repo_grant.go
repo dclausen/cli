@@ -114,7 +114,8 @@ const repoGrantListLong = "List who can reach a repository.\n\n" +
 	"`source`, plus `granteeName` when a name resolved, so one script reads either. " +
 	"A mirror's rows carry no `granteeType`: that endpoint reports no grantee kind, " +
 	"and the missing key is the answer, since an Entire repository's rows always " +
-	"have one."
+	"have one. Nor do they carry `displayName`, which an Entire repository's account " +
+	"rows have when the account has a name: the mirror endpoint reports no names."
 
 const repoGrantListExample = "  entire repo grant list /" + nativeCloneForge + "/acme/web\n" +
 	"  entire repo grant list /" + mirrorCloneForge + "/acme/widget"

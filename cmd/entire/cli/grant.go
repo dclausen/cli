@@ -618,24 +618,24 @@ var (
 )
 
 func orgMemberRow(m coreapi.OrgMemberListItem) []string {
-	return []string{granteeName(m.Handle, m.AccountId), orDash(displayName(m.DisplayName)), m.Role, m.Status}
+	return []string{granteeName(m.Handle, m.AccountId), orDash(granteeDisplayName(m.DisplayName)), m.Role, m.Status}
 }
 
-// displayName is the account's display name, or "" when the server sent none.
-// The grant listings fill it best-effort, so its absence never means more than
-// "no name to show".
-func displayName(name coreapi.OptString) string {
+// granteeDisplayName is the account's display name, or "" when the server sent
+// none. The grant listings fill it best-effort, so its absence never means more
+// than "no name to show".
+func granteeDisplayName(name coreapi.OptString) string {
 	return strings.TrimSpace(name.Or(""))
 }
 
 func projectGrantRow(g coreapi.ProjectGrant) []string {
-	return []string{granteeName(g.GranteeName, g.GranteeId), orDash(displayName(g.DisplayName)), g.Role, g.Source, g.GranteeType}
+	return []string{granteeName(g.GranteeName, g.GranteeId), orDash(granteeDisplayName(g.DisplayName)), g.Role, g.Source, g.GranteeType}
 }
 
 // repoGrantRow mirrors projectGrantRow; RepoGrant and ProjectGrant share the
 // grantee/name/role/source shape, so both reuse grantColumns.
 func repoGrantRow(g coreapi.RepoGrant) []string {
-	return []string{granteeName(g.GranteeName, g.GranteeId), orDash(displayName(g.DisplayName)), g.Role, g.Source, g.GranteeType}
+	return []string{granteeName(g.GranteeName, g.GranteeId), orDash(granteeDisplayName(g.DisplayName)), g.Role, g.Source, g.GranteeType}
 }
 
 // granteeName returns the friendly name when the server resolved one, in the

@@ -77,7 +77,7 @@ func handleCandidate(handle string) grantCandidate {
 // labelled with the member's display name where the server sent one.
 func memberCandidate(handle string, m coreapi.OrgMemberListItem) grantCandidate {
 	c := handleCandidate(handle)
-	c.label = labelWithName(c.label, m.DisplayName)
+	c.label = labelWithName(c.label, granteeDisplayName(m.DisplayName))
 	return c
 }
 
@@ -85,9 +85,9 @@ func memberCandidate(handle string, m coreapi.OrgMemberListItem) grantCandidate 
 // the server sent one, so a Google account reads as a person rather than a
 // subject id. The name joins the label rather than the ref, so it reaches every
 // prompt and confirmation while the grant itself still goes by handle or ULID.
-func labelWithName(label string, name coreapi.OptString) string {
-	if n := displayName(name); n != "" {
-		return label + " · " + n
+func labelWithName(label, name string) string {
+	if name != "" {
+		return label + " · " + name
 	}
 	return label
 }
@@ -340,16 +340,16 @@ type grantRow struct {
 	granteeType string
 	source      string
 	name        string
-	displayName coreapi.OptString
+	displayName string
 	role        string
 }
 
 func projectGrantRowOf(g coreapi.ProjectGrant) grantRow {
-	return grantRow{granteeID: g.GranteeId, granteeType: g.GranteeType, source: g.Source, name: g.GranteeName.Or(""), displayName: g.DisplayName, role: g.Role}
+	return grantRow{granteeID: g.GranteeId, granteeType: g.GranteeType, source: g.Source, name: g.GranteeName.Or(""), displayName: granteeDisplayName(g.DisplayName), role: g.Role}
 }
 
 func repoGrantRowOf(g coreapi.RepoGrant) grantRow {
-	return grantRow{granteeID: g.GranteeId, granteeType: g.GranteeType, source: g.Source, name: g.GranteeName.Or(""), displayName: g.DisplayName, role: g.Role}
+	return grantRow{granteeID: g.GranteeId, granteeType: g.GranteeType, source: g.Source, name: g.GranteeName.Or(""), displayName: granteeDisplayName(g.DisplayName), role: g.Role}
 }
 
 // directHolders is the set of accounts holding a grant written on the resource
