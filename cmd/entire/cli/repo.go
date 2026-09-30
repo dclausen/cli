@@ -348,7 +348,10 @@ neither confirms readiness.`,
 					fmt.Fprintf(cmd.ErrOrStderr(), "%v\nUse entire repo view %s to inspect repository details without a readiness check.\n", renderRepoReadError(err), repoID)
 					return nil, NewSilentError(err)
 				}
-				return repo, err
+				if err != nil {
+					return nil, err
+				}
+				return &repo.Response, nil
 			})
 		},
 	}

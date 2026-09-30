@@ -59,7 +59,7 @@ type repoRefClient interface {
 	projectRefClient
 	ListProjectRepos(ctx context.Context, params coreapi.ListProjectReposParams) (*coreapi.ListProjectReposOutputBody, error)
 	ResolveRepos(ctx context.Context, request *coreapi.ResolveReposInputBody) (*coreapi.ResolveReposResponse, error)
-	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.Repo, error)
+	GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.RepoHeaders, error)
 }
 
 // looksLikeULID reports whether s has the shape of a ULID: 26 characters drawn
@@ -145,7 +145,7 @@ func resolveAccountRef(ctx context.Context, c *coreapi.Client, ref string) (stri
 	if looksLikeULID(ref) {
 		return ref, nil
 	}
-	provider, handle, err := parseQualifiedHandle(ref)
+	provider, handle, err := parseGranteeHandle(ref)
 	if err != nil {
 		return "", err
 	}
@@ -181,14 +181,14 @@ func resolveGranteeProvider(ctx context.Context, c *coreapi.Client, ref string) 
 	if err := ensureGranteeIsHandle(ref); err != nil {
 		return "", "", err
 	}
-	p, handle, err := parseQualifiedHandle(ref)
+	p, handle, err := parseGranteeHandle(ref)
 	if err != nil {
 		return "", "", err
 	}
 	id, err := c.ResolveHandle(ctx, coreapi.ResolveHandleParams{Provider: p, Handle: handle})
 	if err != nil {
 		if isCoreNotFound(err) {
-			return "", "", fmt.Errorf("no %s identity for handle %q", p, handle)
+			return "", "", fmt.Errorf("no %s identity for handle %q", p, identityFor(p).displayHandle(handle))
 		}
 		return "", "", err
 	}
@@ -435,7 +435,7 @@ func resolveRepoPathRef(ctx context.Context, c repoRefClient, ref, projectRef st
 		if err != nil {
 			return resolvedRef{}, fmt.Errorf("get repo: %w", err)
 		}
-		if !strings.EqualFold(projectRef, repo.OwningProjectId) {
+		if !strings.EqualFold(projectRef, repo.Response.OwningProjectId) {
 			return resolvedRef{}, projectMismatchErr(projectRef, project, ref)
 		}
 	}

@@ -201,6 +201,12 @@ type Invoker interface {
 	//
 	// DELETE /orgs/{orgId}/ci/depot/connection/{account}
 	DisconnectOrgCIDepotOrganization(ctx context.Context, params DisconnectOrgCIDepotOrganizationParams) error
+	// GetAccountProfile invokes getAccountProfile operation.
+	//
+	// Get the viewer-scoped profile of an account.
+	//
+	// GET /accounts/{accountId}
+	GetAccountProfile(ctx context.Context, params GetAccountProfileParams) (*AccountProfileHeaders, error)
 	// GetBranchProtection invokes getBranchProtection operation.
 	//
 	// Get repository branch protection.
@@ -263,7 +269,7 @@ type Invoker interface {
 	// Get repository.
 	//
 	// GET /repos/{repoId}
-	GetRepo(ctx context.Context, params GetRepoParams) (*Repo, error)
+	GetRepo(ctx context.Context, params GetRepoParams) (*RepoHeaders, error)
 	// GetRepoCIDelivery invokes getRepoCIDelivery operation.
 	//
 	// The id is the opaque value from a list response. A payload is absent once its day has been swept
@@ -408,7 +414,9 @@ type Invoker interface {
 	// return 503. Filters select people by recorded grants, not inherited roles. Load
 	// /people/{accountId}/access when opening an editor; it returns that person's grants and fresh
 	// editing capabilities. The list has no full mode. Filters and totalCount apply before cursor
-	// pagination; results are ordered by account ID.
+	// pagination; sort and order select the order, name by default. Outstanding invitations are keyed by
+	// email and never joined to an account. They appear only on an unfiltered first page. Only the
+	// organization's home core serves this list; other cores answer 421.
 	//
 	// GET /orgs/{orgId}/people
 	ListOrgPeople(ctx context.Context, params ListOrgPeopleParams) (*ListOrgPeopleOutputBodyHeaders, error)
@@ -424,6 +432,18 @@ type Invoker interface {
 	//
 	// GET /orgs
 	ListOrgs(ctx context.Context, params ListOrgsParams) (*ListOrgsOutputBodyHeaders, error)
+	// ListProjectCollaborators invokes listProjectCollaborators operation.
+	//
+	// Without repoId, returns people who can manage or write the project, plus source-managed members of
+	// a forge project. Requires project inspect. With repoId, returns people who can manage or push the
+	// repository's logical group, including project-level authority. Requires non-public list access to
+	// that repository. Readers and organization members without write access are excluded. Returns
+	// approved human accounts with public profile fields, ordered by account ID. Search and eligibility
+	// apply before pagination. Assignment writes must authorize independently. Staff authority does not
+	// bypass these requirements.
+	//
+	// GET /projects/{projectId}/collaborators
+	ListProjectCollaborators(ctx context.Context, params ListProjectCollaboratorsParams) (*ListProjectCollaboratorsOutputBodyHeaders, error)
 	// ListProjectMembers invokes listProjectMembers operation.
 	//
 	// List project members and their roles.
@@ -435,9 +455,9 @@ type Invoker interface {
 	// Requires project roster-view permission, held by project managers and source-managed forge members
 	// but not ordinary native readers or writers. Returns one account per row with its effective role
 	// and merged access sources. Grant managers also receive the mutable direct grant. Search and role
-	// filters run before cursor pagination. Results are ordered by effective role (owner, admin,
-	// mirror_source_admin, writer, reader, member), then by handle without the provider prefix, ignoring
-	// case, then by account ID. Accounts without a handle come last within their role.
+	// filters run before cursor pagination. Results are ordered by name, the public display name else
+	// the GitHub handle, unless sort selects another order; a page token only continues the order that
+	// issued it.
 	//
 	// GET /projects/{projectId}/people
 	ListProjectPeople(ctx context.Context, params ListProjectPeopleParams) (*ResourcePeopleOutputBody, error)
@@ -520,9 +540,8 @@ type Invoker interface {
 	//
 	// Returns one account per row with its effective role and merged access sources. Grant managers also
 	// receive the mutable direct grant. Search and role filters run before cursor pagination. Results
-	// are ordered by effective role (owner, admin, mirror_source_admin, writer, reader, member), then by
-	// handle without the provider prefix, ignoring case, then by account ID. Accounts without a handle
-	// come last within their role.
+	// are ordered by name, the public display name else the GitHub handle, unless sort selects another
+	// order; a page token only continues the order that issued it.
 	//
 	// GET /repos/{repoId}/people
 	ListRepoPeople(ctx context.Context, params ListRepoPeopleParams) (*ResourcePeopleOutputBody, error)
@@ -585,6 +604,12 @@ type Invoker interface {
 	//
 	// DELETE /orgs/{orgId}/members/{provider}/{providerUserId}
 	RemoveOrgMember(ctx context.Context, params RemoveOrgMemberParams) error
+	// RemoveOrgMemberByMembershipID invokes removeOrgMemberByMembershipID operation.
+	//
+	// Remove an organization member by membership ID.
+	//
+	// DELETE /orgs/{orgId}/members/{membershipId}
+	RemoveOrgMemberByMembershipID(ctx context.Context, params RemoveOrgMemberByMembershipIDParams) error
 	// ResolveHandle invokes resolveHandle operation.
 	//
 	// Resolve account by external provider handle.
@@ -3637,6 +3662,106 @@ func (c *Client) sendDisconnectOrgCIDepotOrganization(ctx context.Context, param
 	return result, nil
 }
 
+// GetAccountProfile invokes getAccountProfile operation.
+//
+// Get the viewer-scoped profile of an account.
+//
+// GET /accounts/{accountId}
+func (c *Client) GetAccountProfile(ctx context.Context, params GetAccountProfileParams) (*AccountProfileHeaders, error) {
+	res, err := c.sendGetAccountProfile(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendGetAccountProfile(ctx context.Context, params GetAccountProfileParams) (res *AccountProfileHeaders, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [2]string
+	pathParts[0] = "/accounts/"
+	{
+		// Encode "accountId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "accountId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.AccountId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+
+			switch err := c.securityBearerAuth(ctx, GetAccountProfileOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"BearerAuth\"")
+			}
+		}
+		{
+
+			switch err := c.securitySessionAuth(ctx, GetAccountProfileOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 1
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"SessionAuth\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+				{0b00000010},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	result, err := decodeGetAccountProfileResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // GetBranchProtection invokes getBranchProtection operation.
 //
 // Get repository branch protection.
@@ -4512,12 +4637,12 @@ func (c *Client) sendGetProject(ctx context.Context, params GetProjectParams) (r
 // Get repository.
 //
 // GET /repos/{repoId}
-func (c *Client) GetRepo(ctx context.Context, params GetRepoParams) (*Repo, error) {
+func (c *Client) GetRepo(ctx context.Context, params GetRepoParams) (*RepoHeaders, error) {
 	res, err := c.sendGetRepo(ctx, params)
 	return res, err
 }
 
-func (c *Client) sendGetRepo(ctx context.Context, params GetRepoParams) (res *Repo, err error) {
+func (c *Client) sendGetRepo(ctx context.Context, params GetRepoParams) (res *RepoHeaders, err error) {
 
 	u := uri.Clone(c.requestURL(ctx))
 	var pathParts [2]string
@@ -6901,6 +7026,40 @@ func (c *Client) sendListOrgMembers(ctx context.Context, params ListOrgMembersPa
 			return res, errors.Wrap(err, "encode query")
 		}
 	}
+	{
+		// Encode "sort" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "sort",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Sort.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "order" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "order",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Order.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
 	u.RawQuery = q.Values().Encode()
 
 	r, err := ht.NewRequest(ctx, "GET", u)
@@ -6984,7 +7143,9 @@ func (c *Client) sendListOrgMembers(ctx context.Context, params ListOrgMembersPa
 // return 503. Filters select people by recorded grants, not inherited roles. Load
 // /people/{accountId}/access when opening an editor; it returns that person's grants and fresh
 // editing capabilities. The list has no full mode. Filters and totalCount apply before cursor
-// pagination; results are ordered by account ID.
+// pagination; sort and order select the order, name by default. Outstanding invitations are keyed by
+// email and never joined to an account. They appear only on an unfiltered first page. Only the
+// organization's home core serves this list; other cores answer 421.
 //
 // GET /orgs/{orgId}/people
 func (c *Client) ListOrgPeople(ctx context.Context, params ListOrgPeopleParams) (*ListOrgPeopleOutputBodyHeaders, error) {
@@ -7047,6 +7208,40 @@ func (c *Client) sendListOrgPeople(ctx context.Context, params ListOrgPeoplePara
 		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
 			if val, ok := params.PageToken.Get(); ok {
 				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "sort" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "sort",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Sort.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "order" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "order",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Order.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
 			}
 			return nil
 		}); err != nil {
@@ -7529,6 +7724,184 @@ func (c *Client) sendListOrgs(ctx context.Context, params ListOrgsParams) (res *
 	return result, nil
 }
 
+// ListProjectCollaborators invokes listProjectCollaborators operation.
+//
+// Without repoId, returns people who can manage or write the project, plus source-managed members of
+// a forge project. Requires project inspect. With repoId, returns people who can manage or push the
+// repository's logical group, including project-level authority. Requires non-public list access to
+// that repository. Readers and organization members without write access are excluded. Returns
+// approved human accounts with public profile fields, ordered by account ID. Search and eligibility
+// apply before pagination. Assignment writes must authorize independently. Staff authority does not
+// bypass these requirements.
+//
+// GET /projects/{projectId}/collaborators
+func (c *Client) ListProjectCollaborators(ctx context.Context, params ListProjectCollaboratorsParams) (*ListProjectCollaboratorsOutputBodyHeaders, error) {
+	res, err := c.sendListProjectCollaborators(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendListProjectCollaborators(ctx context.Context, params ListProjectCollaboratorsParams) (res *ListProjectCollaboratorsOutputBodyHeaders, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/projects/"
+	{
+		// Encode "projectId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "projectId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.ProjectId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/collaborators"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	q := uri.NewQueryEncoder()
+	{
+		// Encode "pageSize" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "pageSize",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.PageSize.Get(); ok {
+				return e.EncodeValue(conv.Int32ToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "pageToken" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "pageToken",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.PageToken.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "repoId" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "repoId",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.RepoId.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "search" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "search",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Search.Get(); ok {
+				return e.EncodeValue(conv.StringToString(val))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	u.RawQuery = q.Values().Encode()
+
+	r, err := ht.NewRequest(ctx, "GET", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+
+			switch err := c.securityBearerAuth(ctx, ListProjectCollaboratorsOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"BearerAuth\"")
+			}
+		}
+		{
+
+			switch err := c.securitySessionAuth(ctx, ListProjectCollaboratorsOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 1
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"SessionAuth\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+				{0b00000010},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	result, err := decodeListProjectCollaboratorsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
 // ListProjectMembers invokes listProjectMembers operation.
 //
 // List project members and their roles.
@@ -7672,9 +8045,9 @@ func (c *Client) sendListProjectMembers(ctx context.Context, params ListProjectM
 // Requires project roster-view permission, held by project managers and source-managed forge members
 // but not ordinary native readers or writers. Returns one account per row with its effective role
 // and merged access sources. Grant managers also receive the mutable direct grant. Search and role
-// filters run before cursor pagination. Results are ordered by effective role (owner, admin,
-// mirror_source_admin, writer, reader, member), then by handle without the provider prefix, ignoring
-// case, then by account ID. Accounts without a handle come last within their role.
+// filters run before cursor pagination. Results are ordered by name, the public display name else
+// the GitHub handle, unless sort selects another order; a page token only continues the order that
+// issued it.
 //
 // GET /projects/{projectId}/people
 func (c *Client) ListProjectPeople(ctx context.Context, params ListProjectPeopleParams) (*ResourcePeopleOutputBody, error) {
@@ -7770,6 +8143,40 @@ func (c *Client) sendListProjectPeople(ctx context.Context, params ListProjectPe
 
 		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
 			if val, ok := params.Role.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "sort" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "sort",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Sort.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "order" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "order",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Order.Get(); ok {
 				return e.EncodeValue(conv.StringToString(string(val)))
 			}
 			return nil
@@ -9397,9 +9804,8 @@ func (c *Client) sendListRepoOrgFacets(ctx context.Context, params ListRepoOrgFa
 //
 // Returns one account per row with its effective role and merged access sources. Grant managers also
 // receive the mutable direct grant. Search and role filters run before cursor pagination. Results
-// are ordered by effective role (owner, admin, mirror_source_admin, writer, reader, member), then by
-// handle without the provider prefix, ignoring case, then by account ID. Accounts without a handle
-// come last within their role.
+// are ordered by name, the public display name else the GitHub handle, unless sort selects another
+// order; a page token only continues the order that issued it.
 //
 // GET /repos/{repoId}/people
 func (c *Client) ListRepoPeople(ctx context.Context, params ListRepoPeopleParams) (*ResourcePeopleOutputBody, error) {
@@ -9495,6 +9901,40 @@ func (c *Client) sendListRepoPeople(ctx context.Context, params ListRepoPeoplePa
 
 		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
 			if val, ok := params.Role.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "sort" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "sort",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Sort.Get(); ok {
+				return e.EncodeValue(conv.StringToString(string(val)))
+			}
+			return nil
+		}); err != nil {
+			return res, errors.Wrap(err, "encode query")
+		}
+	}
+	{
+		// Encode "order" parameter.
+		cfg := uri.QueryParameterEncodingConfig{
+			Name:    "order",
+			Style:   uri.QueryStyleForm,
+			Explode: false,
+		}
+
+		if err := q.EncodeParam(cfg, func(e uri.Encoder) error {
+			if val, ok := params.Order.Get(); ok {
 				return e.EncodeValue(conv.StringToString(string(val)))
 			}
 			return nil
@@ -10802,6 +11242,125 @@ func (c *Client) sendRemoveOrgMember(ctx context.Context, params RemoveOrgMember
 	defer body.Close()
 
 	result, err := decodeRemoveOrgMemberResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// RemoveOrgMemberByMembershipID invokes removeOrgMemberByMembershipID operation.
+//
+// Remove an organization member by membership ID.
+//
+// DELETE /orgs/{orgId}/members/{membershipId}
+func (c *Client) RemoveOrgMemberByMembershipID(ctx context.Context, params RemoveOrgMemberByMembershipIDParams) error {
+	_, err := c.sendRemoveOrgMemberByMembershipID(ctx, params)
+	return err
+}
+
+func (c *Client) sendRemoveOrgMemberByMembershipID(ctx context.Context, params RemoveOrgMemberByMembershipIDParams) (res *RemoveOrgMemberByMembershipIDNoContent, err error) {
+
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [4]string
+	pathParts[0] = "/orgs/"
+	{
+		// Encode "orgId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "orgId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.OrgId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/members/"
+	{
+		// Encode "membershipId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "membershipId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.MembershipId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	uri.AddPathParts(u, pathParts[:]...)
+
+	r, err := ht.NewRequest(ctx, "DELETE", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+
+			switch err := c.securityBearerAuth(ctx, RemoveOrgMemberByMembershipIDOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"BearerAuth\"")
+			}
+		}
+		{
+
+			switch err := c.securitySessionAuth(ctx, RemoveOrgMemberByMembershipIDOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 1
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"SessionAuth\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+				{0b00000010},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	body := resp.Body
+	defer body.Close()
+
+	result, err := decodeRemoveOrgMemberByMembershipIDResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
