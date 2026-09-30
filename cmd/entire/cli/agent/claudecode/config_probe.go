@@ -128,6 +128,12 @@ func probeConfigDir(ctx context.Context) (string, error) {
 	if _, err := io.WriteString(stdin, request); err != nil {
 		return "", fmt.Errorf("send initialize: %w", err)
 	}
+	// Nothing else will be sent, so say so. claude 2.1.285 answers either way
+	// (measured: 0.2s with stdin closed, 0.25s left open), but a CLI that waits
+	// for end of input would otherwise sit until the timeout.
+	if err := stdin.Close(); err != nil {
+		return "", fmt.Errorf("close probe stdin: %w", err)
+	}
 	return readConfigDirReply(stdout)
 }
 
