@@ -886,3 +886,20 @@ func TestRepoCreate_NoVisibilityWhenProvisioningFailed(t *testing.T) {
 	require.Contains(t, stderr, "Visibility was not set. Once the repository is active, set it with: entire repo edit /et/acme/web --visibility public")
 	require.NotContains(t, stderr, "setting its visibility to public failed")
 }
+
+// The name argument is trimmed for the direct path as the wizard trims typed
+// names, so ' web ' creates the same repo either way; a blank one is missing.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_NameArgumentIsTrimmed(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+	f.serve()
+	_, _, err := execRepoCreateArgs(t, " web ", "--project", "acme")
+	require.NoError(t, err)
+	require.Len(t, f.createBodies, 1)
+	require.Equal(t, "web", f.createBodies[0]["name"])
+
+	_, _, err = execRepoCreateArgs(t, "   ", "--project", "acme")
+	require.ErrorIs(t, err, errRepoCreateNeedsInput, "a blank name is a missing one")
+	require.Len(t, f.createBodies, 1, "no second create")
+}

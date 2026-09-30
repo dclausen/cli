@@ -162,7 +162,10 @@ and recovery instructions go to stderr.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := repoCreateRequest{}
 			if len(args) == 1 {
-				req.name = args[0]
+				// Trimmed once for both paths, as the wizard trims what is
+				// typed, so ' web ' names the same repo either way and a blank
+				// name counts as missing.
+				req.name = strings.TrimSpace(args[0])
 			}
 			if objectFormat != "" {
 				parsed, err := parseObjectFormat(objectFormat)
