@@ -243,7 +243,24 @@ func CleanupPrePromptState(ctx context.Context, sessionID string) error {
 	if err := validation.ValidateSessionID(sessionID); err != nil {
 		return fmt.Errorf("invalid session ID for pre-prompt state cleanup: %w", err)
 	}
-	return turnBaselineSearch(ctx, sessionID).remove(ctx, prePromptStateName(sessionID))
+	err := turnBaselineSearch(ctx, sessionID).remove(ctx, prePromptStateName(sessionID))
+	// The turn is over: its start tree must not steer the next turn's lookup.
+	// An agent whose turns fire no turn-start hook (Factory Droid exec mode)
+	// would otherwise reach turn end still pointed at an earlier turn's tree.
+	mutErr := strategy.MutateSessionState(ctx, sessionID, func(state *strategy.SessionState) error {
+		if state.TurnWorktreePath == "" {
+			return strategy.ErrMutationSkip
+		}
+		state.TurnWorktreePath = ""
+		return nil
+	})
+	if mutErr != nil && !errors.Is(mutErr, strategy.ErrStateNotFound) {
+		// Best-effort: a stale pointer only makes the next turn look in one
+		// more tree first, and never fails the cleanup it rides along with.
+		logging.Debug(logging.WithComponent(ctx, "state"), "could not clear the turn's worktree",
+			slog.String("session_id", sessionID), slog.String("error", mutErr.Error()))
+	}
+	return err
 }
 
 func prePromptStateName(sessionID string) string {

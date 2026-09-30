@@ -69,10 +69,10 @@ func otherBaselineWorktrees(ctx context.Context, sessionID string) []baselineWor
 	}
 	var candidates []baselineWorktree
 	for _, c := range []baselineWorktree{{root: state.TurnWorktreePath, isTurn: true}, {root: state.WorktreePath}} {
-		if c.root == "" || sameDir(c.root, current) {
+		if c.root == "" || paths.SameDir(c.root, current) {
 			continue
 		}
-		if len(candidates) > 0 && sameDir(candidates[0].root, c.root) {
+		if len(candidates) > 0 && paths.SameDir(candidates[0].root, c.root) {
 			continue
 		}
 		candidates = append(candidates, c)
@@ -87,7 +87,7 @@ func otherBaselineWorktrees(ctx context.Context, sessionID string) []baselineWor
 	var out []baselineWorktree
 	for _, c := range candidates {
 		meta, err := gitrepo.ResolveWorktreeMetadata(c.root)
-		if err != nil || !sameDir(meta.CommonDir, currentMeta.CommonDir) {
+		if err != nil || !paths.SameDir(meta.CommonDir, currentMeta.CommonDir) {
 			continue
 		}
 		out = append(out, c)

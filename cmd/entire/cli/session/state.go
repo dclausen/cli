@@ -136,6 +136,13 @@ type State struct {
 	// Derived from .git/worktrees/<name>/, stable across git worktree move
 	WorktreeID string `json:"worktree_id,omitempty"`
 
+	// AgentWorktree is the worktree the agent's hook payload last named at a
+	// turn boundary, once a hook acted on it. A payload naming the same tree
+	// again is no evidence the agent moved: an agent that works in another
+	// worktree through `cd` inside its shell keeps reporting its launch
+	// directory, and must not be pulled back there.
+	AgentWorktree string `json:"agent_worktree,omitempty"`
+
 	// TurnWorktreePath is the worktree whose turn-start hook captured the
 	// current turn's baselines. An agent can move between worktrees mid-turn,
 	// so the end hook finds them there rather than in its own tree.

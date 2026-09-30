@@ -52,6 +52,7 @@ func TestFollow_MidTurnMoveCapturesOnlyTheTurnsWork(t *testing.T) {
 	require.Contains(t, state.FilesTouched, "feature.txt")
 	require.NotContains(t, state.FilesTouched, "preexisting.txt", "an untracked file that predates the turn is not the agent's work")
 	requireNoTmpState(t, parent, "pre-prompt-"+sess.ID+".json")
+	require.Empty(t, state.TurnWorktreePath, "stale after the turn: must not steer the next turn's baseline lookup")
 
 	promptFile := func(env *TestEnv) string {
 		return filepath.Join(env.RepoDir, ".entire", "metadata", sess.ID, "prompt.txt")

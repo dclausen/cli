@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -100,7 +101,9 @@ func DispatchLifecycleEvent(ctx context.Context, ag agent.Agent, event *agent.Ev
 		}
 	}
 
+	launchLogger := logging.LoggerFromContext(ctx)
 	ctx = followAgentWorkingDirectory(ctx, ag, event)
+	defer closeFollowedLogger(ctx, launchLogger)
 
 	// Conditional TurnStart (e.g. Antigravity's per-invocation PreInvocation):
 	// drop it when a turn is already active so a mid-turn follow-up model call
@@ -165,7 +168,7 @@ func followAgentWorkingDirectory(ctx context.Context, ag agent.Agent, event *age
 		return ctx
 	}
 	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
-	target, targetMeta, err := worktreeRootOf(event.CWD)
+	target, targetMeta, err := worktreeRootOf(ctx, event.CWD)
 	if err != nil {
 		logging.Debug(logCtx, "payload cwd is not a worktree; staying put",
 			slog.String("cwd", event.CWD), slog.String("error", err.Error()))
@@ -175,11 +178,11 @@ func followAgentWorkingDirectory(ctx context.Context, ag agent.Agent, event *age
 	if err != nil {
 		return ctx
 	}
-	if filepath.Clean(current) == filepath.Clean(target) {
+	if paths.SameDir(current, target) {
 		return confirmSessionWorkingTree(ctx, event.Type)
 	}
 	currentMeta, err := gitrepo.ResolveWorktreeMetadata(current)
-	if err != nil || !sameDir(currentMeta.CommonDir, targetMeta.CommonDir) {
+	if err != nil || !paths.SameDir(currentMeta.CommonDir, targetMeta.CommonDir) {
 		logging.Debug(logCtx, "payload cwd belongs to another repository; staying put",
 			slog.String("cwd", event.CWD))
 		return ctx
@@ -219,6 +222,16 @@ func followAgentWorkingDirectory(ctx context.Context, ag agent.Agent, event *age
 	return confirmSessionWorkingTree(ctx, event.Type)
 }
 
+// closeFollowedLogger flushes and closes the logger followAgentWorkingDirectory
+// opened in the worktree it moved into. The command closes only the launch
+// logger, so without this the moved hook's buffered lines never reach the
+// worktree's log.
+func closeFollowedLogger(ctx context.Context, launch *logging.Logger) {
+	if l := logging.LoggerFromContext(ctx); l != nil && l != launch {
+		_ = l.Close() // best-effort at hook exit
+	}
+}
+
 // confirmSessionWorkingTree distinguishes a session boundary from a task
 // event emitted by one of that session's subagents. Both need to run in the
 // payload worktree, but only the former is evidence that the parent session
@@ -230,17 +243,6 @@ func confirmSessionWorkingTree(ctx context.Context, eventType agent.EventType) c
 	return ctx
 }
 
-// sameDir compares two directory paths with symlinks resolved.
-func sameDir(a, b string) bool {
-	if ra, err := filepath.EvalSymlinks(a); err == nil {
-		a = ra
-	}
-	if rb, err := filepath.EvalSymlinks(b); err == nil {
-		b = rb
-	}
-	return filepath.Clean(a) == filepath.Clean(b)
-}
-
 // clearWorktreeCaches drops everything resolved from the process directory.
 func clearWorktreeCaches() {
 	paths.ClearWorktreeRootCache()
@@ -248,29 +250,30 @@ func clearWorktreeCaches() {
 	session.ClearGitCommonDirCache()
 }
 
-// worktreeRootOf finds the worktree containing dir — nearest root first, so a
-// cwd inside a subdirectory still resolves — through the canonical metadata
-// resolver rather than a git query.
-func worktreeRootOf(dir string) (string, gitrepo.WorktreeMetadata, error) {
+// worktreeRootOf finds the worktree containing dir the way the user's own git
+// would: by asking git, run in dir with the hook's repository overrides
+// stripped. A walk up for a .git entry would ignore safe.directory and
+// ownership checks and resolve trees git refuses (see paths.resolveWorktreeRoot).
+func worktreeRootOf(ctx context.Context, dir string) (string, gitrepo.WorktreeMetadata, error) {
 	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("resolve %s: %w", dir, err)
-	}
-	abs, err = filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("resolve %s: %w", dir, err)
 	}
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
 		return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("%s is not a directory", dir)
 	}
-	for cur := abs; ; cur = filepath.Dir(cur) {
-		if meta, err := gitrepo.ResolveWorktreeMetadata(cur); err == nil {
-			return cur, meta, nil
-		}
-		if filepath.Dir(cur) == cur {
-			return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("%s is not inside a git worktree", dir)
-		}
+	cmd := exec.CommandContext(ctx, "git", "-C", abs, "rev-parse", "--show-toplevel")
+	cmd.Env = gitrepo.EnvWithoutRepoOverrides()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("%s is not inside a worktree git will use: %w", dir, err)
 	}
+	root := filepath.FromSlash(strings.TrimSpace(string(out)))
+	meta, err := gitrepo.ResolveWorktreeMetadata(root)
+	if err != nil {
+		return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("resolve worktree %s: %w", root, err)
+	}
+	return paths.Canonical(root), meta, nil
 }
 
 // handleLifecycleSessionStart handles session start: shows banner, checks concurrent sessions,
@@ -1078,7 +1081,9 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	// Detect file changes via git status. captureDegraded tracks whether any
 	// status scan feeding this turn breached its budget, so the marker
 	// persisted at turn end reflects the whole turn, not just this walk.
-	captureDegraded := preState != nil && preState.UntrackedScanSkipped
+	// Degraded whenever new-file detection is off for this turn: a skipped
+	// scan, an unreadable baseline, or one from the worktree the agent left.
+	captureDegraded := preState.NewFilesUndetectable()
 	changes, err := DetectFileChanges(ctx, preUntrackedFiles)
 	if err != nil {
 		captureDegraded = captureDegraded || errors.Is(err, gitrepo.ErrStatusBudgetExceeded)

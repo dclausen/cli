@@ -31,6 +31,7 @@ func TestFollowAgentWorkingDirectory(t *testing.T) {
 	worktree := filepath.Join(resolved(t.TempDir()), "feature")
 	testutil.RunGit(t, parent, "worktree", "add", "-q", "-b", "feature", worktree)
 	require.NoError(t, os.MkdirAll(filepath.Join(worktree, "src", "pkg"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(parent, "docs"), 0o755))
 	testutil.WriteFile(t, worktree, ".entire/settings.json", `{"enabled": true}`)
 	plain := filepath.Join(resolved(t.TempDir()), "plain")
 	testutil.RunGit(t, parent, "worktree", "add", "-q", "-b", "plain", plain)
@@ -51,7 +52,7 @@ func TestFollowAgentWorkingDirectory(t *testing.T) {
 	}{
 		"another worktree of the repo":           {eventType: agent.TurnStart, cwd: worktree, want: worktree, confirmed: true},
 		"a subdirectory of that worktree":        {eventType: agent.TurnStart, cwd: filepath.Join(worktree, "src", "pkg"), want: worktree, confirmed: true},
-		"a subdirectory of the current tree":     {eventType: agent.TurnStart, cwd: filepath.Join(parent, ".git"), want: parent, confirmed: true},
+		"a subdirectory of the current tree":     {eventType: agent.TurnStart, cwd: filepath.Join(parent, "docs"), want: parent, confirmed: true},
 		"subagent task worktree":                 {eventType: agent.SubagentStart, cwd: worktree, want: worktree},
 		"subagent completion worktree":           {eventType: agent.SubagentEnd, cwd: worktree, want: worktree},
 		"tool use worktree":                      {eventType: agent.ToolUse, cwd: worktree, want: worktree},
@@ -74,8 +75,12 @@ func TestFollowAgentWorkingDirectory(t *testing.T) {
 			require.Equal(t, moved, logging.LoggerFromContext(ctx) != launchLogger, "the log sink follows only when the hook moved")
 			if moved {
 				logging.Info(ctx, "probe")
-				require.FileExists(t, filepath.Join(tc.want, ".entire", logging.LogsName, logging.LogFileName),
-					"after the move the hook logs in the worktree it works in")
+				// As the dispatcher does at hook exit: the moved logger is
+				// closed, so its buffered lines reach the worktree's log.
+				closeFollowedLogger(ctx, launchLogger)
+				logged, err := os.ReadFile(filepath.Join(tc.want, ".entire", logging.LogsName, logging.LogFileName))
+				require.NoError(t, err)
+				require.Contains(t, string(logged), "probe", "after the move the hook logs in the worktree it works in")
 			}
 			got, err := os.Getwd()
 			require.NoError(t, err)

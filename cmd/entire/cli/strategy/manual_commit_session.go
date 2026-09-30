@@ -695,6 +695,11 @@ func (s *ManualCommitStrategy) initializeSession(ctx context.Context, repo *git.
 		TranscriptPath:        transcriptPath,
 		LastPrompt:            truncatePromptForStorage(userPrompt),
 	}
+	if AgentWorkingTreeConfirmed(ctx) {
+		// The payload named this tree; later payloads naming it again are not
+		// evidence of a move (SessionState.AgentWorktree).
+		state.AgentWorktree = worktreePath
+	}
 	if agentType == agent.AgentTypeCodex {
 		complete := true
 		state.SubagentInventoryComplete = &complete

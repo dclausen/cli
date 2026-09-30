@@ -217,11 +217,28 @@ func AgentWorkingTreeConfirmed(ctx context.Context) bool {
 // this tree or the hook captured edits in it. A hook that merely runs in the
 // launch directory never moves a session.
 func (s *ManualCommitStrategy) rehomeSessionToCurrentWorktree(ctx context.Context, repo *git.Repository, state *SessionState, editedHere bool) {
-	if !editedHere && !AgentWorkingTreeConfirmed(ctx) {
+	reported := AgentWorkingTreeConfirmed(ctx)
+	if !editedHere && !reported {
 		return
 	}
 	current, err := paths.WorktreeRoot(ctx)
-	if err != nil || current == "" || state.WorktreePath == "" || isSessionHomeWorktree(current, state) {
+	if err != nil || current == "" || state.WorktreePath == "" {
+		return
+	}
+	if reported {
+		// The hook runs in the tree the payload named. Record it once the
+		// session is homed there, and treat a repeat of the last recorded tree
+		// as no evidence of a move (see SessionState.AgentWorktree).
+		defer func() {
+			if isSessionHomeWorktree(current, state) {
+				state.AgentWorktree = current
+			}
+		}()
+		if !editedHere && state.AgentWorktree != "" && paths.SameDir(state.AgentWorktree, current) {
+			return
+		}
+	}
+	if isSessionHomeWorktree(current, state) {
 		return
 	}
 	why := "its agent's hooks now run there"

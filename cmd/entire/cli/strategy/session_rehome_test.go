@@ -279,3 +279,40 @@ func TestRehome_LeavesARemovedHomeEvenWithPendingWork(t *testing.T) {
 		})
 	}
 }
+
+// A payload naming the tree it named last time is no evidence the agent moved:
+// Claude Code resets its shell's working directory after each command, so an
+// agent working in a worktree through `cd` keeps reporting the launch checkout.
+// Its own commit re-homed it into the worktree; the next turn boundary, still
+// reporting the launch checkout, must not pull it back. A payload that changed
+// is a move.
+func TestRehomeSessionToCurrentWorktree_RepeatedPayloadIsNotAMove(t *testing.T) {
+	fx := newRehomeFixture(t) // the hook runs in fx.worktreeDir
+	repo, err := OpenRepository(context.Background())
+	require.NoError(t, err)
+	defer repo.Close()
+	s := &ManualCommitStrategy{}
+	signalled := WithAgentWorkingTree(context.Background())
+
+	cases := map[string]struct {
+		lastReported string
+		moved        bool
+	}{
+		"payload unchanged since the session moved away": {lastReported: fx.worktreeDir, moved: false},
+		"payload changed: the agent moved":               {lastReported: fx.mainDir, moved: true},
+		"nothing recorded yet":                           {lastReported: "", moved: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			state := *fx.state // homed in fx.mainDir
+			state.AgentWorktree = tc.lastReported
+			s.rehomeSessionToCurrentWorktree(signalled, repo, &state, false)
+			if tc.moved {
+				assert.Equal(t, fx.worktreeDir, state.WorktreePath)
+			} else {
+				assert.Equal(t, fx.mainDir, state.WorktreePath, "a repeated payload must not move the session")
+			}
+			assert.Equal(t, fx.worktreeDir, state.AgentWorktree, "the reported tree is recorded")
+		})
+	}
+}
