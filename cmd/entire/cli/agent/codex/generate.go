@@ -11,21 +11,23 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 )
 
-// generateTextDisabledFeatures are the codex features that give the model a
+// generateTextDisabledFeatures are codex features that give the model a
 // tool. Summary generation needs none (the transcript is already in the
 // prompt), and its prompt carries untrusted transcript content. codex's
 // default read-only sandbox blocks writes and network but not reads, so with
-// any of these enabled an injected instruction could read an arbitrary file
-// into the summary. Verified live on codex-cli 0.156.1: disabling shell_tool
-// and unified_exec alone still let the model read a file outside the working
-// directory through the code-mode JS host, and with this full set a read,
-// write, or network request inside or outside the working directory did
-// nothing while a normal summary still completed.
+// shell_tool or unified_exec enabled an injected instruction could read an
+// arbitrary file into the summary; disabling only those two still left a read
+// through the code-mode JS host (verified live on codex-cli 0.156.1).
 //
-// This is a denylist because codex exec offers no "no tools" switch and
-// withholding sandbox read permissions (sandbox_permissions=[]) does not stop
-// reads. A new tool-bearing codex feature is therefore enabled until it is
-// added here; `codex features list` shows them.
+// This is a denylist and it is NOT complete: codex exec offers no "no tools"
+// switch, withholding sandbox read permissions (sandbox_permissions=[]) does
+// not stop reads, and codex keeps adding tool-bearing features. On 0.156.1
+// the model still reports collaboration (sub-agent) tools, apply_patch, web
+// search, and goal tools with this set disabled; none of them read the
+// canary in live probes, but that is observed behavior, not a guarantee.
+// view_image, multi_agent, and image_generation are listed because they are
+// stable, on by default, and reach files or spawn work. `codex features list`
+// shows candidates.
 var generateTextDisabledFeatures = []string{
 	"shell_tool",
 	"unified_exec",
@@ -36,6 +38,9 @@ var generateTextDisabledFeatures = []string{
 	"browser_use_external",
 	"computer_use",
 	"in_app_browser",
+	"view_image",
+	"multi_agent",
+	"image_generation",
 }
 
 // GenerateText sends a prompt to the Codex CLI and returns the raw text response.

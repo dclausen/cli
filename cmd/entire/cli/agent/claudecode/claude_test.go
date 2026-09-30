@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,6 +104,11 @@ func TestBuildGenerateArgs_RemovesAllTools(t *testing.T) {
 		}
 		if got != "" {
 			t.Errorf("%s: --tools = %q, want %q (no tools)", name, got, "")
+		}
+		// --tools covers built-in tools only; MCP servers from the user's
+		// config would keep theirs.
+		if !slices.Contains(args, "--strict-mcp-config") {
+			t.Errorf("%s: --strict-mcp-config missing; user MCP servers keep their tools: %v", name, args)
 		}
 	}
 }

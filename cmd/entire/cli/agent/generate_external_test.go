@@ -44,7 +44,7 @@ func TestGenerateText_PromptViaStdin(t *testing.T) {
 				}
 				// Every tool-bearing feature stays off: with any of them on, an
 				// injected instruction could read a file into the summary.
-				for _, feature := range []string{"shell_tool", "unified_exec", "code_mode_host", "apps", "plugins", "browser_use", "browser_use_external", "computer_use", "in_app_browser"} {
+				for _, feature := range []string{"shell_tool", "unified_exec", "code_mode_host", "apps", "plugins", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "view_image", "multi_agent", "image_generation"} {
 					i := slices.Index(args, feature)
 					if i < 1 || args[i-1] != "--disable" {
 						t.Errorf("expected --disable %s in args, got %v", feature, args)

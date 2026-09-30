@@ -37,6 +37,12 @@ const (
 // entirely; summary generation needs none, because the transcript is already
 // in the prompt.
 //
+// --tools "" covers the built-in set only: MCP servers from the user's
+// ~/.claude.json keep their tools under it (verified: a user-scope server
+// stayed connected with its 76 tools). --setting-sources "" also drops them on
+// Claude Code 2.1.285, but that is not documented behavior of the flag, so
+// --strict-mcp-config (with no --mcp-config) states it explicitly.
+//
 // The one thing we genuinely need from the user settings is auth. Users on API
 // billing configure it with `apiKeyHelper` (a command that prints the key),
 // which lives in user settings and is therefore dropped by --setting-sources "".
@@ -59,6 +65,7 @@ func buildGenerateArgs(model, settingsPath string) []string {
 		"--model", model,
 		"--setting-sources", "",
 		"--tools", "",
+		"--strict-mcp-config",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -80,6 +87,7 @@ func buildStreamingGenerateArgs(model, settingsPath string) []string {
 		"--model", model,
 		"--setting-sources", "",
 		"--tools", "",
+		"--strict-mcp-config",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
