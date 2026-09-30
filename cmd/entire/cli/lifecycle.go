@@ -262,7 +262,7 @@ func worktreeRootOf(ctx context.Context, dir string) (string, gitrepo.WorktreeMe
 	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
 		return "", gitrepo.WorktreeMetadata{}, fmt.Errorf("%s is not a directory", dir)
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", abs, "rev-parse", "--show-toplevel")
+	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", abs, "rev-parse", "--show-toplevel")
 	cmd.Env = gitrepo.EnvWithoutRepoOverrides()
 	out, err := cmd.Output()
 	if err != nil {
