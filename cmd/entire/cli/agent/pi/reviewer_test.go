@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -249,4 +250,30 @@ func envMap(env []string) map[string]string {
 		out[kv[:idx]] = kv[idx+1:]
 	}
 	return out
+}
+
+// TestPiReviewer_TooOldForIsolation: a pi that predates --no-approve (e.g.
+// 0.70.2) rejects it with "Unknown option" and exits before loading anything,
+// so the review fails closed. It must say to update pi rather than surface the
+// bare option error; an unrelated failure keeps the default error.
+func TestPiReviewer_TooOldForIsolation(t *testing.T) {
+	t.Parallel()
+	classify := NewReviewer().ClassifyExit
+	if classify == nil {
+		t.Fatal("pi reviewer has no ClassifyExit; a pi too old for --no-approve would fail with a bare option error")
+	}
+	exitErr := errors.New("exit status 1")
+
+	got := classify("Error: Unknown option: --no-approve", exitErr)
+	if got == nil || !strings.Contains(got.Error(), "--no-approve") || !strings.Contains(got.Error(), "update pi") {
+		t.Fatalf("classify(unknown --no-approve) = %v, want an update-pi error naming --no-approve", got)
+	}
+	if !errors.Is(got, exitErr) {
+		t.Errorf("classified error does not wrap the exit error")
+	}
+	for _, stderr := range []string{"Error: Unknown option: --frobnicate", `Error: Model "x" not found.`, ""} {
+		if got := classify(stderr, exitErr); got != nil {
+			t.Errorf("classify(%q) = %v, want nil", stderr, got)
+		}
+	}
 }

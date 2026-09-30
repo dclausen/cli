@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"slices"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
@@ -30,16 +32,36 @@ import (
 // review Event stream.
 func NewReviewer() *reviewtypes.ReviewerTemplate {
 	return &reviewtypes.ReviewerTemplate{
-		AgentName: string(agent.AgentNamePi),
-		Prepare:   writeReviewExtension,
-		BuildCmd:  buildPiReviewCmd,
-		Parser:    parsePiReviewOutput,
+		AgentName:    string(agent.AgentNamePi),
+		Prepare:      writeReviewExtension,
+		BuildCmd:     buildPiReviewCmd,
+		Parser:       parsePiReviewOutput,
+		ClassifyExit: classifyPiReviewExit,
 	}
 }
 
 // reviewExtensionName is where the review copy of Entire's extension lives,
 // as a name inside the per-user cache directory.
 const reviewExtensionName = "pi-review/entire-extension.ts"
+
+// piUnknownOptionPattern matches pi's error for a flag it does not know, e.g.
+// "Error: Unknown option: --no-approve".
+var piUnknownOptionPattern = regexp.MustCompile(`Unknown option: (-[^\s=]+)`)
+
+// piIsolationFlags are the flags buildPiReviewCmd relies on to keep the
+// reviewed checkout's configuration out of the reviewer.
+var piIsolationFlags = []string{"--no-approve", "--no-extensions", "--extension"}
+
+// classifyPiReviewExit reports a pi too old for one of the isolation flags as
+// such, instead of a bare "Unknown option".
+func classifyPiReviewExit(stderr string, err error) error {
+	for _, m := range piUnknownOptionPattern.FindAllStringSubmatch(stderr, -1) {
+		if slices.Contains(piIsolationFlags, m[1]) {
+			return fmt.Errorf("pi: this pi does not support %s, which isolated reviews need to keep the reviewed checkout's configuration out of the reviewer; update pi and retry: %w", m[1], err)
+		}
+	}
+	return nil
+}
 
 // buildPiReviewCmd builds the exec.Cmd for a pi review run.
 //
@@ -49,9 +71,11 @@ const reviewExtensionName = "pi-review/entire-extension.ts"
 // trust is inherited from the nearest trusted ancestor, so a review worktree
 // inside a trusted repo would also load the branch's .pi/settings.json
 // (shellCommandPrefix, shellPath) and SYSTEM.md. --no-approve ignores all
-// project-local files for the run. --no-extensions is kept for pi releases
-// that predate project trust: they load project extensions unconditionally
-// and only warn about --no-approve as an unknown option. Entire's own extension,
+// project-local files for the run. --no-extensions also stops extension and
+// package discovery on its own. A pi that predates --no-approve (0.70.2 is one)
+// rejects it and exits before loading anything, so the review fails closed;
+// classifyPiReviewExit turns that into a message to update pi, since dropping
+// the flag would load the branch's .pi/settings.json. Entire's own extension,
 // which normally comes from that same project directory, is loaded from a copy
 // the binary writes (writeReviewExtension) so the review is still captured.
 func buildPiReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
