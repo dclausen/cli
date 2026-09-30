@@ -28,6 +28,10 @@ type repoCreateRequest struct {
 	visibility   coreapi.SetRepoVisibilityInputBodyVisibility
 }
 
+// repoVisibilityGrace bounds the visibility write when --wait-timeout was
+// spent on the readiness wait.
+const repoVisibilityGrace = 30 * time.Second
+
 // repoCreateOptions are the readiness settings shared by both entry points.
 type repoCreateOptions struct {
 	noWait      bool
@@ -79,7 +83,18 @@ func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client
 		}
 	}
 	ref := repoCreateRef(created, req.projectName)
-	visErr := applyRepoVisibility(ctx, c, created, req.visibility)
+	// A wait that ran out --wait-timeout leaves ctx expired, and the
+	// visibility asked for is still owed on a repo that exists: give it its
+	// own short budget. Only the deadline earns that — an interrupted command
+	// (Ctrl+C) stays interrupted, since the budget derives from the command's
+	// own context.
+	visCtx := ctx
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		var cancel context.CancelFunc
+		visCtx, cancel = context.WithTimeout(cmd.Context(), repoVisibilityGrace)
+		defer cancel()
+	}
+	visErr := applyRepoVisibility(visCtx, c, created, req.visibility)
 	if visErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "The repository was created, but setting its visibility to %s failed: %v\nSet it with: entire repo edit %s --visibility %s\n",
 			req.visibility, renderCoreError(visErr), shellArg(cmp.Or(ref, created.ID)), req.visibility)

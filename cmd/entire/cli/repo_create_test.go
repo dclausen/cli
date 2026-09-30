@@ -50,6 +50,9 @@ type fakeRepoCreateCore struct {
 	// snapshotOmitsVisibility leaves visibility and fullName out of the
 	// readiness read.
 	snapshotOmitsVisibility bool
+	// snapshotHangs makes the readiness read wait until the client gives up,
+	// so --wait-timeout runs out.
+	snapshotHangs bool
 
 	mu           sync.Mutex
 	requests     int
@@ -195,6 +198,10 @@ func (f *fakeRepoCreateCore) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		writeJSON(http.StatusCreated, repo)
 	case r.Method == http.MethodGet && path == "/repos/"+testCreatedRepoID:
+		if f.snapshotHangs {
+			<-r.Context().Done()
+			return
+		}
 		// The readiness read is authoritative: it answers with the repo as
 		// created, which the command adopts.
 		f.mu.Lock()
@@ -825,4 +832,19 @@ func TestRepoCreate_VisibilitySurvivesTheReadinessSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, f.visBodies)
 	require.Contains(t, stdout, "✓ Created repository acme/web")
+}
+
+// A readiness wait that runs out --wait-timeout still leaves the requested
+// visibility to set on the repo that now exists: the write gets its own
+// budget rather than failing on the spent deadline.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_VisibilityAfterWaitTimeout(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), snapshotHangs: true}
+	f.serve()
+	_, stderr, err := execRepoCreateArgs(t, "web", "--project", "acme", "--visibility", "public", "--wait-timeout", "300ms")
+	require.ErrorIs(t, err, context.DeadlineExceeded, "readiness was not confirmed")
+	require.Contains(t, stderr, "Readiness was not confirmed")
+	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies, "the visibility was still set")
+	require.NotContains(t, stderr, "setting its visibility to public failed")
 }
