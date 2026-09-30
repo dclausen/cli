@@ -19,7 +19,9 @@ var ErrNothingToCheckpoint = errors.New("session has nothing to checkpoint")
 // transcript and returns its ID. The checkpoint is written exactly as a
 // condensation writes one — same extraction, redaction, and store write, so it
 // is enqueued for push like any other — but it is not linked to a commit, and
-// so carries no code attribution (see condenseOpts.noCommitAttribution).
+// so carries no code attribution (see condenseOpts.noCommitAttribution). A
+// redaction failure is an error here rather than a dropped transcript (see
+// condenseOpts.failOnRedactionError).
 //
 // It is a snapshot: the session state is loaded fresh, condensed from that
 // in-memory copy, and never saved back. The session's checkpoint window
@@ -54,7 +56,7 @@ func (s *ManualCommitStrategy) CreateSnapshotCheckpoint(ctx context.Context, ses
 		return id.EmptyCheckpointID, fmt.Errorf("generate checkpoint ID: %w", err)
 	}
 
-	result, err := s.CondenseSession(ctx, repo, checkpointID, state, nil, condenseOpts{noCommitAttribution: true})
+	result, err := s.CondenseSession(ctx, repo, checkpointID, state, nil, condenseOpts{noCommitAttribution: true, failOnRedactionError: true})
 	if err != nil {
 		return id.EmptyCheckpointID, fmt.Errorf("failed to create checkpoint: %w", err)
 	}

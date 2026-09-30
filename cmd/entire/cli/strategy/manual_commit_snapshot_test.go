@@ -2,12 +2,14 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/redact"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -102,4 +104,29 @@ func TestCreateSnapshotCheckpoint_RecordsNoCommitAttribution(t *testing.T) {
 	content, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).ReadSessionContent(context.Background(), checkpointID, 0)
 	require.NoError(t, err)
 	assert.Nil(t, content.Metadata.Attribution, "a commitless snapshot must not carry commit attribution")
+}
+
+// Hook-path condensation drops the transcript when runtime redaction fails, so
+// a commit is never blocked on it. A snapshot exists for its transcript, so the
+// same failure must be an error: not an ID for a transcript-less checkpoint,
+// and not a misleading "nothing to checkpoint".
+func TestCreateSnapshotCheckpoint_RedactionFailureIsAnError(t *testing.T) {
+	// No t.Parallel: swaps the package-level redaction seam and uses t.Chdir.
+	originalRedact := redactSessionJSONLBytes
+	redactSessionJSONLBytes = func(context.Context, []byte) (redact.RedactedBytes, error) {
+		return redact.RedactedBytes{}, errors.New("forced redaction failure")
+	}
+	t.Cleanup(func() { redactSessionJSONLBytes = originalRedact })
+
+	sessionID := "2026-09-30-snapshot-redaction-failure"
+	// The fixture has FilesTouched, so a dropped transcript would still write.
+	repo, _ := setupCondensableSessionWithTranscript(t, sessionID)
+
+	_, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
+	require.ErrorContains(t, err, "forced redaction failure")
+	require.NotErrorIs(t, err, ErrNothingToCheckpoint)
+
+	checkpoints, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).List(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, checkpoints, "no checkpoint may be written when the transcript could not be redacted")
 }
