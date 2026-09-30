@@ -24,6 +24,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/stringutil"
 	"github.com/entireio/cli/cmd/entire/cli/trailers"
+	"github.com/entireio/cli/cmd/entire/cli/tuiutil"
 
 	"github.com/spf13/cobra"
 )
@@ -389,9 +390,22 @@ type checkpointSyncInfo struct {
 	// IgnoredRemote and IgnoredReason report a configured checkpoint_remote
 	// that the ownership check rejected as inherited with the clone. Both
 	// reads and pushes then fall back to the elected remote, and status is
-	// where a user finds out why — the hooks only log the rejection.
+	// where a user finds out why.
 	IgnoredRemote string
 	IgnoredReason string
+	// IgnoredDisproved marks a rejection where a remote named a different
+	// owner — the fork case, where checkpoints landing on the elected remote is
+	// the intended outcome — so it renders as information, not a warning. False
+	// for an unprovable owner, which only the user can settle.
+	IgnoredDisproved bool
+	// IgnoredReasonIsReadSide marks the push-disabled report, which comes from
+	// the fetch side's verdict rather than ownership, so it names no verdict.
+	IgnoredReasonIsReadSide bool
+	// IgnoredRemedy is the command that claims the ignored store for this
+	// clone, empty only when the configured entry is too malformed to name
+	// one. Carried rather than rebuilt at render time so the text and the
+	// JSON cannot offer different fixes.
+	IgnoredRemedy string
 }
 
 // resolveDedicatedReadSource records where checkpoint READS land when the
@@ -440,8 +454,8 @@ func computeCheckpointSyncInfo(ctx context.Context, s *EntireSettings) checkpoin
 
 	elected, err := strategy.ResolveCheckpointSyncRemote(ctx)
 	if err != nil {
-		// Fail-closed: checkpoint_push_remote names a remote that does not
-		// exist. The pre-push gate is silently skipping checkpoint sync, so
+		// Fail-closed: election could not confirm a usable checkpoint sync
+		// remote. The pre-push gate is silently skipping checkpoint sync, so
 		// status is the user's signal.
 		// Accepted divergence: if a structured checkpoint_remote is also
 		// configured, the gate's dedicated exemption may still sync checkpoint
@@ -526,28 +540,29 @@ func computeCheckpointSyncInfo(ctx context.Context, s *EntireSettings) checkpoin
 	// but a fetch with NO candidate votes on origin alone, so a mismatch that
 	// lives only in the elected remote's push URL shows "not in use" here
 	// even though such a lead-less fetch still resolves the checkpoint remote.
-	if cr := s.GetCheckpointRemote(); cr != nil {
-		if repo, reason, inherited := checkpointremote.InheritedCheckpointRemote(ctx, s, elected.Name); inherited {
-			info.IgnoredRemote = repo
-			info.IgnoredReason = reason
-		} else if info.PushDisabled {
-			// That verdict is ownership only, so it accepts a store the fetch
-			// side declined for another reason (an unparseable origin URL, an
-			// unmappable protocol) — and with pushing disabled the fetch side
-			// is the one that decided the line above. Without this the
-			// configured store is reported by nothing at all, which is the
-			// silent-ignore the warning exists to prevent. Ownership itself
-			// cannot split the two: both vote over origin plus the
-			// candidate's push urls.
-			//
-			// No reason is given: the fetch side returns a verdict and not a
-			// cause, so naming one would be a guess. The causes are logged
-			// where they are decided.
-			info.IgnoredRemote = cr.Repo
-			info.IgnoredReason = "checkpoint reads do not resolve to it (see .entire/logs for the reason)"
-		}
+	// With pushing disabled, reaching here means the fetch side already
+	// declined the store above (resolveDedicatedReadSource returned false).
+	if r, ok := ignoredCheckpointRemote(ctx, s, elected.Name, info.PushDisabled); ok {
+		info.IgnoredRemote = r.Repo
+		info.IgnoredReason = r.Reason
+		info.IgnoredDisproved = r.Verdict == checkpointremote.OwnershipDisproved
+		info.IgnoredReasonIsReadSide = r.ReadSide
+		info.IgnoredRemedy = r.Remedy
 	}
 	return info
+}
+
+// IgnoredVerdict names the ownership verdict behind IgnoredRemote for --json;
+// empty when nothing is ignored or the refusal was not an ownership verdict.
+func (info checkpointSyncInfo) IgnoredVerdict() string {
+	switch {
+	case info.IgnoredRemote == "" || info.IgnoredReasonIsReadSide:
+		return ""
+	case info.IgnoredDisproved:
+		return "disproved"
+	default:
+		return "unprovable"
+	}
 }
 
 // countUnpushedCheckpointsForStatus counts best-effort: status must never fail
@@ -626,10 +641,19 @@ func writeCheckpointSyncLines(ctx context.Context, b *strings.Builder, s *Entire
 		b.WriteString(sty.render(sty.dim, " (fallback; nothing was elected)"))
 	}
 	if info.IgnoredRemote != "" {
+		// The repo comes from the committed settings file, so it is stripped
+		// of escape sequences before it reaches the terminal.
+		repo := tuiutil.SanitizeDisplayText(info.IgnoredRemote)
+		line := ignoredCheckpointRemoteSentence(repo, info.IgnoredReason, info.Remote) + " " +
+			ignoredCheckpointRemoteFix(repo, info.IgnoredRemedy)
 		b.WriteString("\n")
-		b.WriteString(sty.render(sty.yellow,
-			"  ! checkpoint_remote "+info.IgnoredRemote+" is not in use: "+info.IgnoredReason+
-				". If this checkpoint repo is yours, set checkpoint_remote in .entire/settings.local.json."))
+		if info.IgnoredDisproved {
+			// Another owner's store: checkpoints on the elected remote is the
+			// intended outcome for a fork, so this is information, not a fault.
+			b.WriteString(sty.render(sty.dim, "  "+line))
+		} else {
+			b.WriteString(sty.render(sty.yellow, "  ! "+line))
+		}
 	}
 	if info.Unpushed > 0 {
 		b.WriteString("\n  ")
@@ -676,19 +700,48 @@ func timeAgo(t time.Time) string {
 	return formatRelativeDuration(time.Since(t))
 }
 
-// formatRelativeDuration renders a positive duration as "just now" / "Xm ago"
-// / "Xh ago" / "Xd ago". Shared between `entire status` and `entire auth list`
-// so the bucket thresholds and labels stay consistent.
+// formatRelativeDuration renders a signed duration relative to now: "just now"
+// near zero, "Xm ago" / "Xh ago" / "Xd ago" / "Xmo ago" in the past, and "in Xm"
+// … "in Xmo" in the future. Shared between `entire status` and `entire auth
+// status` so the bucket thresholds and labels stay consistent.
+//
+// The sign test comes first on purpose: a future duration is negative, so it
+// would otherwise satisfy d < time.Minute and report "just now" for a session
+// that expires in a month.
 func formatRelativeDuration(d time.Duration) string {
-	switch {
-	case d < time.Minute:
+	if d > -time.Minute && d < time.Minute {
+		// Also absorbs the small negative durations that clock skew produces
+		// for a timestamp the server stamped moments ago.
 		return lastUsedJustNow
+	}
+	if d < 0 {
+		return "in " + humanizeDuration(-d)
+	}
+	return humanizeDuration(d) + " ago"
+}
+
+// humanizeDuration renders a positive duration as a single coarse unit. It
+// holds the bucket ladder that formatRelativeDuration wraps with tense, so past
+// and future can never drift apart.
+//
+// Each unit's band starts at 1 — 1m, 1h, 1d, 1mo — which is why days stop at 30
+// rather than running to 60. A wider day band would make the first reachable
+// month "2mo", so a value ticking past the boundary would read 59d then 2mo and
+// look like it had doubled.
+func humanizeDuration(d time.Duration) string {
+	const (
+		day   = 24 * time.Hour
+		month = 30 * day
+	)
+	switch {
 	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < day:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < month:
+		return fmt.Sprintf("%dd", int(d/day))
 	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+		return fmt.Sprintf("%dmo", int(d/month))
 	}
 }
 
@@ -1076,6 +1129,17 @@ type statusJSON struct {
 	// fall back to the elected remote). Mirrors the text path's warning line.
 	CheckpointRemoteIgnored       string `json:"checkpoint_remote_ignored,omitempty"`
 	CheckpointRemoteIgnoredReason string `json:"checkpoint_remote_ignored_reason,omitempty"`
+	// CheckpointRemoteIgnoredRemedy is the command that claims the ignored
+	// store for this clone. Emitted so an agent reading --json can act on the
+	// rejection rather than only report it; absent when no single command
+	// fixes it.
+	CheckpointRemoteIgnoredRemedy string `json:"checkpoint_remote_ignored_remedy,omitempty"`
+	// CheckpointRemoteIgnoredVerdict says why ownership refused the store:
+	// "disproved" when a remote names a different owner (a fork, where the
+	// fallback is the intended outcome) or "unprovable" when no owner could be
+	// read (only the user can settle it). Absent when the refusal was not an
+	// ownership verdict.
+	CheckpointRemoteIgnoredVerdict string `json:"checkpoint_remote_ignored_verdict,omitempty"`
 	// SecretScanners lists the enabled engines when non-default; omitted when default.
 	SecretScanners []string `json:"secret_scanners,omitempty"`
 	Error          string   `json:"error,omitempty"`
@@ -1176,6 +1240,8 @@ func runStatusJSON(ctx context.Context, w io.Writer) error {
 		result.UnpushedCheckpoints = syncInfo.Unpushed
 		result.CheckpointRemoteIgnored = syncInfo.IgnoredRemote
 		result.CheckpointRemoteIgnoredReason = syncInfo.IgnoredReason
+		result.CheckpointRemoteIgnoredRemedy = syncInfo.IgnoredRemedy
+		result.CheckpointRemoteIgnoredVerdict = syncInfo.IgnoredVerdict()
 
 		if store, err := session.NewStateStore(ctx); err == nil {
 			// Read-only, and one entry per session. Collapsing by agent hid a

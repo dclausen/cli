@@ -15,7 +15,7 @@ import (
 
 // newRepoCmd is the `entire repo` command group: control-plane
 // repository lifecycle (create, list within a project, view, edit, delete),
-// the `mirror`, `remote`, `access`, `visibility`, `protection` and `grant`
+// the `mirror`, `remote`, `visibility`, `protection` and `grant`
 // subtrees, plus the `clone` convenience that resolves a mirror and shells
 // out to `git clone`. Other git content operations (log, diff, …) remain
 // intentionally out of scope here.
@@ -33,7 +33,6 @@ func newRepoCmd() *cobra.Command {
 	cmd.AddCommand(newRepoCloneCmd())
 	cmd.AddCommand(newRepoMirrorCmd())
 	cmd.AddCommand(newRepoRemoteCmd())
-	cmd.AddCommand(newRepoAccessCmd())
 	cmd.AddCommand(newRepoVisibilityCmd())
 	cmd.AddCommand(newRepoProtectionCmd())
 	cmd.AddCommand(newRepoGrantCmd())
@@ -144,6 +143,19 @@ and recovery instructions go to stderr.`,
 		},
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Refuse a name that ends in `.git`. The suffix is never part of a
+			// repo name (see gitDirSuffix): every ref parser drops it, so the
+			// name would round-trip to a different string than the one typed.
+			// The server refuses it too; saying so here costs no round trip and
+			// names the spelling to use instead.
+			if name := strings.TrimSpace(args[0]); strings.HasSuffix(name, gitDirSuffix) {
+				cmd.SilenceUsage = true
+				err := fmt.Errorf("repo name %q must not end in %s: the suffix is never part of a repo name, so Entire could not address the repo by the name you typed", name, gitDirSuffix)
+				if trimmed := strings.TrimSuffix(name, gitDirSuffix); trimmed != "" {
+					err = fmt.Errorf("%w (use %q)", err, trimmed)
+				}
+				return err
+			}
 			var format coreapi.CreateRepoInputBodyObjectFormat
 			if objectFormat != "" {
 				parsed, err := parseObjectFormat(objectFormat)
@@ -164,7 +176,11 @@ and recovery instructions go to stderr.`,
 				if format != "" {
 					body.ObjectFormat = coreapi.NewOptCreateRepoInputBodyObjectFormat(format)
 				}
-				created, err := c.CreateRepo(ctx, body)
+				response, err := c.CreateRepo(ctx, body)
+				if err != nil {
+					return err
+				}
+				created, err := createdRepoAsRepo(&response.Response)
 				if err != nil {
 					return err
 				}
@@ -345,7 +361,10 @@ neither confirms readiness.`,
 					fmt.Fprintf(cmd.ErrOrStderr(), "%v\nUse entire repo view %s to inspect repository details without a readiness check.\n", renderRepoReadError(err), repoID)
 					return nil, NewSilentError(err)
 				}
-				return repo, err
+				if err != nil {
+					return nil, err
+				}
+				return &repo.Response, nil
 			})
 		},
 	}
@@ -367,7 +386,8 @@ func newRepoDeleteCmd() *cobra.Command {
 					return resolveRepoRefResolved(ctx, c, args[0], project)
 				},
 				func(ctx context.Context, c *coreapi.Client, id string) error {
-					return c.DeleteRepo(ctx, coreapi.DeleteRepoParams{RepoId: id})
+					_, err := c.DeleteRepo(ctx, coreapi.DeleteRepoParams{RepoId: id})
+					return err
 				})
 		},
 	}

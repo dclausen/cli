@@ -939,11 +939,12 @@ func TestDeleteTrailByNumber(t *testing.T) {
 	})
 }
 
-// TestParseTrailRepoShape_GitSuffixIsForgeAware pins that a bare triple keeps
-// `.git` for a native ref and drops it for a mirror ref. `entire trail` refuses
-// native refs downstream (errTrailsNativeUnsupported), so this is about the
-// parser reporting the name it was given rather than a user-visible unlock.
-func TestParseTrailRepoShape_GitSuffixIsForgeAware(t *testing.T) {
+// TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge pins that a bare
+// triple drops `.git` whichever forge it names. Both forges reach a trails
+// route — a mirror by forge/owner/repo, a native repo by ULID through
+// trailRepoBasePath — so this is user-visible normalization: `--repo
+// et/p/foo.git` and `--repo et/p/foo` name one repository.
+func TestParseTrailRepoShape_GitSuffixIsDroppedOnEveryForge(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name      string
@@ -952,7 +953,7 @@ func TestParseTrailRepoShape_GitSuffixIsForgeAware(t *testing.T) {
 		wantOwner string
 		wantRepo  string
 	}{
-		{name: "native keeps the suffix", raw: "et/audit1/foo.git", wantForge: "et", wantOwner: "audit1", wantRepo: "foo.git"},
+		{name: "native drops the suffix", raw: "et/audit1/foo.git", wantForge: "et", wantOwner: "audit1", wantRepo: "foo"},
 		{name: "native without a suffix", raw: "et/audit1/foo", wantForge: "et", wantOwner: "audit1", wantRepo: "foo"},
 		{name: "mirror drops the suffix", raw: "gh/acme/app.git", wantForge: "gh", wantOwner: "acme", wantRepo: "app"},
 	} {
@@ -963,6 +964,28 @@ func TestParseTrailRepoShape_GitSuffixIsForgeAware(t *testing.T) {
 			require.Equal(t, tc.wantForge, forge)
 			require.Equal(t, tc.wantOwner, owner)
 			require.Equal(t, tc.wantRepo, repo)
+		})
+	}
+}
+
+// TestParseTrailRepoShape_RefusesNamesTheTrimManufactures pins that the segment
+// check runs again AFTER the suffix is dropped. The emptiness check ahead of the
+// trim sees the name as typed, so ".git" and "..git" both passed it and then
+// became "" and "." — coordinates the trim invented, forwarded to a trails
+// route. Neither forge is exempt.
+func TestParseTrailRepoShape_RefusesNamesTheTrimManufactures(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"et/acme/.git",   // empties
+		"et/acme/..git",  // becomes "."
+		"et/acme/...git", // becomes ".."
+		"gh/acme/.git",
+		"gh/acme/..git",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			_, _, _, err := parseTrailRepoShape(raw)
+			require.Error(t, err)
 		})
 	}
 }
@@ -1748,7 +1771,7 @@ func TestPrintTrailDetailsOmitsWhitespacePhase(t *testing.T) {
 		Base:   "main",
 		Status: trail.StatusOpen,
 		Phase:  "   ",
-	}, "", "")
+	}, "", nil, "")
 
 	if text := out.String(); strings.Contains(text, "Phase:") {
 		t.Fatalf("expected whitespace phase to be omitted, got:\n%s", text)
@@ -1760,7 +1783,7 @@ func TestPrintTrailDetailsRendersURLAndDescription(t *testing.T) {
 	m := &trail.Metadata{Title: "T", Branch: "feat/a", Base: "main", Status: trail.StatusOpen}
 
 	var out bytes.Buffer
-	printTrailDetails(&out, m, "https://entire.io/gh/acme/repo/trails/5", "line one\nline two")
+	printTrailDetails(&out, m, "https://entire.io/gh/acme/repo/trails/5", nil, "line one\nline two")
 	text := out.String()
 	if !strings.Contains(text, "URL:") || !strings.Contains(text, "https://entire.io/gh/acme/repo/trails/5") {
 		t.Fatalf("expected a URL line, got:\n%s", text)
@@ -1771,7 +1794,7 @@ func TestPrintTrailDetailsRendersURLAndDescription(t *testing.T) {
 
 	// Empty URL and whitespace-only body are omitted.
 	out.Reset()
-	printTrailDetails(&out, m, "", "   ")
+	printTrailDetails(&out, m, "", nil, "   ")
 	if text := out.String(); strings.Contains(text, "URL:") || strings.Contains(text, "Description:") {
 		t.Fatalf("expected URL/Description omitted for empty values, got:\n%s", text)
 	}
@@ -2028,7 +2051,7 @@ func TestRunTrailShowJSONKeepsStdoutParseableWhenDescriptionFetchFails(t *testin
 	err := runTrailShowWithClientAtPath(t.Context(), &out, &errOut, api.NewClientWithBaseURL("tok", srv.URL), trailTestBasePath, "gh", "acme", "repo", trailShowOptions{Selector: "feature/x", JSON: true})
 
 	require.NoError(t, err)
-	require.Contains(t, errOut.String(), "could not load trail description")
+	require.Contains(t, errOut.String(), "could not load trail detail")
 
 	var got trail.Metadata
 	require.NoError(t, json.Unmarshal(out.Bytes(), &got), "stdout must stay valid JSON: %s", out.String())
@@ -2839,7 +2862,7 @@ func TestPrintTrailDetailsShowsTypePriorityReviewers(t *testing.T) {
 		Type:      trail.TypeBug,
 		Priority:  trail.PriorityHigh,
 		Reviewers: []trail.Reviewer{{Login: "rev1", Status: trail.ReviewerApproved}},
-	}, "", "")
+	}, "", nil, "")
 	s := out.String()
 	for _, want := range []string{"Type:", "bug", "Priority:", "high", "Reviewers:", "rev1", "approved"} {
 		if !strings.Contains(s, want) {

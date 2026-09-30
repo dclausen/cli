@@ -307,7 +307,7 @@ func renderNativeMirrorCreateError(err error, ref, clusterSlug string) error {
 // The caller has already refused everything decidable without a write (see
 // checkNativeMirrorTarget), so what is left here is the create and the wait.
 func createOneNativeMirror(ctx context.Context, t mirrorTarget, c *coreapi.Client, clientErr error, opts mirrorAddOptions, report func(status string, final, ok bool)) mirrorResult {
-	res := mirrorResult{forge: t.forge, owner: t.owner, repo: t.repo, regionLabel: regionLabel(t.region)}
+	res := mirrorResult{forge: t.forge, owner: t.owner, repo: t.repo, regionLabel: regionLabel(t.region), clusterHost: t.region.host}
 	if clientErr != nil {
 		res.status, res.err = mirrorStatusError, clientErr
 		report(mirrorStatusError, true, false)
@@ -435,7 +435,7 @@ func runNativeMirrorGet(cmd *cobra.Command, ref mirrorRepoRef) error {
 			RepoId:        repo.ID,
 			Authoritative: coreapi.NewOptBool(true),
 		}); aerr == nil {
-			if state, ok := authoritative.State.Get(); ok {
+			if state, ok := authoritative.Response.State.Get(); ok {
 				repo.State = coreapi.NewOptString(state)
 			}
 		}
@@ -510,7 +510,7 @@ func reportNativeMirrorNotes(w io.Writer, mirrors []coreapi.NativeMirrorPlacemen
 	}
 }
 
-// nativeUsePlacements lists the clusters `repo remote use` may point a git
+// nativeUsePlacements lists the clusters `repo remote add` may point a git
 // remote at: the repo's primary, plus every mirror that is actually readable.
 //
 // A placement that is still seeding, failed or suspended serves nothing, so
