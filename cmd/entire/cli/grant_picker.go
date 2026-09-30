@@ -655,7 +655,7 @@ func grantHolders(rows []grantRow) []grantCandidate {
 		}
 		holders = append(holders, grantCandidate{
 			ref:   r.granteeID,
-			label: labelWithName(granteeName(coreapi.NewOptString(r.name), r.granteeID), r.displayName),
+			label: labelWithName(granteeNameOr(r.name, r.granteeID), r.displayName),
 			role:  r.role,
 			byID:  true,
 		})

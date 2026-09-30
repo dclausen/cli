@@ -611,7 +611,8 @@ func revokeGrant(cmd *cobra.Command, subject string, revoke func() error) error 
 //
 // Both also carry NAME, the account's display name where the server sent one:
 // a Google account's handle is only a subject id, so the name is what tells two
-// of them apart. Org and team grantees never have one and show "-".
+// of them apart. Org and team grantees never have one, and neither does an
+// account the server sent none for; those show "-".
 var (
 	orgMemberColumns = []string{colHeaderGrantee, colHeaderName, colHeaderRole, colHeaderStatus}
 	grantColumns     = []string{colHeaderGrantee, colHeaderName, colHeaderRole, "SOURCE", "TYPE"}
@@ -642,8 +643,13 @@ func repoGrantRow(g coreapi.RepoGrant) []string {
 // spelling users type (see displayGranteeName), falling back to the ULID for
 // grantees it couldn't label (e.g. teams).
 func granteeName(name coreapi.OptString, granteeID string) string {
-	if n := name.Or(""); n != "" {
-		return displayGranteeName(n)
+	return granteeNameOr(name.Or(""), granteeID)
+}
+
+// granteeNameOr is granteeName for a name already unwrapped from the wire.
+func granteeNameOr(name, granteeID string) string {
+	if name != "" {
+		return displayGranteeName(name)
 	}
 	return granteeID
 }
