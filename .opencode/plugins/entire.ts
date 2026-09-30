@@ -320,9 +320,12 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
               seenUserMessages.add(msg.id)
               const sessionID = msg.sessionID ?? currentSessionID
               if (sessionID) {
+                // A synthetic part is OpenCode writing, not the user: a
+                // background task's result arrives this way. The parent does
+                // take a turn on it, so the turn still starts, with no prompt.
                 fireTurnStart({
                   session_id: sessionID,
-                  prompt: part.text ?? "",
+                  prompt: part.synthetic === true ? "" : (part.text ?? ""),
                   model: currentModel ?? "",
                 })
               }

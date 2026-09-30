@@ -516,6 +516,8 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		`taskStartedAt.set(input.callID, Date.now())`,
 		`started_at: taskStartedAt.get(part.callID) ?? 0`,
 		`started_at: startedAt`,
+		// a background result injected as a synthetic user part is not a prompt
+		`prompt: part.synthetic === true ? "" : (part.text ?? "")`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("plugin missing %q", want)
