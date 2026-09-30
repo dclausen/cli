@@ -13,6 +13,8 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/redact"
+
+	"github.com/go-git/go-git/v6"
 )
 
 // OPFSpanCacheDirName holds OPF scan results between the background scan that
@@ -31,6 +33,18 @@ const OPFSpanCacheMaxAge = 30 * 24 * time.Hour
 // name is safe by construction; I/O still goes through the shared root.
 type opfSpanCache struct {
 	root *os.Root
+}
+
+// OPFSpanCacheForRepo opens the cache in repo's git common dir. It resolves the
+// directory from the repository itself, never from the process's working
+// directory, so a caller holding one repo can never read or write another's
+// scan results.
+func OPFSpanCacheForRepo(repo *git.Repository) (redact.OPFSpanCache, error) {
+	_, commonDir, err := repositoryDirs(repo)
+	if err != nil {
+		return nil, err
+	}
+	return OPFSpanCacheAt(commonDir)
 }
 
 // OPFSpanCacheAt opens the cache under gitCommonDir, creating its directory.

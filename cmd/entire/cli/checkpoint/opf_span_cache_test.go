@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/redact"
 )
 
@@ -80,4 +82,23 @@ func TestPruneOPFSpanCache_RemovesOnlyOldEntries(t *testing.T) {
 	assert.False(t, ok, "the stale entry must be gone")
 	_, ok = cache.LoadOPFSpans(newKey)
 	assert.True(t, ok, "a recent entry must survive")
+}
+
+// The cache must live in the repository it was opened for, whatever the
+// process's working directory is. Resolving it from the working directory once
+// wrote test results into the developer's own checkout.
+func TestOPFSpanCacheForRepo_UsesTheRepositoryNotTheWorkingDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	repo, err := gitrepo.OpenPath(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { repo.Close() })
+
+	cache, err := OPFSpanCacheForRepo(repo)
+	require.NoError(t, err)
+	require.NoError(t, cache.StoreOPFSpans(testOPFKey, nil))
+
+	_, err = os.Stat(filepath.Join(dir, ".git", OPFSpanCacheDirName, testOPFKey+".json"))
+	require.NoError(t, err, "the entry must be written under the repository's own git dir")
 }
