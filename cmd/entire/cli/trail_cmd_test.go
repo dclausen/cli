@@ -77,7 +77,7 @@ func TestPostTrailCreateUsesNativeRepoBasePath(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	_, err := postTrailCreate(t.Context(), api.NewClientWithBaseURL("token", srv.URL), basePath,
-		"et", "entirehq", "marvin", "Native trail", "", "feature/native", "main", "open", "", "", nil)
+		"et", "entirehq", "marvin", "Native trail", "", "feature/native", "main", "open", "", "", nil, true)
 	require.NoError(t, err)
 	require.Equal(t, http.MethodPost, gotMethod)
 	require.Equal(t, basePath, gotPath)

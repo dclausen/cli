@@ -2529,7 +2529,7 @@ func TestWarnStaleEndedSessions_RateLimit(t *testing.T) {
 }
 
 // TestPostCommit_TaskRecordCondensationScope pins both sides of
-// idleWithTaskContent's overlap-check bypass. Idle+fresh is the incident fix: a
+// idleWithLiveTaskRecord's overlap-check bypass. Idle+fresh is the incident fix: a
 // background subagent commits its own work mid-task, so the session never picks
 // up the FilesTouched overlap a non-active session normally needs, and only the
 // bypass lets the condensation run and materialize the record's
