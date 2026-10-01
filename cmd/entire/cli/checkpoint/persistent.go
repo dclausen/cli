@@ -536,6 +536,18 @@ func (s *treeWriter) writeTaskRecordEntry(task TaskPayload, basePath string, ent
 	return nil
 }
 
+// checkpointLsTreeCommand returns the `git ls-tree` invocation that shows
+// checkpointID's stored tree: its own ref for the per-checkpoint-ref store
+// (anchored at basePath ""), else its sharded directory on the v1 branch.
+func checkpointLsTreeCommand(checkpointID id.CheckpointID, basePath string) string {
+	if basePath == "" {
+		if refName, err := RefName(checkpointID); err == nil {
+			return "git ls-tree " + refName.String()
+		}
+	}
+	return fmt.Sprintf("git ls-tree %s %s/", paths.MetadataBranchName, checkpointID.Path())
+}
+
 // writeStandardCheckpointEntries writes session files to numbered subdirectories and
 // maintains a CheckpointSummary at the root level with aggregated statistics.
 //
@@ -587,8 +599,8 @@ func (s *treeWriter) writeStandardCheckpointEntries(ctx context.Context, opts Wr
 					slog.String("write_session_id", opts.SessionID),
 					slog.Bool("existing_summary_nil", existingSummary == nil))
 				return fmt.Errorf(
-					"refusing to overwrite session 0 of checkpoint %s: existing session ID %q differs from write session ID %q. The checkpoint tree is inconsistent (session 0 belongs to a different session than this write claims). No automated repair exists for this shape — please report it along with the output of `git ls-tree entire/checkpoints/v1 %s/`",
-					opts.CheckpointID, existingMeta.SessionID, opts.SessionID, opts.CheckpointID.Path(),
+					"refusing to overwrite session 0 of checkpoint %s: existing session ID %q differs from write session ID %q. The checkpoint tree is inconsistent (session 0 belongs to a different session than this write claims). No automated repair exists for this shape — please report it along with the output of `%s`",
+					opts.CheckpointID, existingMeta.SessionID, opts.SessionID, checkpointLsTreeCommand(opts.CheckpointID, basePath),
 				)
 			}
 		}
@@ -739,9 +751,9 @@ func (s *treeWriter) writeSessionToSubdirectory(ctx context.Context, opts WriteO
 		CLIVersion:                  versioninfo.Version,
 		Kind:                        opts.Kind,
 		ReviewSkills:                opts.ReviewSkills,
-		ReviewPrompt:                opts.ReviewPrompt,
+		ReviewPrompt:                redact.String(opts.ReviewPrompt),
 		InvestigateRunID:            opts.InvestigateRunID,
-		InvestigateTopic:            opts.InvestigateTopic,
+		InvestigateTopic:            redact.String(opts.InvestigateTopic),
 	}
 
 	metadataJSON, err := jsonutil.MarshalIndentWithNewline(sessionMetadata, "", "  ")

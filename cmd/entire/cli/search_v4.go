@@ -339,7 +339,7 @@ func (c *cachedClusterClient) ListClusters(ctx context.Context) (*coreapi.ListCl
 	return out, nil
 }
 
-func (c *cachedClusterClient) GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.Repo, error) {
+func (c *cachedClusterClient) GetRepo(ctx context.Context, params coreapi.GetRepoParams) (*coreapi.RepoHeaders, error) {
 	return c.inner.GetRepo(ctx, params) //nolint:wrapcheck // transparent delegation
 }
 
