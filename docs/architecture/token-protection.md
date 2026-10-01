@@ -72,8 +72,43 @@ has new ciphertext and prompts again.
 | `entire login`, token refresh | 0 |
 | `entire <command>` touching the API | 1 |
 | `git fetch` / `git pull` | 1 |
-| `git push` with checkpoint sync on | 2 (the pre-push hook's nested push is a second helper process) |
+| `git push` with checkpoint sync on | 1 (nested pushes use the per-push unlock below) |
 | agent hooks (commit, session) | 0 (they never read tokens) |
+
+## Per-push unlock
+
+The pre-push hook pushes checkpoint refs with its own `git push` calls,
+each a new helper process, and falls back to one push per ref with
+fetch-and-replay when the batch is rejected. Every one of those would be a
+dialog. Instead the helper that passed the dialog serves its unsealed
+bundles over a Unix socket (`unlock.go`), and a nested helper asks before
+prompting (`openSealedSlot`).
+
+- The socket is `<cache dir>/unlock/git-<pid>.sock`, named after the serving
+  helper's parent, the user's `git` process. A client walks its own parent
+  chain looking for a socket named after each ancestor, so only a process
+  inside a running push finds one.
+- The server reads the peer's pid and uid from the kernel (`LOCAL_PEERPID`,
+  `LOCAL_PEERCRED`) and walks the peer's parent chain through
+  `kern.proc.pid` until it reaches its own parent. It refuses when the uid
+  differs, the chain never reaches that git process, any process in the
+  chain started before git did, its own parent pid has changed (git exited
+  and the helper was reparented), or the git pid's start time changed (pid
+  reuse).
+- Only a process that unsealed through the dialog serves. A nested helper
+  that received its bundle over the socket does not.
+- The plaintext never touches disk. The socket node is 0600 inside a 0700
+  directory, but the peer check is the control; the mode is a courtesy.
+- The server stops and removes the socket when the helper exits. A stale
+  node from a crashed helper is replaced on the next start.
+
+What the unlock does not cover: anything the repo already runs during
+pre-push is a descendant of the user's git and passes the ancestry check.
+That code already executes with the user's rights, so the unlock widens
+nothing, but it scopes the approval to "this push", not to Entire's own
+binaries. Reading the serving helper's memory needs the hardened-runtime
+release signing; a plain `go build` dev binary is attachable by a same-user
+debugger.
 
 ## Threat model
 

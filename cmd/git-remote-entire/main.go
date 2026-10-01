@@ -126,6 +126,13 @@ func run(args []string) int {
 	}
 
 	creds, onUnauthorized, err := resolveCreds(ctx, parsedURL, skipTLS, httpClient)
+	if err == nil && auth.TokensProtected() {
+		// Once this process has passed the dialog, serve its unlock to the
+		// pre-push hook's nested pushes so one push is one dialog.
+		var stopUnlock func()
+		creds, stopUnlock = serveUnlockAfterFirstToken(ctx, creds)
+		defer stopUnlock()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
 		return 128
@@ -418,6 +425,42 @@ func coreTrusted(coreURL string, trusted []string) bool {
 		}
 	}
 	return false
+}
+
+// serveUnlockAfterFirstToken wraps provider so the first successful token
+// resolution starts the per-push unlock server. The returned stop is safe
+// to call whether or not the server started.
+func serveUnlockAfterFirstToken(ctx context.Context, provider credentialProvider) (credentialProvider, func()) {
+	var (
+		once sync.Once
+		mu   sync.Mutex
+		stop = func() {}
+	)
+	wrapped := func(reqCtx context.Context) (string, error) {
+		token, err := provider(reqCtx)
+		if err != nil {
+			return "", err
+		}
+		once.Do(func() {
+			// The process context, not the request's: the server outlives
+			// this request and ends with the helper.
+			s, serr := auth.StartUnlockServer(ctx)
+			if serr != nil {
+				debuglog.Printf("per-push unlock not served: %v", serr)
+				return
+			}
+			mu.Lock()
+			stop = s
+			mu.Unlock()
+		})
+		return token, nil
+	}
+	return wrapped, func() {
+		mu.Lock()
+		s := stop
+		mu.Unlock()
+		s()
+	}
 }
 
 // Classified smart-HTTP actions.

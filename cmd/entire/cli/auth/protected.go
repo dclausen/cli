@@ -223,11 +223,22 @@ func openSealedSlot(encoded, issuer, handle, reason string) (tokenBundle, time.T
 	_, expiresAt := tokenstore.DecodeTokenWithExpiration(encoded)
 	b, ok := cachedBundle(encoded)
 	if !ok {
+		// Inside a running push, the helper that already passed the
+		// dialog can hand us its bundles.
+		if m := fetchUnlockedBundles(); m != nil {
+			for k, v := range m {
+				rememberBundle(k, v)
+			}
+			b, ok = m[encoded]
+		}
+	}
+	if !ok {
 		var err error
 		b, err = unsealSlot(encoded, reason)
 		if err != nil {
 			return tokenBundle{}, time.Time{}, err
 		}
+		prompted.Store(true)
 	}
 	if b.Version != bundleVersion || b.Issuer != normalizeIssuer(issuer) || b.Handle != handle {
 		return tokenBundle{}, time.Time{}, ErrBundleMismatch
