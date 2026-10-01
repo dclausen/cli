@@ -154,16 +154,23 @@ func (p *Proxy) handleInfoRefsResponse(resp *http.Response) (io.ReadCloser, erro
 // dropping HTML bodies (they're LB/proxy noise, not a server message).
 // Closes resp.Body.
 func (p *Proxy) httpError(resp *http.Response) error {
+	return HTTPErrorMessage(resp.StatusCode, readErrorMessage(resp), p.ErrorBaseURL())
+}
+
+// readErrorMessage drains up to 1KB of an error body as the server's message,
+// dropping HTML bodies (they're LB/proxy noise, not a server message). Closes
+// resp.Body.
+func readErrorMessage(resp *http.Response) string {
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	_ = resp.Body.Close()
-	var msg string
-	if readErr == nil {
-		msg = strings.TrimSpace(string(body))
+	if readErr != nil {
+		return ""
 	}
+	msg := strings.TrimSpace(string(body))
 	if strings.HasPrefix(msg, "<") {
-		msg = ""
+		return ""
 	}
-	return HTTPErrorMessage(resp.StatusCode, msg, p.ErrorBaseURL())
+	return msg
 }
 
 // ServiceRPC sends data to a Git service endpoint and returns the
@@ -186,10 +193,29 @@ func (p *Proxy) ServiceRPC(ctx context.Context, service string, body io.ReadSeek
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// 413 means "push too large" only from receive-pack (entiredb's
+		// declared-size gate); elsewhere it is an intermediary's limit.
+		if service == serviceReceivePack && resp.StatusCode == http.StatusRequestEntityTooLarge {
+			return nil, newPushTooLargeError(readErrorMessage(resp))
+		}
 		return nil, p.httpError(resp)
 	}
 
 	return resp.Body, nil
+}
+
+const serviceReceivePack = "git-receive-pack"
+
+// InsufficientStorageError is a push a node refused for lack of disk space
+// (HTTP 507, entiredb's free-space gate). The node is healthy: it is not
+// marked failed, and the push moves on to the next replica.
+type InsufficientStorageError struct{ ServerMsg string }
+
+func (e *InsufficientStorageError) Error() string {
+	if e.ServerMsg != "" {
+		return "entire: the server is low on disk space and refused the push (" + e.ServerMsg + "); try again later"
+	}
+	return "entire: the server is low on disk space and refused the push; try again later"
 }
 
 // PushTooLargeError is a receive-pack refused for size (HTTP 413). Its message
@@ -245,8 +271,8 @@ func HTTPErrorMessage(statusCode int, serverMsg, baseURL string) error {
 			return errors.New(serverMsg)
 		}
 		return fmt.Errorf("repository not found: %s", baseURL)
-	case http.StatusRequestEntityTooLarge:
-		return newPushTooLargeError(serverMsg)
+	case http.StatusInsufficientStorage:
+		return &InsufficientStorageError{ServerMsg: serverMsg}
 	default:
 		if serverMsg != "" {
 			return fmt.Errorf("server error (HTTP %d): %s", statusCode, serverMsg)

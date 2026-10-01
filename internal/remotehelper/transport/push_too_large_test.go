@@ -2,11 +2,10 @@ package transport
 
 import (
 	"errors"
-	"net/http"
 	"testing"
 )
 
-func TestHTTPErrorMessage_PushTooLarge(t *testing.T) {
+func TestPushTooLargeError(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
@@ -36,7 +35,7 @@ func TestHTTPErrorMessage_PushTooLarge(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := HTTPErrorMessage(http.StatusRequestEntityTooLarge, tc.msg, "https://x")
+			var err error = newPushTooLargeError(tc.msg)
 			var tooLarge *PushTooLargeError
 			if !errors.As(err, &tooLarge) {
 				t.Fatalf("want *PushTooLargeError, got %T: %v", err, err)
