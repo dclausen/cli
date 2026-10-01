@@ -847,10 +847,11 @@ func LoadLocalBytes(ctx context.Context) ([]byte, error) {
 	return data, nil
 }
 
-// settingsFilePath resolves a settings file under .entire. The local file goes
-// through LocalSettingsPath, so reads and writes from a linked worktree reach
-// the file that worktree actually uses.
-func settingsFilePath(ctx context.Context, file string) (string, error) {
+// FilePath resolves a settings file (EntireSettingsFile or
+// EntireSettingsLocalFile) to the absolute path this worktree reads and writes.
+// The local file goes through LocalSettingsPath, so a read-modify-write from a
+// linked worktree reads the same file its save replaces.
+func FilePath(ctx context.Context, file string) (string, error) {
 	if file == EntireSettingsLocalFile {
 		path, _, err := LocalSettingsPath(ctx)
 		return path, err
@@ -862,7 +863,7 @@ func settingsFilePath(ctx context.Context, file string) (string, error) {
 // "local") only differentiates error wording so failures name the file
 // actually being read.
 func loadRaw(ctx context.Context, file, label string) (path string, raw map[string]json.RawMessage, exists bool, err error) {
-	path, err = settingsFilePath(ctx, file)
+	path, err = FilePath(ctx, file)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("resolve %s settings path: %w", label, err)
 	}
@@ -2179,7 +2180,7 @@ func SaveLocal(ctx context.Context, settings *EntireSettings) error {
 // saveToFile saves settings to the specified file path.
 func saveToFile(ctx context.Context, settings *EntireSettings, filePath string) error {
 	// Get absolute path for the file
-	filePathAbs, err := settingsFilePath(ctx, filePath)
+	filePathAbs, err := FilePath(ctx, filePath)
 	if err != nil {
 		return fmt.Errorf("resolving settings path: %w", err)
 	}
