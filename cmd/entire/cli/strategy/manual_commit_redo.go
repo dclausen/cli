@@ -160,18 +160,29 @@ func replacedCommits(ctx context.Context, repo *git.Repository) (*object.Commit,
 	if err != nil {
 		return nil, nil, "the reset's old HEAD is not a commit"
 	}
-	dropped := unreachableCommits(ctx, repo, tipHash)
-	if len(dropped) == 0 {
-		return nil, nil, "the reset dropped nothing a branch does not still reach"
-	}
 	tipTree, err := tip.Tree()
 	if err != nil {
 		return nil, nil, "the reset's old HEAD has no tree"
 	}
-	changed := changedPaths(dropped)
+	// A commit since the reset that recommitted nothing at the old HEAD's
+	// content cannot have redone dropped work. Checked first, newest first,
+	// because it is the usual answer for every ordinary commit after a reset
+	// and it needs no subprocess or walk of the dropped commits.
+	sinceCommits := make([]*object.Commit, 0, len(since))
 	for _, h := range since {
 		c, err := repo.CommitObject(h)
-		if err != nil || !redoesDroppedWork(c, changed, tipTree) {
+		if err != nil || !redoesDroppedWork(c, nil, tipTree) {
+			return nil, nil, "a commit since the reset redid none of the dropped work"
+		}
+		sinceCommits = append(sinceCommits, c)
+	}
+	dropped := unreachableCommits(ctx, repo, tipHash)
+	if len(dropped) == 0 {
+		return nil, nil, "the reset dropped nothing a branch does not still reach"
+	}
+	changed := changedPaths(dropped)
+	for _, c := range sinceCommits {
+		if !redoesDroppedWork(c, changed, tipTree) {
 			return nil, nil, "a commit since the reset redid none of the dropped work"
 		}
 	}
@@ -288,7 +299,8 @@ func changedPaths(commits []*object.Commit) map[string]bool {
 }
 
 // redoesDroppedWork reports whether c recommitted a dropped path with the
-// content it had at the reset's old HEAD.
+// content it had at the reset's old HEAD. A nil dropped set accepts any path,
+// the cheap necessary condition checked before the dropped commits are known.
 func redoesDroppedWork(c *object.Commit, dropped map[string]bool, tipTree *object.Tree) bool {
 	changes, err := firstParentChanges(c)
 	if err != nil {
@@ -300,7 +312,7 @@ func redoesDroppedWork(c *object.Commit, dropped map[string]bool, tipTree *objec
 	}
 	for _, change := range changes {
 		for _, p := range []string{change.To.Name, change.From.Name} {
-			if p == "" || !dropped[p] {
+			if p == "" || (dropped != nil && !dropped[p]) {
 				continue
 			}
 			want, wantAbsent, wantErr := findTreeEntry(tipTree, p)

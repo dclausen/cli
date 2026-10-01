@@ -2,8 +2,11 @@ package strategy
 
 import (
 	"context"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -274,4 +277,45 @@ func TestPrepareCommitMsg_RedoWithHashSubjectKeepsItsSubject(t *testing.T) {
 	got := prepareMessage(t, "#42 the feature (logical)\n")
 	require.True(t, strings.HasPrefix(got, "#42 the feature (logical)\n"), "%q", got)
 	require.Equal(t, []string{redoCheckpointOne, redoCheckpointTwo}, checkpointIDs(got), "%q", got)
+}
+
+// After a reset, every later commit ran two git subprocesses and diffed every
+// dropped commit before rejecting the redo on its first since-commit, roughly
+// doubling prepare-commit-msg for the rest of the branch. An unrelated commit
+// since the reset must be rejected before any of that: a git wrapper on PATH
+// records each subcommand run.
+//
+// Not parallel: t.Chdir and t.Setenv.
+func TestReplacedCommits_UnrelatedCommitSinceResetRejectsBeforeSubprocesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrapper for git")
+	}
+	dir := redoFixture(t)
+	testutil.RunGit(t, dir, "reset", "-q", "--hard", "HEAD~1")
+	testutil.WriteFile(t, dir, "unrelated.txt", "later work\n")
+	// The git CLI, not go-git: the commit must be in HEAD's reflog.
+	testutil.RunGit(t, dir, "add", "unrelated.txt")
+	testutil.RunGit(t, dir, "commit", "-q", "--no-verify", "-m", "unrelated")
+	ctx := context.Background()
+	repo, err := OpenRepository(ctx)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	wrapper := "#!/bin/sh\necho \"$1\" >> " + calls + "\nexec " + realGit + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "git"), []byte(wrapper), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, dropped, why := replacedCommits(ctx, repo)
+	require.Empty(t, dropped)
+	require.Equal(t, "a commit since the reset redid none of the dropped work", why)
+	ran, err := os.ReadFile(calls)
+	if err != nil {
+		require.ErrorIs(t, err, fs.ErrNotExist)
+	}
+	require.NotContains(t, string(ran), "rev-list")
+	require.NotContains(t, string(ran), "for-each-ref")
 }
