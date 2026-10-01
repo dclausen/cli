@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -227,4 +228,77 @@ func TestRemoteTrailBranchState_BoundsURLResolution(t *testing.T) {
 	require.Equal(t, trailBranchUnknown, presence)
 	require.ErrorContains(t, err, "resolve et/proj/app: no answer within")
 	require.Less(t, time.Since(start), 5*time.Second)
+}
+
+// trail create --repo answers for another repository, so it must not touch
+// the enablement cache of the clone it happens to run in — on success or on a
+// failure that would otherwise record "trails disabled" for that clone.
+func TestTrailCreateRepo_LeavesLocalEnablementCacheAlone(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			// No t.Parallel: package-level seams and t.Chdir.
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if status != http.StatusOK {
+					http.Error(w, `{"error":"forbidden"}`, status)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(api.TrailCreateResponse{Trail: api.TrailResource{ID: "trl", Number: 1, Title: "T"}}) //nolint:errcheck // test
+			}))
+			t.Cleanup(srv.Close)
+			prevClient, prevCheck := newTrailAPIClient, trailRemoteBranchState
+			newTrailAPIClient = func(context.Context, bool, string, string, string) (*api.Client, string, error) {
+				return api.NewClientWithBaseURL("token", srv.URL), "native-repo-id", nil
+			}
+			trailRemoteBranchState = func(context.Context, string, string, string, string) (trailBranchPresence, error) {
+				return trailBranchPresent, nil
+			}
+			t.Cleanup(func() { newTrailAPIClient, trailRemoteBranchState = prevClient, prevCheck })
+
+			dir := t.TempDir()
+			testutil.InitRepo(t, dir)
+			out, err := exec.CommandContext(t.Context(), "git", "-C", dir, "remote", "add", "origin", "https://github.com/acme/local.git").CombinedOutput()
+			require.NoError(t, err, string(out))
+			t.Chdir(dir)
+
+			_, _ = runTrailCmd(t, "create", "--repo", "et/proj/app", "--branch", "feat", "--base", "main", "--title", "T") //nolint:errcheck // both outcomes checked via the cache
+
+			prefs, err := settings.LoadClonePreferences(t.Context())
+			require.NoError(t, err)
+			require.Nil(t, prefs.TrailsEnabled, "local clone's trails cache was written by a --repo create")
+			require.Empty(t, prefs.TrailsEnabledRepoKey)
+		})
+	}
+}
+
+// A user whose GitHub access is SSH-only cannot answer the HTTPS check; the
+// branch check then asks over SSH before giving up.
+func TestRemoteTrailBranchState_GitHubFallsBackToSSH(t *testing.T) {
+	// No t.Parallel: swaps package-level seams.
+	prevResolve, prevLs := resolveTrailRepoCloneURL, trailLsRemote
+	resolveTrailRepoCloneURL = trailRepoCloneURL
+	var asked []string
+	trailLsRemote = func(_ context.Context, url, _ string) (trailBranchPresence, error) {
+		asked = append(asked, url)
+		if strings.HasPrefix(url, "https://") {
+			return trailBranchUnknown, errors.New("could not read Username")
+		}
+		return trailBranchPresent, nil
+	}
+	t.Cleanup(func() { resolveTrailRepoCloneURL, trailLsRemote = prevResolve, prevLs })
+
+	presence, err := remoteTrailBranchState(t.Context(), "gh", "acme", "app", "feat")
+
+	require.NoError(t, err)
+	require.Equal(t, trailBranchPresent, presence)
+	require.Equal(t, []string{"https://github.com/acme/app.git", "git@github.com:acme/app.git"}, asked)
+
+	// Both transports failing reports both causes.
+	trailLsRemote = func(_ context.Context, url, _ string) (trailBranchPresence, error) {
+		asked = append(asked, url)
+		return trailBranchUnknown, errors.New("denied " + url)
+	}
+	_, err = remoteTrailBranchState(t.Context(), "gh", "acme", "app", "feat")
+	require.ErrorContains(t, err, "denied https://github.com/acme/app.git")
+	require.ErrorContains(t, err, "denied git@github.com:acme/app.git")
 }

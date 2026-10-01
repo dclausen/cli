@@ -89,7 +89,7 @@ func runTrailCreateForRepo(cmd *cobra.Command, repoArg, title, body, base, branc
 	if err != nil {
 		return err
 	}
-	createResp, err := postTrailCreate(ctx, client, basePath, forge, owner, repoName, title, body, branch, base, statusStr, strings.TrimSpace(typeStr), strings.TrimSpace(priorityStr), assignees)
+	createResp, err := postTrailCreate(ctx, client, basePath, forge, owner, repoName, title, body, branch, base, statusStr, strings.TrimSpace(typeStr), strings.TrimSpace(priorityStr), assignees, false)
 	if err != nil {
 		return err
 	}
@@ -111,11 +111,26 @@ func remoteTrailBranchState(ctx context.Context, forge, owner, repo, branch stri
 		}
 		return trailBranchUnknown, err
 	}
-	return lsRemoteBranch(ctx, url, branch)
+	presence, err := trailLsRemote(ctx, url, branch)
+	if presence != trailBranchUnknown || forge != gitremote.ForgeGitHub || ctx.Err() != nil {
+		return presence, err
+	}
+	// The local path inherits the user's protocol from their remote; here the
+	// URL is synthesized, so a user whose GitHub access is SSH-only cannot
+	// answer over HTTPS. Ask over SSH before giving up.
+	sshURL := "git@github.com:" + owner + "/" + repo + ".git"
+	sshPresence, sshErr := trailLsRemote(ctx, sshURL, branch)
+	if sshPresence != trailBranchUnknown {
+		return sshPresence, sshErr
+	}
+	return trailBranchUnknown, fmt.Errorf("over HTTPS: %w; over SSH: %w", err, sshErr)
 }
 
-// resolveTrailRepoCloneURL is a seam for tests.
-var resolveTrailRepoCloneURL = trailRepoCloneURL
+// resolveTrailRepoCloneURL and trailLsRemote are seams for tests.
+var (
+	resolveTrailRepoCloneURL = trailRepoCloneURL
+	trailLsRemote            = lsRemoteBranch
+)
 
 // lsRemoteBranch asks url whether refs/heads/<branch> exists, within
 // trailBranchCheckTimeout.
