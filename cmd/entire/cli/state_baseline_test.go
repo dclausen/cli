@@ -131,3 +131,23 @@ func TestCarryTurnPrompt_WaitsForTheSessionLock(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "this turn", string(got))
 }
+
+// A hook that followed its agent into a tree another session also works in
+// must not take that session's newer task as its own.
+//
+// Not parallel: setupTestRepo changes the process directory.
+func TestFindActivePreTaskFile_IgnoresAnotherSessionsTask(t *testing.T) {
+	setupTestRepo(t)
+	ctx := context.Background()
+	require.NoError(t, CapturePreTaskState(ctx, "sess-mine", "toolu_mine"))
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, CapturePreTaskState(ctx, "sess-other", "toolu_other"))
+
+	got, found := FindActivePreTaskFile(ctx, "sess-mine")
+	require.True(t, found)
+	require.Equal(t, "toolu_mine", got)
+
+	got, found = FindActivePreTaskFile(ctx, "")
+	require.True(t, found)
+	require.Equal(t, "toolu_other", got, "without a session the newest task wins, as before")
+}

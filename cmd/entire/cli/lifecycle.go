@@ -1640,14 +1640,14 @@ func handleLifecycleSubagentStart(ctx context.Context, ag agent.Agent, event *ag
 		}); err != nil {
 			return fmt.Errorf("register codex subagent: %w", err)
 		}
-		if err := CapturePreTaskState(ctx, event.ToolUseID); err != nil {
+		if err := CapturePreTaskState(ctx, event.SessionID, event.ToolUseID); err != nil {
 			logging.Warn(logCtx, "best-effort codex pre-task capture failed", slog.String("error", err.Error()))
 		}
 		return nil
 	}
 
 	// Capture pre-task state
-	if err := CapturePreTaskState(ctx, event.ToolUseID); err != nil {
+	if err := CapturePreTaskState(ctx, event.SessionID, event.ToolUseID); err != nil {
 		return fmt.Errorf("failed to capture pre-task state: %w", err)
 	}
 

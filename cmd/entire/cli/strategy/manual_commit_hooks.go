@@ -1614,11 +1614,10 @@ func (s *ManualCommitStrategy) postCommitProcessSessionLocked(
 ) (newSkillEvents []agent.SkillEvent, condensedSignal *commitCondensedSignal, condensed bool) {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 	shadowBranchName := getShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID)
-	reservedCheckpointID := state.PendingCondensationID()
-	if reservedCheckpointID != id.EmptyCheckpointID && reservedCheckpointID != checkpointID {
+	if preservesInterruptedCondensation(state, checkpointID) {
 		logging.Warn(logCtx, "post-commit: preserving interrupted condensation with a different checkpoint ID",
 			slog.String("session_id", state.SessionID),
-			slog.String("reserved_checkpoint_id", reservedCheckpointID.String()),
+			slog.String("reserved_checkpoint_id", state.PendingCondensationID().String()),
 			slog.String("commit_checkpoint_id", checkpointID.String()))
 		uncondensedActiveOnBranch[shadowBranchName] = true
 		return newSkillEvents, condensedSignal, false
@@ -2792,6 +2791,19 @@ func (s *ManualCommitStrategy) addTrailerForAgentCommit(logCtx context.Context, 
 	return nil
 }
 
+// preservesInterruptedCondensation reports whether the session is mid-way
+// through condensing under another checkpoint ID, which this commit must not
+// take over. prepare-commit-msg's stamped reservation does not count: nothing
+// is written under it before post-commit, and a commit that never landed
+// (aborted editor, failing commit-msg hook, deleted trailer) leaves it behind.
+func preservesInterruptedCondensation(state *SessionState, checkpointID id.CheckpointID) bool {
+	reserved := state.PendingCondensationID()
+	if reserved == id.EmptyCheckpointID || reserved == checkpointID {
+		return false
+	}
+	return !state.StampedReservationFor(reserved)
+}
+
 // reserveCheckpointForStampedSessions records the stamped checkpoint ID as each
 // session's pending condensation so post-commit can resolve the session from the
 // trailer alone. An existing different reservation is kept. If the commit is
@@ -3119,16 +3131,20 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 		// BaseCommit as the base tree (preserving correct agent-line counts
 		// when HEAD moved between turns via pull/rebase). Migrate runs BEFORE
 		// the LastCheckpointID clear so the reconcile guard can read it.
-		promptAttr := s.calculatePromptAttributionAtStart(ctx, repo, state)
-		state.PendingPromptAttribution = &promptAttr
+		// Both read this tree's HEAD against the session's shadow branch, so
+		// they apply only where the session is homed (see sessionHomedHere).
+		if sessionHomedHere(ctx, state) {
+			promptAttr := s.calculatePromptAttributionAtStart(ctx, repo, state)
+			state.PendingPromptAttribution = &promptAttr
 
-		_, reconciled, err := s.migrateShadowBranchIfNeeded(ctx, repo, state)
-		if err != nil {
-			return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
-		}
-		if reconciled {
-			recomputed := s.calculatePromptAttributionAtStart(ctx, repo, state)
-			state.PendingPromptAttribution = &recomputed
+			_, reconciled, err := s.migrateShadowBranchIfNeeded(ctx, repo, state)
+			if err != nil {
+				return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
+			}
+			if reconciled {
+				recomputed := s.calculatePromptAttributionAtStart(ctx, repo, state)
+				state.PendingPromptAttribution = &recomputed
+			}
 		}
 
 		state.LastCheckpointID = ""

@@ -168,3 +168,24 @@ func TestReserveDoctorCondensationAttempt_PreservesLegacyRecoveryAcrossRetries(t
 	require.Equal(t, firstID, secondID)
 	require.True(t, state.NeedsCondensationRecovery())
 }
+
+// prepare-commit-msg reserves the stamped ID before the commit exists. A commit
+// that never lands (editor aborted, commit-msg hook failed, trailer deleted)
+// leaves that reservation with nothing written under it, and it must not stop
+// the session condensing into the next commit's checkpoint. A reservation a
+// condensation actually began still does.
+func TestPreservesInterruptedCondensation(t *testing.T) {
+	t.Parallel()
+	reservedID := id.MustCheckpointID("111111111111")
+	commitID := id.MustCheckpointID("222222222222")
+
+	stamped := &SessionState{SessionID: "s"}
+	stamped.ReserveStampedCheckpoint(reservedID)
+	require.False(t, preservesInterruptedCondensation(stamped, commitID), "a stamped-only reservation holds nothing")
+
+	begun := &SessionState{SessionID: "s"}
+	begun.BeginCondensationAttempt(reservedID)
+	require.True(t, preservesInterruptedCondensation(begun, commitID))
+	require.False(t, preservesInterruptedCondensation(begun, reservedID), "the same ID resumes it")
+	require.False(t, preservesInterruptedCondensation(&SessionState{SessionID: "s"}, commitID))
+}

@@ -570,6 +570,27 @@ func isNearerOwner(depth, bestDepth int, state, best *SessionState) bool {
 // pure comparison by design: an earlier version re-resolved the worktree
 // here and read resolution failure as "home", which would have mutated a
 // guest session's state in exactly the way the gate exists to prevent.
+// sessionHomedHere reports whether the session is homed in the worktree this
+// hook runs in. A hook that followed its agent into another worktree whose
+// session could not be re-homed (the home still holds a step) must not write
+// a step: the session's shadow branch is the home's, keyed to the home's HEAD,
+// and this tree's files do not belong on it. When the tree cannot be
+// resolved, the step proceeds as it always has.
+func sessionHomedHere(ctx context.Context, state *SessionState) bool {
+	current, err := paths.WorktreeRoot(ctx)
+	if err != nil || current == "" || state.WorktreePath == "" {
+		return true
+	}
+	if isSessionHomeWorktree(current, state) {
+		return true
+	}
+	logging.Info(logging.WithComponent(ctx, "checkpoint"), "skipping step: the session is homed in another worktree that still holds its work",
+		slog.String("session_id", state.SessionID),
+		slog.String("home", state.WorktreePath),
+		slog.String("here", current))
+	return false
+}
+
 func isSessionHomeWorktree(worktreePath string, state *SessionState) bool {
 	return paths.SameDir(state.WorktreePath, worktreePath)
 }

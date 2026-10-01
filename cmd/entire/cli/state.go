@@ -648,7 +648,11 @@ func getUntrackedFilesForState(ctx context.Context) ([]string, error) {
 
 // PreTaskState stores the state captured before a task execution
 type PreTaskState struct {
-	ToolUseID      string   `json:"tool_use_id"`
+	ToolUseID string `json:"tool_use_id"`
+	// SessionID scopes the baseline to its session, so a hook that followed
+	// its agent into a tree another session also uses does not take that
+	// session's task. Empty in files written before it was recorded.
+	SessionID      string   `json:"session_id,omitempty"`
 	Timestamp      string   `json:"timestamp"`
 	UntrackedFiles []string `json:"untracked_files"`
 
@@ -684,7 +688,7 @@ func (s *PreTaskState) PreUntrackedFiles() []string {
 // CapturePreTaskState captures current untracked files before a Task execution
 // and saves them to a state file.
 // Works correctly from any subdirectory within the repository.
-func CapturePreTaskState(ctx context.Context, toolUseID string) error {
+func CapturePreTaskState(ctx context.Context, sessionID, toolUseID string) error {
 	if toolUseID == "" {
 		return errors.New("tool_use_id is required")
 	}
@@ -706,6 +710,7 @@ func CapturePreTaskState(ctx context.Context, toolUseID string) error {
 	// Create state file using os.Root for traversal-resistant write
 	state := PreTaskState{
 		ToolUseID:            toolUseID,
+		SessionID:            sessionID,
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 		UntrackedFiles:       untrackedFiles,
 		UntrackedScanSkipped: scanSkipped,
@@ -779,19 +784,48 @@ const preTaskFilePrefix = "pre-task-"
 // When multiple pre-task files exist (nested subagents), returns the most recently
 // modified one.
 // Works correctly from any subdirectory within the repository.
-func FindActivePreTaskFile(ctx context.Context) (taskToolUseID string, found bool) {
-	root, err := entiredir.OpenForRead(ctx)
-	if err != nil {
+func FindActivePreTaskFile(ctx context.Context, sessionID string) (taskToolUseID string, found bool) {
+	// The pre-task hook writes the baseline in the tree its payload names (the
+	// parent agent's), while a TodoWrite from the subagent runs in the tree it
+	// works in, so look wherever the session's task baselines can be.
+	var latestFile string
+	var latestTime time.Time
+	for _, worktree := range taskBaselineSearch(ctx, sessionID) {
+		name, modTime, ok := newestPreTaskFileIn(ctx, worktree, sessionID)
+		if ok && (latestFile == "" || modTime.After(latestTime)) {
+			latestFile, latestTime = name, modTime
+		}
+	}
+	if latestFile == "" {
 		return "", false
+	}
+
+	// Extract tool_use_id from filename: pre-task-<tool_use_id>.json
+	toolUseID := strings.TrimPrefix(latestFile, preTaskFilePrefix)
+	toolUseID = strings.TrimSuffix(toolUseID, ".json")
+	return toolUseID, true
+}
+
+// newestPreTaskFileIn returns the most recently written pre-task file in
+// worktree ("" for the hook's own) that does not belong to another session.
+func newestPreTaskFileIn(ctx context.Context, worktree, sessionID string) (string, time.Time, bool) {
+	var root *os.Root
+	var err error
+	if worktree == "" {
+		root, err = entiredir.OpenForRead(ctx)
+	} else {
+		root, err = entiredir.OpenAtForRead(worktree)
+	}
+	if err != nil {
+		return "", time.Time{}, false
 	}
 	entries, err := osroot.ReadDirNoSymlinks(root, entireTmpName)
 	if err != nil {
-		return "", false
+		return "", time.Time{}, false
 	}
 
 	var latestFile string
 	var latestTime time.Time
-
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -806,20 +840,28 @@ func FindActivePreTaskFile(ctx context.Context) (taskToolUseID string, found boo
 		if err != nil {
 			continue
 		}
-		if latestFile == "" || info.ModTime().After(latestTime) {
-			latestFile = name
-			latestTime = info.ModTime()
+		if latestFile != "" && !info.ModTime().After(latestTime) {
+			continue
 		}
+		if sessionID != "" && preTaskFileOfAnotherSession(root, name, sessionID) {
+			continue
+		}
+		latestFile = name
+		latestTime = info.ModTime()
 	}
+	return latestFile, latestTime, latestFile != ""
+}
 
-	if latestFile == "" {
-		return "", false
+func preTaskFileOfAnotherSession(root *os.Root, name, sessionID string) bool {
+	data, err := entiredir.ReadFile(root, tmpFile("%s", name))
+	if err != nil {
+		return false
 	}
-
-	// Extract tool_use_id from filename: pre-task-<tool_use_id>.json
-	toolUseID := strings.TrimPrefix(latestFile, preTaskFilePrefix)
-	toolUseID = strings.TrimSuffix(toolUseID, ".json")
-	return toolUseID, true
+	var state PreTaskState
+	if json.Unmarshal(data, &state) != nil {
+		return false
+	}
+	return state.SessionID != "" && state.SessionID != sessionID
 }
 
 // GetNextCheckpointSequence returns the next sequence number for incremental checkpoints.
