@@ -79,6 +79,9 @@ most recent commit with a checkpoint.  You'll be prompted to confirm resuming in
 }
 
 func runResume(ctx context.Context, cmd *cobra.Command, branchName string, force bool) error {
+	// Restores and looks up agent transcripts from the user's shell, where a
+	// home an agent reads from its own settings is invisible to the environment.
+	agent.EnableHomeProbes()
 	w := cmd.OutOrStdout()
 	errW := cmd.ErrOrStderr()
 

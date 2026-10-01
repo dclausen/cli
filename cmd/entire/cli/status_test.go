@@ -219,6 +219,40 @@ func TestRunStatus_Enabled(t *testing.T) {
 	}
 }
 
+// A relative agent relocation variable is refused, and several callers fail
+// open on the refusal, so status is where it has to be visible — in the short
+// output, the detailed output and --json alike.
+func TestRunStatus_ReportsRefusedAgentHome(t *testing.T) {
+	setupTestRepo(t)
+	writeSettings(t, testSettingsEnabled)
+	for _, envVar := range agent.RelocationEnvVars() {
+		t.Setenv(envVar, "")
+	}
+	t.Setenv("CODEX_HOME", filepath.Join("relative", "codex"))
+
+	for _, detailed := range []bool{false, true} {
+		var stdout bytes.Buffer
+		if err := runStatus(context.Background(), &stdout, detailed, false); err != nil {
+			t.Fatalf("runStatus(detailed=%v) error = %v", detailed, err)
+		}
+		if !strings.Contains(stdout.String(), "ignoring agent home: CODEX_HOME must be an absolute path") {
+			t.Errorf("runStatus(detailed=%v) did not report the refused CODEX_HOME:\n%s", detailed, stdout.String())
+		}
+	}
+
+	var stdout bytes.Buffer
+	if err := runStatus(context.Background(), &stdout, false, true); err != nil {
+		t.Fatalf("runStatus(json) error = %v", err)
+	}
+	var got statusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("status --json is not JSON: %v\n%s", err, stdout.String())
+	}
+	if len(got.RefusedAgentHomes) != 1 || !strings.Contains(got.RefusedAgentHomes[0], "CODEX_HOME") {
+		t.Errorf("refused_agent_homes = %q, want the relative CODEX_HOME", got.RefusedAgentHomes)
+	}
+}
+
 // `entire status` surfaces the agent-help pointer for agents on transports
 // without context injection (Cursor / Copilot / Droid), but only once entire is
 // set up — not for not-set-up or not-a-git-repo states.
