@@ -89,6 +89,32 @@ func TestFollow_TaskStartedInParentCompletesInWorktree(t *testing.T) {
 	requireNoTmpState(t, parent, "pre-task-"+toolUseID+".json")
 }
 
+// A subagent working in a worktree records incremental TodoWrite checkpoints
+// there. post-todo bypasses the lifecycle dispatcher, so it never followed the
+// payload cwd: it looked for the task baseline and ran git status in the
+// launch worktree, found no active task, and recorded nothing.
+func TestFollow_SubagentTodoCheckpointsInItsWorktree(t *testing.T) {
+	t.Parallel()
+	parent := NewRepoWithCommit(t)
+	feature := worktreeEnv(t, parent, "feature")
+
+	sess := parent.NewSession()
+	hooks := NewHookRunner(parent.RepoDir, parent.ClaudeProjectDir, t)
+	require.NoError(t, hooks.runHookWithInput("user-prompt-submit", followPayload(sess.ID, sess.TranscriptPath, parent.RepoDir, map[string]any{"prompt": "delegate"})))
+	const toolUseID = "toolu_follow_todo"
+	require.NoError(t, hooks.runHookWithInput("pre-task", followPayload(sess.ID, sess.TranscriptPath, feature.RepoDir, map[string]any{"tool_use_id": toolUseID, "tool_input": map[string]string{"subagent_type": "dev"}})))
+
+	feature.WriteFile("sub.txt", "subagent work\n")
+	require.NoError(t, hooks.runHookWithInput("post-todo", followPayload(sess.ID, sess.TranscriptPath, feature.RepoDir, map[string]any{
+		"tool_name":     "TodoWrite",
+		"tool_use_id":   "toolu_follow_todo_write",
+		"tool_input":    map[string]any{"todos": []map[string]string{{"content": "write sub.txt", "status": "completed", "activeForm": "writing"}}},
+		"tool_response": map[string]any{},
+	})))
+
+	verifyIncrementalCheckpointStorage(t, feature, sess.ID, toolUseID)
+}
+
 // A subagent that runs entirely in a worktree leaves task content there; at
 // turn end in that worktree the session must follow its pending work rather
 // than stay homed in a parent that holds none of it.

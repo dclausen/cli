@@ -244,6 +244,10 @@ func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepCo
 	}
 
 	mutErr := MutateSessionState(ctx, step.SessionID, func(state *SessionState) error {
+		// As in SaveStep: a subagent followed into another worktree writes
+		// its incremental checkpoint to that tree's shadow branch, not the
+		// home worktree's, unless the home still holds pending work.
+		s.rehomeSessionToCurrentWorktree(ctx, repo, state, len(step.ModifiedFiles)+len(step.NewFiles)+len(step.DeletedFiles) > 0)
 		if _, _, err := s.migrateShadowBranchIfNeeded(ctx, repo, state); err != nil {
 			return fmt.Errorf("failed to check/migrate shadow branch: %w", err)
 		}
