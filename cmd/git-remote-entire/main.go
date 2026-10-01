@@ -432,9 +432,10 @@ func coreTrusted(coreURL string, trusted []string) bool {
 // to call whether or not the server started.
 func serveUnlockAfterFirstToken(ctx context.Context, provider credentialProvider) (credentialProvider, func()) {
 	var (
-		once sync.Once
-		mu   sync.Mutex
-		stop = func() {}
+		once    sync.Once
+		mu      sync.Mutex
+		stop    = func() {}
+		stopped bool
 	)
 	wrapped := func(reqCtx context.Context) (string, error) {
 		token, err := provider(reqCtx)
@@ -450,13 +451,19 @@ func serveUnlockAfterFirstToken(ctx context.Context, provider credentialProvider
 				return
 			}
 			mu.Lock()
+			defer mu.Unlock()
+			if stopped {
+				// Shutdown raced the first token: do not leak the server.
+				s()
+				return
+			}
 			stop = s
-			mu.Unlock()
 		})
 		return token, nil
 	}
 	return wrapped, func() {
 		mu.Lock()
+		stopped = true
 		s := stop
 		mu.Unlock()
 		s()

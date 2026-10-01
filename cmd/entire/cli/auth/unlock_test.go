@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
@@ -38,8 +39,28 @@ func pushTree() fakeProcs {
 // the cache dir at a short temp path (unix socket paths are length-limited).
 // The server under test is the outer helper, child of wrapper 150; peer is
 // the pid the server will see on every connection.
-func unlockFixture(t *testing.T, procs fakeProcs, peer int) {
+// fakeTree mutates the fixture's process view safely while a server runs.
+type fakeTree struct {
+	setProc func(pid int, info procInfo)
+	setPPID func(pid int)
+}
+
+func unlockFixture(t *testing.T, procs fakeProcs, peer int) fakeTree {
 	t.Helper()
+	var tableMu sync.Mutex
+	ppid := 150 // the outer helper's parent: the git remote-entire wrapper
+	tree := fakeTree{
+		setProc: func(pid int, info procInfo) {
+			tableMu.Lock()
+			defer tableMu.Unlock()
+			procs[pid] = info
+		},
+		setPPID: func(pid int) {
+			tableMu.Lock()
+			defer tableMu.Unlock()
+			ppid = pid
+		},
+	}
 	dir, err := os.MkdirTemp("/tmp", "entire-unlock-") //nolint:usetesting // t.TempDir is too long for a unix socket path on macOS
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +73,8 @@ func unlockFixture(t *testing.T, procs fakeProcs, peer int) {
 
 	prevProc, prevPeer, prevPPID, prevWalk, prevServe := procLookup, peerLookup, currentPPID, walkStartPID, serveBundles
 	procLookup = func(pid int) (procInfo, error) {
+		tableMu.Lock()
+		defer tableMu.Unlock()
 		info, ok := procs[pid]
 		if !ok {
 			return procInfo{}, os.ErrNotExist
@@ -59,7 +82,11 @@ func unlockFixture(t *testing.T, procs fakeProcs, peer int) {
 		return info, nil
 	}
 	peerLookup = func(*net.UnixConn) (int, int, error) { return peer, os.Getuid(), nil }
-	currentPPID = func() int { return 150 }
+	currentPPID = func() int {
+		tableMu.Lock()
+		defer tableMu.Unlock()
+		return ppid
+	}
 	walkStartPID = func() int { return 150 }
 	prompted.Store(true)
 	forgetBundles()
@@ -68,6 +95,7 @@ func unlockFixture(t *testing.T, procs fakeProcs, peer int) {
 		prompted.Store(false)
 		forgetBundles()
 	})
+	return tree
 }
 
 // serveCurrentBundles freezes what the server hands out, so a test can then
@@ -141,8 +169,7 @@ func TestUnlock_UnrelatedPeerRefused(t *testing.T) {
 }
 
 func TestUnlock_ReusedGitPIDRefused(t *testing.T) {
-	procs := pushTree()
-	unlockFixture(t, procs, 360)
+	tree := unlockFixture(t, pushTree(), 360)
 	rememberBundle("se1:abc|123", tokenBundle{Version: 1, Access: "acc"})
 	serveCurrentBundles()
 	stop, err := StartUnlockServer(context.Background())
@@ -152,7 +179,7 @@ func TestUnlock_ReusedGitPIDRefused(t *testing.T) {
 	defer stop()
 
 	// git exited and pid 100 now belongs to a newer process.
-	procs[100] = procInfo{ppid: 1, start: 9_000, comm: "git"}
+	tree.setProc(100, procInfo{ppid: 1, start: 9_000, comm: "git"})
 	walkStartPID = func() int { return 350 }
 	forgetBundles()
 	if got := fetchUnlockedBundles(); got != nil {
@@ -161,7 +188,7 @@ func TestUnlock_ReusedGitPIDRefused(t *testing.T) {
 }
 
 func TestUnlock_ReparentedServerRefuses(t *testing.T) {
-	unlockFixture(t, pushTree(), 360)
+	tree := unlockFixture(t, pushTree(), 360)
 	rememberBundle("se1:abc|123", tokenBundle{Version: 1, Access: "acc"})
 	serveCurrentBundles()
 	stop, err := StartUnlockServer(context.Background())
@@ -171,7 +198,7 @@ func TestUnlock_ReparentedServerRefuses(t *testing.T) {
 	defer stop()
 
 	// The serving helper's parent is now launchd: its git chain is gone.
-	currentPPID = func() int { return 1 }
+	tree.setPPID(1)
 	forgetBundles()
 	path := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "entire", unlockDirName, unlockSocketName(100))
 	if got := dialUnlock(path); got != nil {

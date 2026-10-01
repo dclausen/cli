@@ -43,6 +43,10 @@ type contextTokenStore struct {
 	mu sync.Mutex
 	// promptAction names what the caller is doing, for the unseal dialog.
 	promptAction string
+
+	// opMu serializes LoadTokens, SaveTokens and DeleteTokens and guards
+	// lastRefresh, so a save always sees the load that preceded it.
+	opMu sync.Mutex
 	// lastRefresh is the refresh token from the last sealed load, carried
 	// forward when a save omits one ("leave as-is").
 	lastRefresh string
@@ -68,19 +72,19 @@ func (s *contextTokenStore) reason() string {
 // omits one. The slot's current ciphertext is authoritative: if another
 // process rotated it since our load, its bundle is what must survive, and
 // this process only knows that bundle if it already unsealed it. The last
-// loaded value is the fallback.
+// loaded value is the fallback. Caller holds opMu.
 func (s *contextTokenStore) currentRefresh() string {
 	if enc, err := tokenstore.Get(s.service, s.handle); err == nil && isSealed(enc) {
 		if b, ok := cachedBundle(enc); ok {
 			return b.Refresh
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.lastRefresh
 }
 
 func (s *contextTokenStore) LoadTokens(string) (tokens.TokenSet, error) {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	enc, err := tokenstore.Get(s.service, s.handle)
 	// Map "no credential stored" to auth-go's sentinel so tokenmanager
 	// reports "not logged in" rather than a hard store failure.
@@ -95,9 +99,7 @@ func (s *contextTokenStore) LoadTokens(string) (tokens.TokenSet, error) {
 		if err != nil {
 			return tokens.TokenSet{}, err
 		}
-		s.mu.Lock()
 		s.lastRefresh = b.Refresh
-		s.mu.Unlock()
 		return tokens.TokenSet{AccessToken: b.Access, RefreshToken: b.Refresh, ExpiresAt: expiresAt}, nil
 	}
 	access, expiresAt := tokenstore.DecodeTokenWithExpiration(enc)
@@ -120,6 +122,8 @@ func (s *contextTokenStore) SaveTokens(_ string, t tokens.TokenSet) error {
 	if t.AccessToken == "" {
 		return errors.New("save tokens: empty access token")
 	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 	expiresIn := int64(defaultSavedTokenTTL.Seconds())
 	if !t.ExpiresAt.IsZero() {
 		if secs := int64(time.Until(t.ExpiresAt).Seconds()); secs > 0 {
@@ -175,6 +179,9 @@ func (s *contextTokenStore) SaveTokens(_ string, t tokens.TokenSet) error {
 }
 
 func (s *contextTokenStore) DeleteTokens(string) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	s.lastRefresh = ""
 	_ = tokenstore.Delete(tokenstore.RefreshService(s.service), s.handle) //nolint:errcheck // best-effort; the access-token delete below is what matters
 	if err := tokenstore.Delete(s.service, s.handle); err != nil {
 		return fmt.Errorf("delete access token: %w", err)
