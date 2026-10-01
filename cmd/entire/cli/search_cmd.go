@@ -339,11 +339,14 @@ branch:<name>, repo:<owner/name>, and repo:* to search all accessible repos.`,
 // repo — and empty coordinates are returned.
 func resolveDefaultSearchRepo(ctx context.Context, explicitScope bool) (forge, owner, repo string, err error) {
 	forge, owner, repo, err = gitremote.ResolveRemoteRepo(ctx, "origin")
-	if err != nil || owner == "" || repo == "" {
+	if err == nil && (owner == "" || repo == "") {
+		err = errors.New("origin remote names no owner/repo")
+	}
+	if err != nil {
 		if explicitScope {
 			return "", "", "", nil
 		}
-		return "", "", "", errors.New("could not determine current repository for search (use --repo or --all-repos)")
+		return "", "", "", fmt.Errorf("could not determine current repository for search (use --repo or --all-repos): %w", err)
 	}
 	return forge, owner, repo, nil
 }
