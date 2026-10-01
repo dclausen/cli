@@ -464,8 +464,9 @@ func sealContext(sl senclave.Sealer, c *contexts.Context) (bool, error) {
 		return false, err
 	}
 	// Clear the plaintext refresh token before writing the bundle that now
-	// carries it. A failure between the two loses only a copy; the reverse
-	// order could leave a token usable without the dialog.
+	// carries it. A failure between the two costs a fresh login; the
+	// reverse order could leave a token usable without the dialog. Losing
+	// a token is recoverable, leaking one is not.
 	if err := tokenstore.Delete(refreshSlot, c.Handle); err != nil && !errors.Is(err, tokenstore.ErrNotFound) {
 		return false, fmt.Errorf("clear refresh slot: %w", err)
 	}
