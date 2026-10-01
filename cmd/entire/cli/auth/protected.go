@@ -495,7 +495,10 @@ func DisableProtection(cfgDir string) (unsealed []string, err error) {
 			// All or nothing: with the key still enrolled, plaintext slots
 			// would fail closed, locking the user out of logins that were
 			// just unsealed. Re-seal them from the cache, which never prompts.
-			if rbErr := resealContexts(sl, done); rbErr != nil {
+			// The failing context joins the set: unsealContext may have
+			// written its plaintext refresh slot before failing, and
+			// sealContext clears that whether or not the access slot moved.
+			if rbErr := resealContexts(sl, append(done, c)); rbErr != nil {
 				return nil, fmt.Errorf("unseal context %q: %w; re-sealing the others also failed: %w", c.Name, err, rbErr)
 			}
 			return nil, fmt.Errorf("unseal context %q: %w; nothing was changed", c.Name, err)
