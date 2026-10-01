@@ -166,7 +166,7 @@ func TestRedactGitStderr_RedactsCredentialedURLs(t *testing.T) {
 	require.Contains(t, got, "; hint: check access")
 }
 
-func TestLsRemoteBranch_TimesOutOnSilentRemote(t *testing.T) {
+func TestRemoteTrailBranchState_TimesOutOnSilentRemote(t *testing.T) {
 	// No t.Parallel: shortens the package-level check timeout and wait delay.
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -180,12 +180,17 @@ func TestLsRemoteBranch_TimesOutOnSilentRemote(t *testing.T) {
 			t.Cleanup(func() { _ = conn.Close() }) // accept, never answer
 		}
 	}()
-	prevTimeout, prevWait := trailBranchCheckTimeout, trailBranchCheckWaitDelay
+	prevTimeout, prevWait, prevResolve := trailBranchCheckTimeout, trailBranchCheckWaitDelay, resolveTrailRepoCloneURL
 	trailBranchCheckTimeout, trailBranchCheckWaitDelay = 300*time.Millisecond, 300*time.Millisecond
-	t.Cleanup(func() { trailBranchCheckTimeout, trailBranchCheckWaitDelay = prevTimeout, prevWait })
+	silent := "https://" + ln.Addr().String() + "/acme/app.git"
+	resolveTrailRepoCloneURL = func(context.Context, string, string, string) (string, error) { return silent, nil }
+	t.Cleanup(func() {
+		trailBranchCheckTimeout, trailBranchCheckWaitDelay, resolveTrailRepoCloneURL = prevTimeout, prevWait, prevResolve
+	})
 
 	start := time.Now()
-	presence, err := lsRemoteBranch(t.Context(), "https://"+ln.Addr().String()+"/acme/app.git", "feat")
+	// A native forge, so there is no SSH retry: one bounded attempt.
+	presence, err := remoteTrailBranchState(t.Context(), "et", "acme", "app", "feat")
 
 	require.Equal(t, trailBranchUnknown, presence)
 	require.ErrorContains(t, err, "no answer within")
@@ -301,4 +306,24 @@ func TestRemoteTrailBranchState_GitHubFallsBackToSSH(t *testing.T) {
 	_, err = remoteTrailBranchState(t.Context(), "gh", "acme", "app", "feat")
 	require.ErrorContains(t, err, "denied https://github.com/acme/app.git")
 	require.ErrorContains(t, err, "denied git@github.com:acme/app.git")
+}
+
+// The SSH retry shares the check's single deadline: a GitHub remote that
+// never answers on either transport still fails within one timeout.
+func TestRemoteTrailBranchState_SSHFallbackSharesTheDeadline(t *testing.T) {
+	// No t.Parallel: swaps package-level seams.
+	prevTimeout, prevLs := trailBranchCheckTimeout, trailLsRemote
+	trailBranchCheckTimeout = 300 * time.Millisecond
+	trailLsRemote = func(ctx context.Context, _, _ string) (trailBranchPresence, error) {
+		<-ctx.Done() // a transport that never answers
+		return trailBranchUnknown, ctx.Err()
+	}
+	t.Cleanup(func() { trailBranchCheckTimeout, trailLsRemote = prevTimeout, prevLs })
+
+	start := time.Now()
+	presence, err := remoteTrailBranchState(t.Context(), "gh", "acme", "app", "feat")
+
+	require.Error(t, err)
+	require.Equal(t, trailBranchUnknown, presence)
+	require.Less(t, time.Since(start), 600*time.Millisecond, "HTTPS and SSH attempts must share one deadline")
 }

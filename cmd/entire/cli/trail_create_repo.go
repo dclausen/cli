@@ -132,11 +132,10 @@ var (
 	trailLsRemote            = lsRemoteBranch
 )
 
-// lsRemoteBranch asks url whether refs/heads/<branch> exists, within
-// trailBranchCheckTimeout.
+// lsRemoteBranch asks url whether refs/heads/<branch> exists. It runs under
+// the caller's context: remoteTrailBranchState owns the one deadline for the
+// whole check, so the SSH fallback shares the same 30s rather than adding to it.
 func lsRemoteBranch(ctx context.Context, url, branch string) (trailBranchPresence, error) {
-	ctx, cancel := context.WithTimeout(ctx, trailBranchCheckTimeout)
-	defer cancel()
 	cmd := execx.NonInteractive(ctx, "git", "ls-remote", "--heads", url, "refs/heads/"+branch)
 	// ls-remote runs the transport as a child that can outlive a killed git and
 	// hold the pipes open; WaitDelay bounds that. (TerminateOnCancel's process
