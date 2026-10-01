@@ -124,7 +124,7 @@ func (s *ManualCommitStrategy) prepareAmendCommitMsg(ctx context.Context, commit
 		return nil // the amend itself is prepared; folding is best-effort
 	}
 	defer repo.Close()
-	recordInheritedTrailersOnAmend(ctx, s.inheritReplacedCommitsTrailers(ctx, repo, commitMsgFile, "commit"))
+	recordInheritedTrailers(ctx, s.inheritReplacedCommitsTrailers(ctx, repo, commitMsgFile, "commit"))
 	return nil
 }
 
