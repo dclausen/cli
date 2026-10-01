@@ -24,6 +24,8 @@ type fakeSealer struct {
 	unseals int
 	reasons []string
 	fail    error
+	// failOn makes only the Nth unseal (1-based) fail with ErrCanceled.
+	failOn int
 }
 
 const fakeSealPrefix = "FAKESEAL|"
@@ -39,6 +41,9 @@ func (f *fakeSealer) Unseal(ciphertext []byte, reason string) ([]byte, error) {
 	f.reasons = append(f.reasons, reason)
 	if f.fail != nil {
 		return nil, f.fail
+	}
+	if f.failOn > 0 && f.unseals == f.failOn {
+		return nil, senclave.ErrCanceled
 	}
 	s := string(ciphertext)
 	if !strings.HasPrefix(s, fakeSealPrefix) {
@@ -422,6 +427,68 @@ func TestSealedStore_OnePromptPerProcess(t *testing.T) {
 	}
 	if got.AccessToken != "acc-2" || fs.count() != 2 {
 		t.Fatalf("rotated slot: access=%q prompts=%d", got.AccessToken, fs.count())
+	}
+}
+
+func TestDisableProtection_PartialFailureRollsBack(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("ENTIRE_CONFIG_DIR", cfgDir)
+	fs, a := protectedFixture(t)
+	b := &contexts.Context{
+		Name:            "staging",
+		CoreURL:         "https://staging.example.test",
+		Handle:          "toothbrush",
+		KeychainService: tokenstore.CoreKeyringService("https://staging.example.test"),
+	}
+	if err := contexts.Save(cfgDir, &contexts.File{CurrentContext: a.Name, Contexts: []*contexts.Context{a, b}}); err != nil {
+		t.Fatal(err)
+	}
+	sl, err := protection.sealer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*contexts.Context{a, b} {
+		enc, err := sealSlot(sl, tokenBundle{Issuer: c.CoreURL, Handle: c.Handle, Access: "acc-" + c.Name, Refresh: "ref-" + c.Name}, 600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tokenstore.Set(c.KeychainService, c.Handle, enc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A fresh `auth unprotect` process; the user cancels the second dialog.
+	forgetBundles()
+	fs.failOn = 2
+	unsealed, err := DisableProtection(cfgDir)
+	if err == nil || !PromptDeclined(err) {
+		t.Fatalf("DisableProtection err = %v, want declined prompt", err)
+	}
+	if len(unsealed) != 0 {
+		t.Fatalf("partial failure must report nothing unsealed, got %v", unsealed)
+	}
+	// The first context was unsealed and must be sealed again, with no
+	// further prompt and no stray plaintext refresh token.
+	raw, err := tokenstore.Get(a.KeychainService, a.Handle)
+	if err != nil || !isSealed(raw) {
+		t.Fatalf("first context not re-sealed: %q err=%v", raw, err)
+	}
+	if _, err := tokenstore.Get(tokenstore.RefreshService(a.KeychainService), a.Handle); !errors.Is(err, tokenstore.ErrNotFound) {
+		t.Fatalf("plaintext refresh left behind, err=%v", err)
+	}
+	if fs.count() != 2 {
+		t.Fatalf("expected exactly the two unseal attempts, got %d", fs.count())
+	}
+	if !TokensProtected() {
+		t.Fatal("key must remain enrolled after a failed unprotect")
+	}
+	// Both logins still load, each behind the dialog as before.
+	fs.failOn = 0
+	for _, c := range []*contexts.Context{a, b} {
+		store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+		got, err := store.LoadTokens("")
+		if err != nil || got.AccessToken != "acc-"+c.Name || got.RefreshToken != "ref-"+c.Name {
+			t.Fatalf("context %s after rollback: %+v err=%v", c.Name, got, err)
+		}
 	}
 }
 

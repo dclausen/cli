@@ -132,6 +132,10 @@ Protected against, with user-level code execution on the Mac:
   seals it. `sealContext` clears the plaintext refresh slot before writing
   the bundle, and clears a stray one even when the access slot is already
   sealed.
+- A cancelled dialog partway through `auth unprotect`: the logins already
+  unsealed are sealed again from the process cache, without a prompt, so the
+  keyring never sits half protected while the key is enrolled. The command
+  reports that nothing changed.
 - Concurrent `auth protect` or `unprotect` runs: both hold
   `token-key.lock` in the config dir (`flock.AcquireIn`), so two runs cannot
   mint different keys and seal slots the other cannot open.

@@ -484,12 +484,24 @@ func DisableProtection(cfgDir string) (unsealed []string, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("load contexts: %w", err)
 	}
+	sl, err := protection.sealer()
+	if err != nil {
+		return nil, err
+	}
+	var done []*contexts.Context
 	for _, c := range f.Contexts {
-		done, err := unsealContext(c)
+		ok, err := unsealContext(c)
 		if err != nil {
-			return unsealed, fmt.Errorf("unseal context %q: %w", c.Name, err)
+			// All or nothing: with the key still enrolled, plaintext slots
+			// would fail closed, locking the user out of logins that were
+			// just unsealed. Re-seal them from the cache, which never prompts.
+			if rbErr := resealContexts(sl, done); rbErr != nil {
+				return nil, fmt.Errorf("unseal context %q: %w; re-sealing the others also failed: %w", c.Name, err, rbErr)
+			}
+			return nil, fmt.Errorf("unseal context %q: %w; nothing was changed", c.Name, err)
 		}
-		if done {
+		if ok {
+			done = append(done, c)
 			unsealed = append(unsealed, c.Name)
 		}
 	}
@@ -503,6 +515,19 @@ func DisableProtection(cfgDir string) (unsealed []string, err error) {
 	protection.reset()
 	forgetBundles()
 	return unsealed, nil
+}
+
+// resealContexts puts contexts unsealed by a failed DisableProtection back
+// behind the key. Their bundles were cached when they were unsealed, so
+// sealing them again never prompts.
+func resealContexts(sl senclave.Sealer, cs []*contexts.Context) error {
+	var errs []error
+	for _, c := range cs {
+		if _, err := sealContext(sl, c); err != nil {
+			errs = append(errs, fmt.Errorf("context %q: %w", c.Name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // unsealContext rewrites one context's sealed tokens as plaintext.
