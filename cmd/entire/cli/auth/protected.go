@@ -53,6 +53,8 @@ var (
 	ErrBundleMismatch = errors.New("sealed token does not match this context; contexts.json may have been edited")
 	// ErrPlaintextWhileProtected: a plaintext slot exists while a key is enrolled.
 	ErrPlaintextWhileProtected = errors.New("plaintext login found while tokens are protected; run `entire auth protect` to seal it")
+	// ErrKeyUnusable: a key blob exists but cannot be loaded here.
+	ErrKeyUnusable = errors.New("token key cannot be loaded; run `entire auth unprotect` to remove it")
 )
 
 // refusePlaintextWhileProtected fails closed when a key is enrolled but a
@@ -150,9 +152,13 @@ func openEnclaveSealer() (senclave.Sealer, error) {
 		}
 		return nil, fmt.Errorf("read %s: %w", ProtectedKeyFile, err)
 	}
+	// Fail closed on a blob that will not load (a config dir synced to a
+	// machine without an enclave, or a corrupt file): falling back to
+	// plaintext would silently drop the protection the user turned on.
+	// `auth unprotect` removes the blob.
 	key, err := senclave.Load(blob)
 	if err != nil {
-		return nil, fmt.Errorf("load Secure Enclave token key: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrKeyUnusable, err)
 	}
 	return key, nil
 }
@@ -271,7 +277,7 @@ func unsealSlot(encoded, reason string) (tokenBundle, error) {
 	sl, err := protection.sealer()
 	if err != nil {
 		if errors.Is(err, ErrProtectionOff) {
-			return tokenBundle{}, errors.New("stored tokens are sealed but no Secure Enclave key is enrolled")
+			return tokenBundle{}, errors.New("stored tokens are sealed but no Secure Enclave key is enrolled; run `entire login`")
 		}
 		return tokenBundle{}, err
 	}
@@ -471,22 +477,28 @@ func sealContext(sl senclave.Sealer, c *contexts.Context) (bool, error) {
 
 // DisableProtection unseals every saved login back to plaintext, prompting
 // once per context, then removes the key. Returns the unsealed names.
-func DisableProtection(cfgDir string) (unsealed []string, err error) {
+//
+// A key that no longer loads cannot unseal anything, so it is removed as
+// is and the logins left sealed are returned as dropped; they need a fresh
+// `entire login`. Without this the only way out was deleting the blob by hand.
+func DisableProtection(cfgDir string) (unsealed, dropped []string, err error) {
 	release, err := lockProtection()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer release()
-	if _, err := protection.sealer(); err != nil {
-		return nil, err
+	protection.reset() // observe a key another process may have just removed
+	sl, err := protection.sealer()
+	if errors.Is(err, ErrKeyUnusable) {
+		dropped, err = dropUnusableKey(cfgDir)
+		return nil, dropped, err
+	}
+	if err != nil {
+		return nil, nil, err
 	}
 	f, err := contexts.Load(cfgDir)
 	if err != nil {
-		return nil, fmt.Errorf("load contexts: %w", err)
-	}
-	sl, err := protection.sealer()
-	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("load contexts: %w", err)
 	}
 	var done []*contexts.Context
 	for _, c := range f.Contexts {
@@ -499,25 +511,57 @@ func DisableProtection(cfgDir string) (unsealed []string, err error) {
 			// written its plaintext refresh slot before failing, and
 			// sealContext clears that whether or not the access slot moved.
 			if rbErr := resealContexts(sl, append(done, c)); rbErr != nil {
-				return nil, fmt.Errorf("unseal context %q: %w; re-sealing the others also failed: %w", c.Name, err, rbErr)
+				return nil, nil, fmt.Errorf("unseal context %q: %w; re-sealing the others also failed: %w", c.Name, err, rbErr)
 			}
-			return nil, fmt.Errorf("unseal context %q: %w; nothing was changed", c.Name, err)
+			return nil, nil, fmt.Errorf("unseal context %q: %w; nothing was changed", c.Name, err)
 		}
 		if ok {
 			done = append(done, c)
 			unsealed = append(unsealed, c.Name)
 		}
 	}
+	if err := removeKey(); err != nil {
+		return unsealed, nil, err
+	}
+	return unsealed, nil, nil
+}
+
+// dropUnusableKey removes a key blob that will not load and names the
+// logins whose sealed tokens it leaves unreadable. Never nil on success,
+// so callers can tell a dropped key from a normal unprotect.
+func dropUnusableKey(cfgDir string) ([]string, error) {
+	f, err := contexts.Load(cfgDir)
+	if err != nil {
+		return nil, fmt.Errorf("load contexts: %w", err)
+	}
+	sealed := []string{}
+	for _, c := range f.Contexts {
+		if c == nil || c.KeychainService == "" || c.Handle == "" {
+			continue
+		}
+		enc, err := tokenstore.Get(c.KeychainService, c.Handle)
+		if err == nil && isSealed(enc) {
+			sealed = append(sealed, c.Name)
+		}
+	}
+	if err := removeKey(); err != nil {
+		return nil, err
+	}
+	return sealed, nil
+}
+
+// removeKey deletes the key blob and clears everything cached under it.
+func removeKey() error {
 	root, err := userdirs.ConfigRoot()
 	if err != nil {
-		return unsealed, fmt.Errorf("open config dir: %w", err)
+		return fmt.Errorf("open config dir: %w", err)
 	}
 	if err := osroot.Remove(root, ProtectedKeyFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return unsealed, fmt.Errorf("remove %s: %w", ProtectedKeyFile, err)
+		return fmt.Errorf("remove %s: %w", ProtectedKeyFile, err)
 	}
 	protection.reset()
 	forgetBundles()
-	return unsealed, nil
+	return nil
 }
 
 // resealContexts puts contexts unsealed by a failed DisableProtection back

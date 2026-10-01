@@ -68,10 +68,13 @@ func newAuthUnprotectCmd() *cobra.Command {
 		Short: "Stop requiring Touch ID for saved logins",
 		Long: "Stop requiring Touch ID for saved logins.\n\n" +
 			"Unseals every saved login back to plain keychain storage, asking for\n" +
-			"Touch ID once per login, then removes the Secure Enclave key.",
+			"Touch ID once per login, then removes the Secure Enclave key.\n\n" +
+			"A key that cannot be loaded here (a config directory copied from\n" +
+			"another machine, or a damaged key file) is removed without unsealing;\n" +
+			"logins sealed under it need `entire login` again.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			unsealed, err := auth.DisableProtection(userdirs.Config())
+			unsealed, dropped, err := auth.DisableProtection(userdirs.Config())
 			if err != nil {
 				if errors.Is(err, auth.ErrProtectionOff) {
 					fmt.Fprintln(cmd.OutOrStdout(), "Token protection is not on.")
@@ -82,6 +85,12 @@ func newAuthUnprotectCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			for _, name := range unsealed {
 				fmt.Fprintf(out, "Unsealed login %q.\n", name)
+			}
+			if dropped != nil {
+				fmt.Fprintln(out, "Removed a Secure Enclave key that cannot be loaded here.")
+			}
+			for _, name := range dropped {
+				fmt.Fprintf(out, "Login %q was sealed under it; run `entire login`.\n", name)
 			}
 			fmt.Fprintln(out, "Token protection is off.")
 			return nil

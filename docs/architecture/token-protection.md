@@ -54,9 +54,12 @@ bound at runtime with purego; release builds stay `CGO_ENABLED=0`.
 macOS renders `"<binary>" is trying to <reason>.` The reason is
 `<action> with Entire login <handle>@<login server host>`, for example
 `git push to us.entire.io with Entire login toothbrush@us.auth.entire.io`.
-CLI commands derive the action from their non-flag words (`entire trail
-list`). The binary name and the dialog itself come from macOS and cannot be
-forged by the caller.
+CLI commands derive the action from their resolved Cobra command path
+(`entire trail list`). macOS draws the dialog and fills in the binary name
+of the process asking; the reason is text the caller supplies. Another
+process that loads the key blob gets a dialog under its own name with its
+own reason (see the threat model below), so the wording tells the user what
+Entire is doing, it does not prove Entire is the one asking.
 
 ## Prompt count
 
@@ -139,6 +142,11 @@ Protected against, with user-level code execution on the Mac:
 - Concurrent `auth protect` or `unprotect` runs: both hold
   `token-key.lock` in the config dir (`flock.AcquireIn`), so two runs cannot
   mint different keys and seal slots the other cannot open.
+- A key blob that will not load (a config dir synced to a machine without
+  an enclave, or a damaged file): every token read and write fails closed
+  with `ErrKeyUnusable` rather than falling back to plaintext. `auth
+  unprotect` removes the blob without unsealing and names the logins left
+  sealed under it, which need `entire login`.
 
 Not protected against:
 

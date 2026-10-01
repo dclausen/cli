@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -65,6 +66,22 @@ func (f *fakeSealer) lastReason() string {
 		return ""
 	}
 	return f.reasons[len(f.reasons)-1]
+}
+
+// setSealerErrForTesting makes every sealer lookup fail with err.
+func setSealerErrForTesting(t *testing.T, err error) {
+	t.Helper()
+	protection.mu.Lock()
+	prevOpen := protection.open
+	protection.cached = nil
+	protection.open = func() (senclave.Sealer, error) { return nil, err }
+	protection.mu.Unlock()
+	t.Cleanup(func() {
+		protection.mu.Lock()
+		protection.open = prevOpen
+		protection.cached = nil
+		protection.mu.Unlock()
+	})
 }
 
 // protectedFixture isolates the token store and installs a fake sealer.
@@ -361,12 +378,12 @@ func TestEnableDisableProtection_RewritesSlots(t *testing.T) {
 
 	// `auth unprotect` runs in a fresh process with nothing cached.
 	forgetBundles()
-	unsealed, err := DisableProtection(cfgDir)
+	unsealed, dropped, err := DisableProtection(cfgDir)
 	if err != nil {
 		t.Fatalf("DisableProtection: %v", err)
 	}
-	if len(unsealed) != 1 || fs.count() != 1 {
-		t.Fatalf("unsealed=%v prompts=%d", unsealed, fs.count())
+	if len(unsealed) != 1 || dropped != nil || fs.count() != 1 {
+		t.Fatalf("unsealed=%v dropped=%v prompts=%d", unsealed, dropped, fs.count())
 	}
 	raw, err = tokenstore.Get(c.KeychainService, c.Handle)
 	if err != nil || !strings.HasPrefix(raw, "acc|") {
@@ -459,7 +476,7 @@ func TestDisableProtection_PartialFailureRollsBack(t *testing.T) {
 	// A fresh `auth unprotect` process; the user cancels the second dialog.
 	forgetBundles()
 	fs.failOn = 2
-	unsealed, err := DisableProtection(cfgDir)
+	unsealed, _, err := DisableProtection(cfgDir)
 	if err == nil || !PromptDeclined(err) {
 		t.Fatalf("DisableProtection err = %v, want declined prompt", err)
 	}
@@ -489,6 +506,60 @@ func TestDisableProtection_PartialFailureRollsBack(t *testing.T) {
 		if err != nil || got.AccessToken != "acc-"+c.Name || got.RefreshToken != "ref-"+c.Name {
 			t.Fatalf("context %s after rollback: %+v err=%v", c.Name, got, err)
 		}
+	}
+}
+
+func TestDisableProtection_DropsUnusableKey(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("ENTIRE_CONFIG_DIR", cfgDir)
+	fs, c := protectedFixture(t)
+	if err := contexts.Save(cfgDir, &contexts.File{CurrentContext: c.Name, Contexts: []*contexts.Context{c}}); err != nil {
+		t.Fatal(err)
+	}
+	sl, err := protection.sealer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := sealSlot(sl, tokenBundle{Issuer: c.CoreURL, Handle: c.Handle, Access: "acc", Refresh: "ref"}, 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.Set(c.KeychainService, c.Handle, enc); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(cfgDir, ProtectedKeyFile)
+	if err := os.WriteFile(keyPath, []byte("blob"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The blob is there but will not load: a config dir synced from a Mac
+	// to a machine without an enclave, or a damaged file.
+	setSealerErrForTesting(t, fmt.Errorf("%w: %w", ErrKeyUnusable, senclave.ErrUnsupported))
+	forgetBundles()
+
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if _, err := store.LoadTokens(""); !errors.Is(err, ErrKeyUnusable) {
+		t.Fatalf("LoadTokens err = %v, want ErrKeyUnusable", err)
+	}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "new"}); !errors.Is(err, ErrKeyUnusable) {
+		t.Fatalf("SaveTokens err = %v, want ErrKeyUnusable", err)
+	}
+
+	unsealed, dropped, err := DisableProtection(cfgDir)
+	if err != nil {
+		t.Fatalf("DisableProtection: %v", err)
+	}
+	if len(unsealed) != 0 || len(dropped) != 1 || dropped[0] != "prod" {
+		t.Fatalf("unsealed=%v dropped=%v", unsealed, dropped)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("key blob still present, err=%v", err)
+	}
+	if fs.count() != 0 {
+		t.Fatalf("an unusable key must not prompt, got %d", fs.count())
+	}
+	// The sealed slot is left for `entire login` to overwrite.
+	if raw, err := tokenstore.Get(c.KeychainService, c.Handle); err != nil || !isSealed(raw) {
+		t.Fatalf("slot = %q err=%v", raw, err)
 	}
 }
 
