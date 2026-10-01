@@ -202,10 +202,15 @@ func storeLoginTokens(coreURL, keychainService, handle, rawToken, refreshToken s
 		if err != nil {
 			return err
 		}
+		// Clear any plaintext refresh token first: a leftover one would be
+		// usable without the dialog. Failing here leaves the previous pair
+		// intact rather than a sealed access token beside a plaintext refresh.
+		if err := tokenstore.Delete(refreshSlot, handle); err != nil && !errors.Is(err, tokenstore.ErrNotFound) {
+			return fmt.Errorf("clear plaintext refresh token: %w", &credStoreWriteError{err})
+		}
 		if err := tokenstore.Set(keychainService, handle, encoded); err != nil {
 			return fmt.Errorf("store sealed login in credential store: %w", &credStoreWriteError{err})
 		}
-		_ = tokenstore.Delete(refreshSlot, handle) //nolint:errcheck // best-effort cleanup; the sealed bundle carries the refresh token
 		return nil
 	case !errors.Is(err, ErrProtectionOff):
 		return err

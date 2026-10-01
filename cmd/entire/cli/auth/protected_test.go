@@ -273,11 +273,16 @@ func TestRecordLoginContext_SealsWhenProtected(t *testing.T) {
 	t.Setenv("ENTIRE_CONFIG_DIR", cfgDir)
 	fs, _ := protectedFixture(t)
 
+	// A plaintext refresh token from before protection was turned on must
+	// not survive a re-login: it would be usable without the dialog.
+	service := tokenstore.CoreKeyringService("https://core.example.test")
+	if err := tokenstore.Set(tokenstore.RefreshService(service), "toothbrush", "stale-plaintext-refresh"); err != nil {
+		t.Fatal(err)
+	}
 	token := makeJWT(t, fmt.Sprintf(`{"iss":"https://core.example.test","handle":"toothbrush","exp":%d}`, time.Now().Add(time.Hour).Unix()))
 	if _, err := RecordLoginContext(token, "refresh-1", true); err != nil {
 		t.Fatalf("RecordLoginContext: %v", err)
 	}
-	service := tokenstore.CoreKeyringService("https://core.example.test")
 	raw, err := tokenstore.Get(service, "toothbrush")
 	if err != nil || !isSealed(raw) {
 		t.Fatalf("login not sealed: %q err=%v", raw, err)
