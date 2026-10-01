@@ -1,6 +1,8 @@
 package settings
 
 import (
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -181,4 +183,78 @@ func TestLoad_FromLinkedWorktreeCwdInheritsMainLocalSettings(t *testing.T) {
 	s, err := Load(t.Context())
 	require.NoError(t, err)
 	assert.True(t, s.ExternalAgents)
+}
+
+// Not parallel: t.Chdir. A write from a linked worktree (answering "always"
+// at the commit-link prompt, picking a summary provider) must land in the
+// file the worktree reads; a new worktree-only file would hide the inherited
+// grants and bring the original failure back.
+func TestLocalWritesFromLinkedWorktreeLandInTheInheritedFile(t *testing.T) {
+	mainRoot, linked := worktreePair(t)
+	mainLocal := filepath.Join(mainRoot, EntireSettingsLocalFile)
+	writeSettingsFile(t, mainLocal, `{"external_agents":true}`)
+	t.Chdir(linked)
+
+	path, raw, exists, err := LoadLocalRaw(t.Context())
+	require.NoError(t, err)
+	require.True(t, exists)
+	assert.Equal(t, mainLocal, path)
+	raw["commit_linking"] = json.RawMessage(`"always"`)
+	require.NoError(t, SaveLocalRaw(path, raw))
+
+	_, statErr := os.Lstat(filepath.Join(linked, EntireSettingsLocalFile))
+	require.ErrorIs(t, statErr, fs.ErrNotExist, "no worktree-only file that would hide the inherited one")
+	s, err := Load(t.Context())
+	require.NoError(t, err)
+	assert.True(t, s.ExternalAgents, "the grant survives the write")
+	assert.Equal(t, CommitLinkingAlways, s.CommitLinking)
+
+	data, err := LoadLocalBytes(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "external_agents")
+}
+
+// Not parallel: t.Chdir.
+func TestSaveLocal_FromLinkedWorktreeWritesInheritedFile(t *testing.T) {
+	mainRoot, linked := worktreePair(t)
+	mainLocal := filepath.Join(mainRoot, EntireSettingsLocalFile)
+	writeSettingsFile(t, mainLocal, `{"enabled":true}`)
+	t.Chdir(linked)
+
+	require.NoError(t, SaveLocal(t.Context(), &EntireSettings{Enabled: true, LogLevel: "debug"}))
+
+	_, statErr := os.Lstat(filepath.Join(linked, EntireSettingsLocalFile))
+	require.ErrorIs(t, statErr, fs.ErrNotExist)
+	data, err := os.ReadFile(mainLocal)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"debug"`)
+}
+
+// Not parallel: t.Chdir. `entire enable --local` in the main tree must count
+// as set up in its worktrees, or they report "not set up" and capture nothing.
+func TestFilesPresent_CountsInheritedLocalFile(t *testing.T) {
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile), `{"enabled":true}`)
+	t.Chdir(linked)
+
+	project, local, err := FilesPresent(t.Context())
+	require.NoError(t, err)
+	assert.False(t, project)
+	assert.True(t, local)
+	assert.True(t, IsSetUpLocal(t.Context()))
+	assert.True(t, IsSetUpAny(t.Context()))
+}
+
+// Not parallel: t.Chdir. A worktree checked out from a commit with no
+// .entire at all is still governed by the main worktree's file.
+func TestFilesPresent_InheritedLocalFileWithoutWorktreeEntireDir(t *testing.T) {
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile), `{"enabled":true}`)
+	require.NoError(t, os.RemoveAll(filepath.Join(linked, ".entire")))
+	t.Chdir(linked)
+
+	project, local, err := FilesPresent(t.Context())
+	require.NoError(t, err)
+	assert.False(t, project)
+	assert.True(t, local)
 }

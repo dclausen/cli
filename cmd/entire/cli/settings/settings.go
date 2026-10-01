@@ -833,9 +833,9 @@ func LoadLocalRaw(ctx context.Context) (path string, raw map[string]json.RawMess
 // no-defaults semantics, not loadFromFile's Enabled: true) still read the file
 // through this package rather than reaching for os.ReadFile on a joined path.
 func LoadLocalBytes(ctx context.Context) ([]byte, error) {
-	filePath, err := entiredir.PathTo(ctx, EntireSettingsLocalFile)
+	filePath, _, err := LocalSettingsPath(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("resolve local settings path: %w", err)
+		return nil, err
 	}
 	data, err := readConfined(filePath)
 	if err != nil {
@@ -847,11 +847,22 @@ func LoadLocalBytes(ctx context.Context) ([]byte, error) {
 	return data, nil
 }
 
+// settingsFilePath resolves a settings file under .entire. The local file goes
+// through LocalSettingsPath, so reads and writes from a linked worktree reach
+// the file that worktree actually uses.
+func settingsFilePath(ctx context.Context, file string) (string, error) {
+	if file == EntireSettingsLocalFile {
+		path, _, err := LocalSettingsPath(ctx)
+		return path, err
+	}
+	return entiredir.PathTo(ctx, file) //nolint:wrapcheck // callers add which file failed
+}
+
 // loadRaw reads a settings file as a generic JSON object. label ("project" or
 // "local") only differentiates error wording so failures name the file
 // actually being read.
 func loadRaw(ctx context.Context, file, label string) (path string, raw map[string]json.RawMessage, exists bool, err error) {
-	path, err = entiredir.PathTo(ctx, file)
+	path, err = settingsFilePath(ctx, file)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("resolve %s settings path: %w", label, err)
 	}
@@ -1756,17 +1767,22 @@ func IsSetUp(ctx context.Context) bool {
 // job is to say why it cannot see something.
 func FilesPresent(ctx context.Context) (project, local bool, err error) {
 	root, err := entiredir.OpenForRead(ctx)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, false, nil
+	switch {
+	case err == nil:
+		project, err = fileExists(root, SettingsName)
+		if err != nil {
+			return false, false, fmt.Errorf("cannot access project settings file: %w", err)
 		}
+	case !errors.Is(err, fs.ErrNotExist):
 		return false, false, fmt.Errorf("cannot access %s: %w", paths.EntireDir, err)
 	}
-	project, err = fileExists(root, SettingsName)
+	// Checked even without a .entire here: a linked worktree can still be
+	// governed by the main worktree's local file.
+	localPath, _, err := LocalSettingsPath(ctx)
 	if err != nil {
-		return false, false, fmt.Errorf("cannot access project settings file: %w", err)
+		return false, false, err
 	}
-	local, err = fileExists(root, SettingsLocalName)
+	local, err = localFilePresent(localPath)
 	if err != nil {
 		return false, false, fmt.Errorf("cannot access local settings file: %w", err)
 	}
@@ -1783,11 +1799,17 @@ func fileExists(root *os.Root, name string) (bool, error) {
 	return true, nil
 }
 
-// IsSetUpLocal returns true if .entire/settings.local.json exists. Callers that
+// IsSetUpLocal returns true if the local settings file this worktree uses
+// exists (possibly the main worktree's; see LocalSettingsPath). Callers that
 // pick a write target need the two scopes separately, which IsSetUpAny folds
 // together.
 func IsSetUpLocal(ctx context.Context) bool {
-	return entireFileExists(ctx, SettingsLocalName)
+	path, _, err := LocalSettingsPath(ctx)
+	if err != nil {
+		return false
+	}
+	present, err := localFilePresent(path)
+	return err == nil && present
 }
 
 // IsSetUpAny returns true if Entire has been set up in the current repository,
@@ -2157,7 +2179,7 @@ func SaveLocal(ctx context.Context, settings *EntireSettings) error {
 // saveToFile saves settings to the specified file path.
 func saveToFile(ctx context.Context, settings *EntireSettings, filePath string) error {
 	// Get absolute path for the file
-	filePathAbs, err := entiredir.PathTo(ctx, filePath)
+	filePathAbs, err := settingsFilePath(ctx, filePath)
 	if err != nil {
 		return fmt.Errorf("resolving settings path: %w", err)
 	}
