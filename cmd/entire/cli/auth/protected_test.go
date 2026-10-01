@@ -221,26 +221,51 @@ func TestSealedStore_DeclinedPromptIsClassified(t *testing.T) {
 	}
 }
 
-func TestSealedStore_PlaintextStillReadable(t *testing.T) {
-	_, c := protectedFixture(t)
-	// A slot written before protection was turned on.
+func TestSealedStore_PlaintextRefusedWhileProtected(t *testing.T) {
+	fs, c := protectedFixture(t)
+	// A plaintext slot left by an interrupted enrolment or a legacy writer
+	// must not be readable without the dialog while a key is enrolled.
 	if err := tokenstore.Set(c.KeychainService, c.Handle, tokenstore.EncodeTokenWithExpiration("plain-acc", 600)); err != nil {
 		t.Fatal(err)
 	}
-	if err := tokenstore.Set(tokenstore.RefreshService(c.KeychainService), c.Handle, "plain-ref"); err != nil {
-		t.Fatal(err)
-	}
 	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
-	got, err := store.LoadTokens("")
+	if _, err := store.LoadTokens(""); !errors.Is(err, ErrPlaintextWhileProtected) {
+		t.Fatalf("LoadTokens err = %v, want ErrPlaintextWhileProtected", err)
+	}
+	if _, err := LoginTokenForContext(c); !errors.Is(err, ErrPlaintextWhileProtected) {
+		t.Fatalf("LoginTokenForContext err = %v, want ErrPlaintextWhileProtected", err)
+	}
+	if fs.count() != 0 {
+		t.Fatalf("refusal must not prompt; unseals=%d", fs.count())
+	}
+}
+
+func TestSealContext_ClearsStrayRefreshWhenAlreadySealed(t *testing.T) {
+	fs, c := protectedFixture(t)
+	sl, err := protection.sealer()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AccessToken != "plain-acc" || got.RefreshToken != "plain-ref" {
-		t.Fatalf("plaintext load: %+v", got)
+	enc, err := sealSlot(sl, tokenBundle{Issuer: c.CoreURL, Handle: c.Handle, Access: "acc", Refresh: "ref"}, 600)
+	if err != nil {
+		t.Fatal(err)
 	}
-	tok, err := LoginTokenForContext(c)
-	if err != nil || tok != "plain-acc" {
-		t.Fatalf("LoginTokenForContext = %q, %v", tok, err)
+	if err := tokenstore.Set(c.KeychainService, c.Handle, enc); err != nil {
+		t.Fatal(err)
+	}
+	// An earlier run sealed the access slot but died before clearing this.
+	if err := tokenstore.Set(tokenstore.RefreshService(c.KeychainService), c.Handle, "stale-plaintext"); err != nil {
+		t.Fatal(err)
+	}
+	done, err := sealContext(sl, c)
+	if err != nil || done {
+		t.Fatalf("sealContext = %v, %v; want already-sealed no-op", done, err)
+	}
+	if _, err := tokenstore.Get(tokenstore.RefreshService(c.KeychainService), c.Handle); !errors.Is(err, tokenstore.ErrNotFound) {
+		t.Fatalf("stray plaintext refresh survived, err=%v", err)
+	}
+	if fs.count() != 0 {
+		t.Fatalf("cleanup must not prompt; unseals=%d", fs.count())
 	}
 }
 

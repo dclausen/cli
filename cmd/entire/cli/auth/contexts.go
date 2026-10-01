@@ -257,6 +257,9 @@ func LoginTokenForContext(c *contexts.Context) (string, error) {
 		}
 		return b.Access, nil
 	}
+	if err := refusePlaintextWhileProtected(); err != nil {
+		return "", fmt.Errorf("read token for context %q: %w", c.Name, err)
+	}
 	token, _ := tokenstore.DecodeTokenWithExpiration(encoded)
 	return token, nil
 }

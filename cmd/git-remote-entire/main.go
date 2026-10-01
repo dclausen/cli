@@ -138,7 +138,7 @@ func run(args []string) int {
 		return 128
 	}
 
-	setAuth := setAuthWithProvider(creds)
+	setAuth := setAuthWithProvider(creds, parsedURL.Host)
 
 	var onNodeFailed func(string)
 	if nodeCfg.Caching() {
@@ -220,7 +220,10 @@ func refreshingProvider(credential refreshableCredential) (credentialProvider, f
 	return provider, onUnauthorized
 }
 
-func setAuthWithProvider(provider credentialProvider) transport.SetAuthFunc {
+// setAuthWithProvider attaches the bearer to classified git requests.
+// remoteHost is the host from the user's entire:// URL, named in the token
+// dialog; req.URL.Host may be a replica node the transport picked.
+func setAuthWithProvider(provider credentialProvider, remoteHost string) transport.SetAuthFunc {
 	return func(req *http.Request) error {
 		// Refuse to attach credentials to a request we can't classify as a
 		// known git smart-HTTP endpoint. Sending a bearer to an unexpected
@@ -230,7 +233,7 @@ func setAuthWithProvider(provider credentialProvider) transport.SetAuthFunc {
 			return fmt.Errorf("refusing to attach credentials: %s %s is not a recognised git smart-HTTP endpoint", req.Method, req.URL.Path)
 		}
 		// Protected tokens prompt on read; the dialog names this action.
-		token, err := provider(auth.WithPromptAction(req.Context(), gitPromptAction(action, req.URL.Host)))
+		token, err := provider(auth.WithPromptAction(req.Context(), gitPromptAction(action, remoteHost)))
 		if err != nil {
 			return fmt.Errorf("resolve git credential: %w", err)
 		}

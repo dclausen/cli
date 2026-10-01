@@ -32,15 +32,20 @@ func newAuthProtectCmd() *cobra.Command {
 				return errors.New("token protection needs macOS with a Secure Enclave")
 			}
 			sealed, created, err := auth.EnableProtection(userdirs.Config())
+			out := cmd.OutOrStdout()
+			// Report what already happened even on failure: a key may exist
+			// and some logins may already need Touch ID.
+			if created {
+				fmt.Fprintln(out, "Created Secure Enclave token key.")
+			}
 			if err != nil {
+				for _, name := range sealed {
+					fmt.Fprintf(out, "Sealed login %q before the failure.\n", name)
+				}
 				if errors.Is(err, senclave.ErrUnsupported) {
 					return fmt.Errorf("this Mac cannot use the Secure Enclave: %w", err)
 				}
-				return err //nolint:wrapcheck // EnableProtection errors already name the step
-			}
-			out := cmd.OutOrStdout()
-			if created {
-				fmt.Fprintln(out, "Created Secure Enclave token key.")
+				return fmt.Errorf("%w; run `entire auth protect` again to finish", err)
 			}
 			switch len(sealed) {
 			case 0:

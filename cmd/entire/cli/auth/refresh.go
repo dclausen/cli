@@ -102,6 +102,9 @@ func (s *contextTokenStore) LoadTokens(string) (tokens.TokenSet, error) {
 		s.lastRefresh = b.Refresh
 		return tokens.TokenSet{AccessToken: b.Access, RefreshToken: b.Refresh, ExpiresAt: expiresAt}, nil
 	}
+	if err := refusePlaintextWhileProtected(); err != nil {
+		return tokens.TokenSet{}, err
+	}
 	access, expiresAt := tokenstore.DecodeTokenWithExpiration(enc)
 	// A missing refresh slot is fine (login predating offline_access) — treat
 	// it as no-refresh. Any other store error must surface, not be swallowed:

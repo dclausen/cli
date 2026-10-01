@@ -10,8 +10,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/internal/flock"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/internal/entireclient/contexts"
@@ -49,7 +51,24 @@ var (
 	ErrPromptDeclined = errors.New("authentication prompt declined")
 	// ErrBundleMismatch: the sealed token names a different issuer or handle.
 	ErrBundleMismatch = errors.New("sealed token does not match this context; contexts.json may have been edited")
+	// ErrPlaintextWhileProtected: a plaintext slot exists while a key is enrolled.
+	ErrPlaintextWhileProtected = errors.New("plaintext login found while tokens are protected; run `entire auth protect` to seal it")
 )
+
+// refusePlaintextWhileProtected fails closed when a key is enrolled but a
+// slot is still plaintext, from an interrupted enrolment or a legacy writer.
+// Reading it silently would bypass the dialog the user turned on.
+func refusePlaintextWhileProtected() error {
+	_, err := protection.sealer()
+	switch {
+	case err == nil:
+		return ErrPlaintextWhileProtected
+	case errors.Is(err, ErrProtectionOff):
+		return nil
+	default:
+		return err
+	}
+}
 
 // tokenBundle is the plaintext a sealed slot decrypts to. Issuer and handle
 // bind the tokens to their context so a rewritten contexts.json cannot
@@ -298,8 +317,22 @@ func promptActionFrom(ctx context.Context) string {
 	return defaultPromptAction()
 }
 
-// defaultPromptAction names the running command from its non-flag words.
+// promptCommand is the executing command's path, set by the CLI root once
+// Cobra has resolved it, so flags before a subcommand cannot blur it.
+var promptCommand atomic.Pointer[string]
+
+// SetPromptCommand records the resolved command path, e.g. "entire trail list".
+func SetPromptCommand(path string) {
+	p := strings.TrimSpace(path)
+	promptCommand.Store(&p)
+}
+
+// defaultPromptAction names the running command: the Cobra path when the
+// root recorded one, else the binary's non-flag words.
 func defaultPromptAction() string {
+	if p := promptCommand.Load(); p != nil && *p != "" {
+		return *p
+	}
 	words := []string{"entire"}
 	for _, a := range os.Args[1:] {
 		if strings.HasPrefix(a, "-") || len(words) >= 3 {
@@ -324,9 +357,33 @@ func loginLabel(issuer, handle string) string {
 
 // Enrollment.
 
+// protectionLockFile serializes enrolment and removal across processes.
+const protectionLockFile = "token-key.lock"
+
+// lockProtection takes the cross-process enrolment lock. Two concurrent
+// `auth protect` runs would otherwise each mint a key and seal slots the
+// other's key cannot open.
+func lockProtection() (func(), error) {
+	root, err := userdirs.ConfigRoot()
+	if err != nil {
+		return nil, fmt.Errorf("open config dir: %w", err)
+	}
+	release, err := flock.AcquireIn(root, protectionLockFile)
+	if err != nil {
+		return nil, fmt.Errorf("lock token protection: %w", err)
+	}
+	return release, nil
+}
+
 // EnableProtection enrols a Secure Enclave key when none exists and seals
 // every saved login. It never prompts. Returns the sealed context names.
 func EnableProtection(cfgDir string) (sealed []string, created bool, err error) {
+	release, err := lockProtection()
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
+	protection.reset() // observe a key another process may have just enrolled
 	sl, err := protection.sealer()
 	if errors.Is(err, ErrProtectionOff) {
 		if err := enrolKey(); err != nil {
@@ -382,11 +439,16 @@ func sealContext(sl senclave.Sealer, c *contexts.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read access token: %w", err)
 	}
+	refreshSlot := tokenstore.RefreshService(c.KeychainService)
 	if isSealed(enc) {
+		// Already sealed, but a plaintext refresh token may remain from an
+		// interrupted run or a legacy writer. It must not outlive this call.
+		if err := tokenstore.Delete(refreshSlot, c.Handle); err != nil && !errors.Is(err, tokenstore.ErrNotFound) {
+			return false, fmt.Errorf("clear refresh slot: %w", err)
+		}
 		return false, nil
 	}
 	access, expiresAt := tokenstore.DecodeTokenWithExpiration(enc)
-	refreshSlot := tokenstore.RefreshService(c.KeychainService)
 	refresh, err := tokenstore.Get(refreshSlot, c.Handle)
 	if err != nil && !errors.Is(err, tokenstore.ErrNotFound) {
 		return false, fmt.Errorf("read refresh token: %w", err)
@@ -395,11 +457,14 @@ func sealContext(sl senclave.Sealer, c *contexts.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := tokenstore.Set(c.KeychainService, c.Handle, sealedEnc); err != nil {
-		return false, fmt.Errorf("store sealed tokens: %w", err)
-	}
+	// Clear the plaintext refresh token before writing the bundle that now
+	// carries it. A failure between the two loses only a copy; the reverse
+	// order could leave a token usable without the dialog.
 	if err := tokenstore.Delete(refreshSlot, c.Handle); err != nil && !errors.Is(err, tokenstore.ErrNotFound) {
 		return false, fmt.Errorf("clear refresh slot: %w", err)
+	}
+	if err := tokenstore.Set(c.KeychainService, c.Handle, sealedEnc); err != nil {
+		return false, fmt.Errorf("store sealed tokens: %w", err)
 	}
 	return true, nil
 }
@@ -407,6 +472,11 @@ func sealContext(sl senclave.Sealer, c *contexts.Context) (bool, error) {
 // DisableProtection unseals every saved login back to plaintext, prompting
 // once per context, then removes the key. Returns the unsealed names.
 func DisableProtection(cfgDir string) (unsealed []string, err error) {
+	release, err := lockProtection()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if _, err := protection.sealer(); err != nil {
 		return nil, err
 	}

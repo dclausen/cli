@@ -5,8 +5,14 @@ package senclave
 import (
 	"bytes"
 	"errors"
+	"os"
 	"testing"
 )
+
+// requireEnclaveEnv makes a missing enclave a failure instead of a skip,
+// for developer Macs where a Generate error means a binding regression.
+// CI macOS runners are VMs without an enclave, so the default is to skip.
+const requireEnclaveEnv = "ENTIRE_TEST_REQUIRE_SECURE_ENCLAVE"
 
 // Generate, Load and Seal never prompt, so they can run unattended. Unseal
 // shows the Touch ID dialog and is covered manually (see
@@ -15,8 +21,10 @@ func TestGenerateLoadSeal(t *testing.T) {
 	t.Parallel()
 	blob, err := Generate()
 	if err != nil {
-		// CI macOS runners are VMs without an enclave.
-		t.Skipf("no Secure Enclave available: %v", err)
+		if os.Getenv(requireEnclaveEnv) != "" {
+			t.Fatalf("Generate: %v", err)
+		}
+		t.Skipf("no Secure Enclave available (set %s=1 to fail instead): %v", requireEnclaveEnv, err)
 	}
 	if len(blob) == 0 {
 		t.Fatal("empty key blob")

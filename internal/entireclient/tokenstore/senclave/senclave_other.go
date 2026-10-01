@@ -11,6 +11,9 @@ func Generate() ([]byte, error) { return nil, ErrUnsupported }
 // Load reports ErrUnsupported.
 func Load([]byte) (*Key, error) { return nil, ErrUnsupported }
 
+// PublicKey reports ErrUnsupported.
+func (*Key) PublicKey() ([]byte, error) { return nil, ErrUnsupported }
+
 // Seal reports ErrUnsupported.
 func (*Key) Seal([]byte) ([]byte, error) { return nil, ErrUnsupported }
 

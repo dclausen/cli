@@ -126,6 +126,15 @@ Protected against, with user-level code execution on the Mac:
 - Intercepting TLS via `ENTIRE_TLS_SKIP_VERIFY` or `--insecure-http-auth`:
   both are ignored while protected. Loopback `http://` cores stay allowed.
 - Turning protection off: `auth unprotect` has to unseal first, which prompts.
+- A plaintext slot while a key is enrolled (interrupted enrolment, a legacy
+  writer such as the entiredb CLI): reads fail closed with
+  `ErrPlaintextWhileProtected` and point at `entire auth protect`, which
+  seals it. `sealContext` clears the plaintext refresh slot before writing
+  the bundle, and clears a stray one even when the access slot is already
+  sealed.
+- Concurrent `auth protect` or `unprotect` runs: both hold
+  `token-key.lock` in the config dir (`flock.AcquireIn`), so two runs cannot
+  mint different keys and seal slots the other cannot open.
 
 Not protected against:
 
