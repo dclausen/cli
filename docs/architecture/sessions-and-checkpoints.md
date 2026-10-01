@@ -377,7 +377,11 @@ for task work; the payload is materialized at condensation (below).
   are not attributed twice. A background task (`background: true`) fires its
   `subagent-stop` from the child's own idle rather than from the tool hook,
   which returns at launch; nested calls (`subagent_depth > 1`) are recorded on
-  the top-level session.
+  the top-level session. When a completion has no readable child transcript
+  (its export failed, or the SessionEnd sweep completes a task still in
+  flight), the capture re-exports the child through
+  `agent.SubagentTranscriptFetcher` before attributing files, so the record
+  keeps its files and tokens.
 
 **Exactly-once completion.** Completion goes through
 `strategy.CompleteTaskRecord`: one `MutateSessionState` closure marks

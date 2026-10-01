@@ -209,3 +209,42 @@ func TestOpenCodeSubagentResumedChildRecordsEachCall(t *testing.T) {
 	require.Contains(t, storedSecond, "docs/blue.md")
 	require.NotContains(t, storedSecond, "docs/red.md")
 }
+
+// TestOpenCodeSubagentInFlightAtSessionEndKeepsItsFiles covers a task that
+// never sees subagent-stop (a background child, or `opencode run` exiting
+// mid-task). SessionEnd completes the live record; OpenCode's child export is
+// not at any agent-layout path, so the completion must re-export the child to
+// attribute its files and tokens rather than complete it as read-only.
+func TestOpenCodeSubagentInFlightAtSessionEndKeepsItsFiles(t *testing.T) {
+	t.Parallel()
+
+	env := NewFeatureBranchEnv(t)
+	env.InitEntireWithAgent(agent.AgentNameOpenCode)
+
+	parent := env.NewOpenCodeSession()
+	child := env.NewOpenCodeSession()
+	const toolUseID = "call_inflight"
+
+	require.NoError(t, env.SimulateOpenCodeSessionStart(parent.ID, parent.TranscriptPath))
+	require.NoError(t, env.SimulateOpenCodeTurnStart(parent.ID, parent.TranscriptPath, "create docs/late.md in the background"))
+	require.NoError(t, env.SimulateOpenCodeSubagentStart(parent.ID, toolUseID, child.ID, "general", "Create docs/late.md"))
+
+	env.WriteFile("docs/late.md", "late\n")
+	env.CopyTranscriptToEntireTmp(child.ID, child.CreateOpenCodeTranscript("Create docs/late.md", []FileChange{{Path: "docs/late.md", Content: "late\n"}}))
+	parent.CreateOpenCodeTranscript("create docs/late.md in the background", nil)
+	require.NoError(t, env.SimulateOpenCodeTurnEnd(parent.ID, parent.TranscriptPath))
+	require.NoError(t, env.SimulateOpenCodeSessionEnd(parent.ID, parent.TranscriptPath))
+
+	state, err := env.GetSessionState(parent.ID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	rec := state.FindTaskRecord(toolUseID)
+	require.NotNil(t, rec)
+	require.False(t, rec.CompletedAt.IsZero(), "SessionEnd completes the live record")
+	require.Equal(t, []string{"docs/late.md"}, rec.Files, "the re-exported child transcript attributes its files")
+	require.Contains(t, state.FilesTouched, "docs/late.md")
+	require.False(t, rec.TranscriptUnavailable)
+	require.NotEmpty(t, rec.DeclaredTranscriptPath)
+	require.NotNil(t, rec.TokenUsage)
+	require.Equal(t, 150, rec.TokenUsage.InputTokens)
+}

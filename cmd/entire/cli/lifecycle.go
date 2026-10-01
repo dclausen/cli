@@ -1853,6 +1853,41 @@ type subagentCaptureOptions struct {
 	ensureSessionState bool
 }
 
+// fetchSubagentTranscriptForCapture asks an agent whose subagents are
+// re-exportable sessions (SubagentTranscriptFetcher) for the child transcript
+// when nothing declared or resolved one: a stop hook whose own export failed,
+// or a record still in flight when SessionEnd completes it. Without it the
+// record completes with no files, and condensation's later fetch restores the
+// transcript but not the attribution. On success the event is updated to
+// match — transcript declared, available, and token usage filled when the hook
+// had none. Returns "" when the agent cannot fetch or the fetch fails.
+func fetchSubagentTranscriptForCapture(logCtx context.Context, ag agent.Agent, event *agent.Event) string {
+	fetcher, ok := agent.AsSubagentTranscriptFetcher(ag)
+	if !ok || event.SubagentID == "" {
+		return ""
+	}
+	path, err := fetcher.FetchSubagentTranscript(logCtx, event.SubagentID, event.ToolUseID, event.SubagentStartedAt)
+	if err != nil {
+		logging.Warn(logCtx, "could not fetch subagent transcript for capture",
+			slog.String("session_id", event.SessionID),
+			slog.String("tool_use_id", event.ToolUseID),
+			slog.String("error", err.Error()))
+		return ""
+	}
+	event.SubagentTranscriptPath = path
+	event.SubagentTranscriptUnavailable = false
+	if event.TokenUsage == nil {
+		if calc, ok := agent.AsTokenCalculator(ag); ok {
+			if data, rerr := ag.ReadTranscript(path); rerr == nil {
+				if usage, cerr := calc.CalculateTokenUsage(data, 0); cerr == nil {
+					event.TokenUsage = usage
+				}
+			}
+		}
+	}
+	return path
+}
+
 // subagentTranscriptAndFiles selects the capture's trusted file source. Some
 // adapters provide exact child-scoped files because the child has no standalone
 // transcript; other agents retain the established transcript-analyzer path.
@@ -1867,6 +1902,12 @@ func subagentTranscriptAndFiles(
 		transcriptPath = declaredSubagentTranscript(logCtx, event)
 		if transcriptPath == "" {
 			transcriptPath = ResolveAgentTranscriptPath(filepath.Dir(event.SessionRef), event.SessionID, event.SubagentID)
+		}
+	}
+	if transcriptPath == "" {
+		if fetched := fetchSubagentTranscriptForCapture(logCtx, ag, event); fetched != "" {
+			transcriptPath = fetched
+			opts.eventFilesOnly = false
 		}
 	}
 
@@ -2109,8 +2150,10 @@ func captureInFlightTaskFinal(logCtx context.Context, ag agent.Agent, sessionID,
 		SubagentID:      task.AgentID,
 		SubagentType:    task.SubagentType,
 		TaskDescription: task.TaskDescription,
-		Final:           true,
-		Timestamp:       time.Now(),
+		// The record's start scopes a re-export to this call (OpenCode).
+		SubagentStartedAt: task.StartedAt,
+		Final:             true,
+		Timestamp:         time.Now(),
 	}
 	if err := handleSubagentStopFinal(logCtx, ag, event); err != nil {
 		logging.Warn(logCtx, "failed to finalize in-flight task at session end",
