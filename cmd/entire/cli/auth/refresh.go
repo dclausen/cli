@@ -146,11 +146,14 @@ func (s *contextTokenStore) SaveTokens(_ string, t tokens.TokenSet) error {
 		if err != nil {
 			return err
 		}
-		if err := tokenstore.Set(s.service, s.handle, enc); err != nil {
-			return fmt.Errorf("store sealed tokens: %w", err)
-		}
+		// Clear any plaintext refresh token before writing the bundle that
+		// carries it, matching storeLoginTokens and sealContext: a crash
+		// between the two must not leave a token usable without the dialog.
 		if err := tokenstore.Delete(tokenstore.RefreshService(s.service), s.handle); err != nil && !errors.Is(err, tokenstore.ErrNotFound) {
 			return fmt.Errorf("clear refresh slot: %w", err)
+		}
+		if err := tokenstore.Set(s.service, s.handle, enc); err != nil {
+			return fmt.Errorf("store sealed tokens: %w", err)
 		}
 		return nil
 	}
