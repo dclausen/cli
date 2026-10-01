@@ -19,6 +19,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/proclive"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 )
@@ -755,7 +756,7 @@ func (s *State) NotePendingContentAt(worktree string, hadContent bool) {
 		s.PendingContentWorktree = PendingContentInSeveralWorktrees
 	case !hadContent:
 		s.PendingContentWorktree = worktree
-	case filepath.Clean(s.PendingContentWorktree) != filepath.Clean(worktree):
+	case !paths.SameDir(s.PendingContentWorktree, worktree):
 		s.PendingContentWorktree = PendingContentInSeveralWorktrees
 	}
 }
@@ -763,8 +764,7 @@ func (s *State) NotePendingContentAt(worktree string, hadContent bool) {
 // PendingContentRecordedOnlyIn reports whether every pending file and task
 // record came from worktree's hooks.
 func (s *State) PendingContentRecordedOnlyIn(worktree string) bool {
-	return worktree != "" && s.PendingContentWorktree != "" &&
-		filepath.Clean(s.PendingContentWorktree) == filepath.Clean(worktree)
+	return paths.SameDir(s.PendingContentWorktree, worktree)
 }
 
 // LiveTaskRecords returns the records not yet completed (CompletedAt zero) —
