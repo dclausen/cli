@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
@@ -75,4 +77,57 @@ func TestPromptBoundary(t *testing.T) {
 			require.Equal(t, tc.want, promptBoundary(prompts, tc.offset))
 		})
 	}
+}
+
+// Condensation clears a session's prompt.txt under the session lock, possibly
+// in the very worktree a turn's prompt is being carried out of. The carry
+// reads, writes and trims both copies, so it must hold the same lock, or a
+// commit condensing mid-carry has its cleared prompts written back.
+//
+// Not parallel: setupTestRepo changes the process directory.
+func TestCarryTurnPrompt_WaitsForTheSessionLock(t *testing.T) {
+	dst := setupTestRepo(t)
+	const sessionID = "sess-carry-lock"
+	ctx := context.Background()
+	require.NoError(t, strategy.SaveSessionState(ctx, &strategy.SessionState{SessionID: sessionID, BaseCommit: "abc123", StartedAt: time.Now(), WorktreePath: dst}))
+	src := t.TempDir()
+	testutil.InitRepo(t, src)
+	srcPrompt := filepath.Join(src, ".entire", "metadata", sessionID, "prompt.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(srcPrompt), 0o750))
+	before := "earlier turn"
+	require.NoError(t, os.WriteFile(srcPrompt, []byte(before+promptSeparator+"this turn"), 0o600))
+	dstPrompt := filepath.Join(dst, ".entire", "metadata", sessionID, "prompt.txt")
+
+	locked, release := make(chan struct{}), make(chan struct{})
+	holder := make(chan error, 1)
+	go func() {
+		holder <- strategy.MutateSessionState(ctx, sessionID, func(*strategy.SessionState) error {
+			close(locked)
+			<-release
+			return strategy.ErrMutationSkip
+		})
+	}()
+	select {
+	case <-locked:
+	case err := <-holder:
+		t.Fatalf("precondition: the holder never took the session lock: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("precondition: the holder never took the session lock")
+	}
+	carried := make(chan error, 1)
+	go func() { carried <- carryTurnPrompt(ctx, src, sessionID, len(before)) }()
+
+	time.Sleep(300 * time.Millisecond)
+	_, statErr := os.Stat(dstPrompt)
+	require.ErrorIs(t, statErr, os.ErrNotExist, "the carry must not write while another holder has the session lock")
+	still, err := os.ReadFile(srcPrompt)
+	require.NoError(t, err)
+	require.Contains(t, string(still), "this turn", "nor trim the source")
+
+	close(release)
+	require.NoError(t, <-holder)
+	require.NoError(t, <-carried)
+	got, err := os.ReadFile(dstPrompt)
+	require.NoError(t, err)
+	require.Equal(t, "this turn", string(got))
 }

@@ -169,7 +169,27 @@ func removeBaselineIn(worktree, name string) error {
 // past offset in the session's prompt.txt in the worktree the agent has since
 // left, into this tree's copy, which the end hook checkpoints. Earlier prompts
 // stay where they were: they belong to steps already saved in that tree.
+//
+// It runs under the session lock: condensation clears prompt.txt under that
+// lock, possibly in the tree being carried out of, and an unlocked
+// read-write-trim could write cleared prompts back.
 func carryTurnPrompt(ctx context.Context, from, sessionID string, offset int) error {
+	var carryErr error
+	err := strategy.MutateSessionState(ctx, sessionID, func(*strategy.SessionState) error {
+		carryErr = carryTurnPromptLocked(ctx, from, sessionID, offset)
+		return strategy.ErrMutationSkip
+	})
+	if errors.Is(err, strategy.ErrStateNotFound) {
+		// No state to lock against means nothing condenses this session.
+		return carryTurnPromptLocked(ctx, from, sessionID, offset)
+	}
+	if err != nil {
+		return fmt.Errorf("lock session for prompt carry: %w", err)
+	}
+	return carryErr
+}
+
+func carryTurnPromptLocked(ctx context.Context, from, sessionID string, offset int) error {
 	name := sessionMetadataName(sessionID) + "/" + paths.PromptFileName
 	// Opened for writing: the carried part is trimmed from the source below.
 	// Its .entire already exists (the turn-start hook wrote prompt.txt there),
