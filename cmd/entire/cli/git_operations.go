@@ -12,6 +12,7 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
@@ -21,18 +22,13 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 )
 
-func formatFilteredFetchError(prefix, fetchTarget string, output []byte, fetchErr error) error {
+// The fetch output is deliberately not spliced in here: remote.Fetch already
+// folds git's own text into the error it returns, redacted and capped, so adding
+// it again printed the same diagnostic twice — once raw and once redacted.
+func formatFilteredFetchError(prefix, fetchTarget string, fetchErr error) error {
 	redactedTarget := fetchTarget
 	if isFetchTargetURL(fetchTarget) {
 		redactedTarget = remote.RedactURL(fetchTarget)
-	}
-
-	msg := strings.TrimSpace(string(output))
-	if isFetchTargetURL(fetchTarget) {
-		msg = strings.TrimSpace(strings.ReplaceAll(msg, fetchTarget, redactedTarget))
-	}
-	if msg != "" {
-		return fmt.Errorf("%s from %s: %s: %w", prefix, redactedTarget, msg, fetchErr)
 	}
 	return fmt.Errorf("%s from %s: %w", prefix, redactedTarget, fetchErr)
 }
@@ -372,7 +368,7 @@ func FetchAndCheckoutRemoteBranch(ctx context.Context, branchName string) error 
 
 	// NoFilter: resume needs the full branch content (source files), not just
 	// tree structure. A partial clone would leave blobs missing.
-	output, err := remote.Fetch(ctx, remote.FetchOptions{
+	_, err := remote.Fetch(ctx, remote.FetchOptions{
 		Remote:   "origin",
 		RefSpecs: []string{refSpec},
 		NoFilter: true,
@@ -381,7 +377,7 @@ func FetchAndCheckoutRemoteBranch(ctx context.Context, branchName string) error 
 		if ctx.Err() == context.DeadlineExceeded {
 			return errors.New("fetch timed out after 2 minutes")
 		}
-		return fmt.Errorf("failed to fetch branch from origin: %s: %w", strings.TrimSpace(string(output)), err)
+		return fmt.Errorf("failed to fetch branch from origin: %w", err)
 	}
 
 	repo, err := openRepository(ctx)
@@ -516,8 +512,28 @@ func metadataTrackingRefExists(ctx context.Context, remoteName string) bool {
 	if !refs.Primary.IsBranch() {
 		return false
 	}
-	trackingRef := fmt.Sprintf("refs/remotes/%s/%s", remoteName, refs.Primary.Short())
-	return exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", trackingRef+"^{commit}").Run() == nil
+	if ctx.Err() != nil {
+		return false
+	}
+	trackingRef := plumbing.NewRemoteReferenceName(remoteName, refs.Primary.Short())
+	if !gitrepo.ReadsNeedNativeGit(ctx) {
+		repo, err := openRepository(ctx)
+		if err == nil {
+			defer repo.Close()
+			_, err = gitrepo.CommitAtReference(ctx, repo, trackingRef)
+			if err == nil {
+				return true
+			}
+			if errors.Is(err, plumbing.ErrReferenceNotFound) || ctx.Err() != nil {
+				return false
+			}
+		}
+		logging.Debug(ctx, "metadata tracking ref: go-git open or read failed, using native Git",
+			slog.String("ref", trackingRef.String()), slog.String("error", err.Error()))
+	}
+	// Preserve native selection and object backfill for stores go-git cannot
+	// read. This also retains support for bare repositories.
+	return exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", trackingRef.String()+"^{commit}").Run() == nil
 }
 
 // fetchMetadataFromRemote fetches the metadata branch from one remote into
@@ -553,7 +569,7 @@ func fetchMetadataFromRemote(ctx context.Context, remoteName string, noFilter, a
 
 	refSpec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branchName, remoteName, branchName)
 
-	output, fetchErr := remote.Fetch(ctx, remote.FetchOptions{
+	_, fetchErr := remote.Fetch(ctx, remote.FetchOptions{
 		Remote:   fetchTarget,
 		RefSpecs: []string{refSpec},
 		NoTags:   true,
@@ -570,7 +586,7 @@ func fetchMetadataFromRemote(ctx context.Context, remoteName string, noFilter, a
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("fetch timed out after %s", budget.Round(time.Second))
 		}
-		return formatFilteredFetchError("failed to fetch "+branchName, fetchTarget, output, fetchErr)
+		return formatFilteredFetchError("failed to fetch "+branchName, fetchTarget, fetchErr)
 	}
 
 	repo, err := openRepository(ctx)

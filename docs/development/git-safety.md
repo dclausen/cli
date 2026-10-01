@@ -45,6 +45,18 @@ instead — that is what "we could not find out which repository this is" means.
 Key files: `gitrepo/repository.go` (open entry points) and
 `gitrepo/reftable.go` (`reftableStorer`).
 
+#### Local ref and commit reads
+
+HEAD checkpoint messages, metadata tracking-tip checks, and shadow-branch existence checks use go-git for files-backed worktrees without explicit Git store selectors. Pre-push tracking-ref detection stays native: go-git enumerates every ref before a prefix filter can apply, which is tens of times slower with many loose refs, and one empty loose ref file aborts that enumeration. Open through `gitrepo` and close each owned repository/iterator. Root discovery still uses native Git. Detect reftable before opening its CLI-backed storer and keep these reads as single native commands, rather than expanding one read into multiple adapter subprocesses. Git exports `GIT_DIR` to hooks in linked worktrees; when it names the discovered Git directory (compared by file identity), the reads stay on go-git. A `GIT_DIR` naming any other directory, or any other selector including `GIT_WORK_TREE`, keeps native reads.
+
+`gitrepo.CommitAtReference` reads an exact ref, resolves symbolic refs, and peels nested annotated tags to a commit. It does not parse revision expressions. Missing refs, missing objects, non-commit targets, and context errors are distinct errors; the existing best-effort consumers decide when to treat them as absence. Shadow-branch existence verification reuses the repository already held by `ResetSession`: the pinned go-git version rereads `packed-refs` on lookup, so native deletion is visible through the same handle. Branch deletion and its native pre-check remain unchanged.
+
+Keep the native compatibility paths: explicit repository/object-store selectors and reftable storage (`gitrepo.ReadsNeedNativeGit`), repositories the worktree opener cannot handle (including bare repositories), and HEAD/commit reads requiring replace-ref interpretation or promisor-object backfill. Do not replace these with a guessed CWD repository. No migrated read uses status, refreshes the index, or mutates worktree files.
+
+`gitrepo.ReadsNeedNativeGit` gates ref and object reads only. It ignores `GIT_INDEX_FILE`, attributes, and pathspec variables, so a caller that reads any of those must not use it; `read_guard_test.go` lists the approved callers. Its selector list comes from `gitrepo.NativeReadSelectorEnvVars`, which `EnvWithoutRepoOverrides` shares and test isolation is checked against. `ENTIRE_NATIVE_GIT_READS=1` forces every gated read onto native Git, for working around a go-git problem in the field without a release. A go-git failure that falls back to native is logged at debug level.
+
+Both HEAD-message paths return the stored message bytes; the native path trims the terminator `git log --format=%B` appends. They still differ for a commit whose `encoding` header is not UTF-8: `git log` transcodes it and go-git returns raw bytes, so a trailer in such a message is found only natively. This fails closed. The replace-ref probe in `CommitAtReference` costs one `packed-refs` scan per peel step even though replace refs are almost always absent; checking for them once becomes cheap with a prefix iterator and is deferred with the tracking-ref revisit.
+
 #### Reading Worktree Status - Always Use `gitrepo.Status`
 
 **Never call go-git's `worktree.Status()` directly.** Use
@@ -240,14 +252,25 @@ caller, so it also covers the exported `New`.
 implementation of that rule: `userdirs.RequireAbsoluteOverride`. A relative
 value resolves against the working directory, so the same environment names a
 different directory in every process — usually one inside whatever repository
-the command ran from. It covers all three trees an override can redirect:
-`pluginParentDir` (`ENTIRE_PLUGIN_DIR`, `XDG_DATA_HOME`, `LOCALAPPDATA` — a
-tree whose `bin` subdirectory `main.go` prepends to `$PATH`), and the config and
-cache directories (`ENTIRE_CONFIG_DIR`, `XDG_CACHE_HOME`), which hold the login
-tokens and the discovery caches. Leaving it to `osroot` (which refuses a
-relative root open) and to `main.go`'s `PATH` restore was not wrong, but each
-backstop answers a question of its own, two layers from where this one is
-decided.
+the command ran from. For Entire's own directories it covers all three trees an
+override can redirect: `pluginParentDir` (`ENTIRE_PLUGIN_DIR`, `XDG_DATA_HOME`,
+`LOCALAPPDATA` — a tree whose `bin` subdirectory `main.go` prepends to `$PATH`),
+and the config and cache directories (`ENTIRE_CONFIG_DIR`, `XDG_CACHE_HOME`),
+which hold the login tokens and the discovery caches. Leaving it to `osroot`
+(which refuses a relative root open) and to `main.go`'s `PATH` restore was not
+wrong, but each backstop answers a question of its own, two layers from where
+this one is decided.
+
+The same rule reaches the agents' own relocation variables through
+`agent.ResolveHome` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`,
+`FACTORY_HOME_OVERRIDE`, `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`),
+for a different reason: nothing of Entire's is protected there, but Entire has
+to agree with where the agent wrote, and a relative value resolves against the
+repo root inside a hook and against the user's cwd in `session resume`. The
+list is static and `ResolveHome` refuses a name missing from it, so the test
+harnesses that scrub it through `agent.RelocationEnvVars()` cannot fall behind
+an agent that starts honoring a new one. Several callers fail open on a refused
+value, so `entire status` names each one (`agent.RefusedRelocationEnvVars`).
 
 Rejecting beats falling through to the platform default: for the config
 directory that default is the developer's REAL `~/.config/entire`, so quietly

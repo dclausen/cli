@@ -34,7 +34,7 @@ Every agent must implement all 19 methods on the `Agent` interface:
 | | `SupportsHooks()` | Whether agent supports lifecycle hooks |
 | | `ParseHookInput()` | Parse hook callback input from stdin |
 | | `GetSessionID()` | Extract session ID from hook input |
-| | `GetSessionDir()` | Where agent stores session data |
+| | `GetSessionDir()` | Where agent stores session data. If the agent has a relocation variable, honor it here so resume writes where the agent reads (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `FACTORY_HOME_OVERRIDE`, `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`). Check what it replaces: Droid appends `.factory` under its, Claude does not, and Pi's `PI_CODING_AGENT_SESSION_DIR` is the session directory itself with no per-repo nesting (use `agent.LookupOverride` when the fallback is derived rather than a fixed path under the home). If the agent can also be relocated from its own settings files, only its CLI knows the answer: Claude Code asks `claude` through the SDK initialize reply, and only in commands that call `agent.EnableHomeProbes` (resume, trail resume, attach); hooks inherit the agent's settings env and need no probe. Cursor keeps `agent-transcripts` under `~/.cursor` even when `CURSOR_DATA_DIR` relocates its other data, so it has none to honor |
 | | `ResolveSessionFile()` | Path to session transcript file |
 | | `ReadSession()` | Read session data from agent's storage |
 | | `WriteSession()` | Write session data for resumption |
