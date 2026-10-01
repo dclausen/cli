@@ -226,8 +226,10 @@ func carryTurnPromptLocked(ctx context.Context, from, sessionID string, offset i
 		return fmt.Errorf("create session metadata dir: %w", err)
 	}
 	merged := carried
-	if existing, readErr := entiredir.ReadFile(dst, name); readErr == nil && len(existing) > 0 {
-		merged = append(append(existing, []byte(promptSeparator)...), carried...)
+	existing, readErr := entiredir.ReadFile(dst, name)
+	hadExisting := readErr == nil
+	if hadExisting && len(existing) > 0 {
+		merged = append(append(append([]byte{}, existing...), []byte(promptSeparator)...), carried...)
 	}
 	if err := entiredir.WriteFile(dst, name, merged, 0o600); err != nil {
 		return fmt.Errorf("write carried prompt: %w", err)
@@ -238,6 +240,17 @@ func carryTurnPromptLocked(ctx context.Context, from, sessionID string, offset i
 		err = osroot.RemoveNoSymlinks(src, name)
 	}
 	if err != nil {
+		// Undo the copy: a prompt left in both trees would be condensed twice.
+		// It stays in the source, where it was.
+		var undoErr error
+		if hadExisting {
+			undoErr = entiredir.WriteFile(dst, name, existing, 0o600)
+		} else {
+			undoErr = osroot.RemoveNoSymlinks(dst, name)
+		}
+		if undoErr != nil {
+			return fmt.Errorf("trim carried prompt: %w (and undo the copy: %w)", err, undoErr)
+		}
 		return fmt.Errorf("trim carried prompt: %w", err)
 	}
 	return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -150,4 +151,41 @@ func TestFindActivePreTaskFile_IgnoresAnotherSessionsTask(t *testing.T) {
 	got, found = FindActivePreTaskFile(ctx, "")
 	require.True(t, found)
 	require.Equal(t, "toolu_other", got, "without a session the newest task wins, as before")
+}
+
+// The carry writes this tree's copy, then trims the source. If the trim fails
+// the prompt would sit in both trees and be condensed twice, so the write is
+// undone: the prompt stays where it was, once.
+//
+// Not parallel: setupTestRepo changes the process directory.
+func TestCarryTurnPrompt_UndoesTheCopyWhenTheSourceCannotBeTrimmed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory permissions")
+	}
+	dst := setupTestRepo(t)
+	const sessionID = "sess-carry-undo"
+	src := t.TempDir()
+	testutil.InitRepo(t, src)
+	srcDir := filepath.Join(src, ".entire", "metadata", sessionID)
+	require.NoError(t, os.MkdirAll(srcDir, 0o750))
+	before := "earlier turn"
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "prompt.txt"), []byte(before+promptSeparator+"this turn"), 0o600))
+	dstPrompt := filepath.Join(dst, ".entire", "metadata", sessionID, "prompt.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(dstPrompt), 0o750))
+	require.NoError(t, os.WriteFile(dstPrompt, []byte("this tree's earlier turn"), 0o600))
+	require.NoError(t, os.Chmod(srcDir, 0o500)) // the trim's atomic write cannot create its temp file
+	t.Cleanup(func() {
+		if err := os.Chmod(srcDir, 0o750); err != nil {
+			t.Logf("restore permissions for cleanup: %v", err)
+		}
+	})
+
+	require.Error(t, carryTurnPrompt(context.Background(), src, sessionID, len(before)))
+
+	got, err := os.ReadFile(dstPrompt)
+	require.NoError(t, err)
+	require.Equal(t, "this tree's earlier turn", string(got), "the copy is undone")
+	still, err := os.ReadFile(filepath.Join(srcDir, "prompt.txt"))
+	require.NoError(t, err)
+	require.Contains(t, string(still), "this turn")
 }
