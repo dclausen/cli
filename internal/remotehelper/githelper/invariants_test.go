@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -516,19 +515,7 @@ func TestInvariant_DryRunPushSkipsReceivePackPOST(t *testing.T) {
 func TestInvariant_DryRunPushRealSendPack(t *testing.T) {
 	// No t.Parallel(): t.Chdir mutates process-global state (send-pack
 	// resolves the repo from CWD).
-	repo := t.TempDir()
-	gitRun := func(args ...string) string {
-		t.Helper()
-		base := []string{"-C", repo,
-			"-c", "user.name=test", "-c", "user.email=test@example.com",
-			"-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}
-		out, err := exec.CommandContext(context.Background(), "git", append(base, args...)...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	gitRun("init", "-q")
+	repo, gitRun := newRealGitRepo(t)
 	gitRun("commit", "--allow-empty", "-m", "one")
 	oldSHA := gitRun("rev-parse", "HEAD")
 	gitRun("commit", "--allow-empty", "-m", "two")

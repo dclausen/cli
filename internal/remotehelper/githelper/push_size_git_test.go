@@ -3,7 +3,6 @@ package githelper
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -68,22 +67,11 @@ func (s *sizeLimitedReceivePack) handler(t *testing.T, ref string) http.Handler 
 	})
 }
 
-// newPushRepo makes a repository with one commit holding size bytes of data
-// and returns its path and HEAD.
+// newPushRepo makes an isolated repository (see newRealGitRepo) with one
+// commit holding size bytes of random data, and returns its path and HEAD.
 func newPushRepo(t *testing.T, size int) (string, string) {
 	t.Helper()
-	dir := t.TempDir()
-	run := func(args ...string) string {
-		t.Helper()
-		cmd := exec.CommandContext(context.Background(), "git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
-		cmd.Dir = dir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	run("init", "-q", "-b", "main")
+	dir, run := newRealGitRepo(t)
 	// Random data does not compress, so the pack stays near size.
 	data := make([]byte, size)
 	if _, err := rand.Read(data); err != nil {
