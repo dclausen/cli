@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -194,8 +195,12 @@ type reflogEntry struct {
 	msg              string
 }
 
-// maxReflogBytes bounds how much of HEAD's reflog a commit hook reads.
-const maxReflogBytes = 64 << 10
+// maxReflogBytes bounds how much of HEAD's reflog a commit hook reads, and
+// maxReflogEntries is the same bound, roughly, for the git fallback.
+const (
+	maxReflogBytes   = 64 << 10
+	maxReflogEntries = 400
+)
 
 // headReflog returns HEAD's most recent reflog entries, newest first, read
 // from the per-worktree logs/HEAD so each entry carries the old and new HEAD.
@@ -205,6 +210,11 @@ func headReflog(ctx context.Context) []reflogEntry {
 		return nil
 	}
 	f, err := osroot.OpenNoFollow(root, "logs/HEAD")
+	if errors.Is(err, fs.ErrNotExist) {
+		// The reftable backend keeps reflogs in .git/reftable/, which only
+		// git reads; the files backend just has none yet.
+		return headReflogFromGit(ctx)
+	}
 	if err != nil {
 		return nil
 	}
@@ -232,6 +242,41 @@ func headReflog(ctx context.Context) []reflogEntry {
 		out = append(out, reflogEntry{oldHash: plumbing.NewHash(fields[0]), newHash: plumbing.NewHash(fields[1]), msg: msg})
 	}
 	return out
+}
+
+// headReflogFromGit reads HEAD's reflog through git, for the reftable backend.
+// git prints only each entry's new HEAD; an entry's old HEAD is the new HEAD of
+// the entry before it.
+func headReflogFromGit(ctx context.Context) []reflogEntry {
+	root, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "reflog", "show", "-n", strconv.Itoa(maxReflogEntries), "--format=%H%x09%gs", "HEAD")
+	cmd.Dir = root
+	cmd.Env = gitrepo.EnvWithoutRepoOverrides()
+	out, err := cmd.Output()
+	if err != nil {
+		logging.Debug(logging.WithComponent(ctx, "checkpoint"), "prepare-commit-msg: could not read HEAD's reflog",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	var entries []reflogEntry
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for i, line := range lines {
+		hash, msg, ok := strings.Cut(line, "\t")
+		if !ok || !plumbing.IsHash(hash) {
+			continue
+		}
+		e := reflogEntry{newHash: plumbing.NewHash(hash), msg: msg}
+		if i+1 < len(lines) {
+			if older, _, ok := strings.Cut(lines[i+1], "\t"); ok && plumbing.IsHash(older) {
+				e.oldHash = plumbing.NewHash(older)
+			}
+		}
+		entries = append(entries, e)
+	}
+	return entries
 }
 
 // unreachableCommits lists the commits reachable from tip that HEAD, no remote

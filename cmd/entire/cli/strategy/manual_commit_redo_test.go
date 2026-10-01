@@ -319,3 +319,28 @@ func TestReplacedCommits_UnrelatedCommitSinceResetRejectsBeforeSubprocesses(t *t
 	require.NotContains(t, string(ran), "rev-list")
 	require.NotContains(t, string(ran), "for-each-ref")
 }
+
+// A reftable repository keeps its reflog in .git/reftable/, so there is no
+// logs/HEAD to read and redo inheritance silently never fired there.
+//
+// Not parallel: t.Chdir.
+func TestReplacedCommits_ReftableRepository(t *testing.T) {
+	// Commits through the git CLI so HEAD's reflog holds them, as a user's does.
+	dir := advRepo(t, nil)
+	t.Chdir(dir)
+	testutil.WriteFile(t, dir, "f1.txt", "one\n")
+	advCommitAll(t, dir, "agent: part one\n\nEntire-Checkpoint: "+redoCheckpointOne)
+	testutil.WriteFile(t, dir, "f2.txt", "two\n")
+	advCommitAll(t, dir, "agent: part two\n\nEntire-Checkpoint: "+redoCheckpointTwo)
+	testutil.RunGit(t, dir, "reset", "-q", "--soft", "HEAD~1")
+	testutil.MigrateToReftable(t, dir)
+	_, statErr := os.Stat(filepath.Join(dir, ".git", "logs", "HEAD"))
+	require.ErrorIs(t, statErr, fs.ErrNotExist, "precondition: no files-backend reflog")
+	ctx := context.Background()
+	repo, err := OpenRepository(ctx)
+	require.NoError(t, err)
+	defer repo.Close()
+
+	_, dropped, why := replacedCommits(ctx, repo)
+	require.Len(t, dropped, 1, "the reset dropped part two: %s", why)
+}
