@@ -31,8 +31,8 @@ import (
 // API key: it fails authentication after the point that matters and spends no
 // tokens. Opt-in, since they need the agent CLIs installed:
 //
-//	ENTIRE_TEST_REVIEW_REAL_AGENTS=1 go test -tags=integration -run TestReviewIsolation ./cmd/entire/cli/integration_test/
-const reviewRealAgentsEnv = "ENTIRE_TEST_REVIEW_REAL_AGENTS"
+//	ENTIRE_TEST_REAL_AGENTS=1 go test -tags=integration -run TestReviewIsolation ./cmd/entire/cli/integration_test/
+const reviewRealAgentsEnv = "ENTIRE_TEST_REAL_AGENTS"
 
 // reviewStartupTimeout bounds how long the agent may take to reach its startup
 // hooks. The review is not waited on to finish: with an invalid key the agent
@@ -83,7 +83,7 @@ func newReviewCanaryRepo(t *testing.T, agentName, binary string, agentConfig map
 	}
 	shimDir := t.TempDir()
 	launched := filepath.Join(t.TempDir(), "agent-launched")
-	shim := "#!/bin/sh\necho launched >> " + shellQuote(launched) + "\nexec " + shellQuote(agentPath) + ` "$@"` + "\n"
+	shim := "#!/bin/sh\necho launched >> " + canaryShellQuote(launched) + "\nexec " + canaryShellQuote(agentPath) + ` "$@"` + "\n"
 	if err := os.WriteFile(filepath.Join(shimDir, binary), []byte(shim), 0o755); err != nil {
 		t.Fatalf("write %s shim: %v", binary, err)
 	}
@@ -140,7 +140,7 @@ type reviewResult struct {
 func (r *reviewCanaryRepo) review(t *testing.T, extraEnv []string, args ...string) reviewResult {
 	t.Helper()
 	stateDir := filepath.Join(r.env.RepoDir, ".git", "entire-sessions")
-	before := sessionStateFiles(stateDir)
+	before := canarySessionStateFiles(stateDir)
 
 	var out bytes.Buffer
 	cmd := execx.NonInteractive(context.Background(), getTestBinary(), append([]string{"review", "canary"}, args...)...)
@@ -167,14 +167,14 @@ func (r *reviewCanaryRepo) review(t *testing.T, extraEnv []string, args ...strin
 	var res reviewResult
 	deadline := time.After(reviewStartupTimeout)
 	for !res.startupHooksRan {
-		if fileExists(r.marker) {
+		if canaryFileExists(r.marker) {
 			break
 		}
 		if r.startedPastConfig != nil && r.startedPastConfig(out.String()) {
 			res.startupHooksRan = true
 			break
 		}
-		if r.startedPastConfig == nil && len(sessionStateFiles(stateDir)) > len(before) {
+		if r.startedPastConfig == nil && len(canarySessionStateFiles(stateDir)) > len(before) {
 			res.startupHooksRan = true
 			select {
 			case <-time.After(reviewStartupGrace):
@@ -201,10 +201,10 @@ func (r *reviewCanaryRepo) review(t *testing.T, extraEnv []string, args ...strin
 // and when the run never got far enough to show anything.
 func (r *reviewCanaryRepo) assertCanaryDidNotRun(t *testing.T, res reviewResult) {
 	t.Helper()
-	if fileExists(r.marker) {
+	if canaryFileExists(r.marker) {
 		t.Fatalf("branch-owned agent config ran during review (marker %s exists)\nreview output:\n%s", r.marker, res.output)
 	}
-	if !fileExists(r.launched) {
+	if !canaryFileExists(r.launched) {
 		t.Fatalf("review never started the agent, so it proves nothing about isolation\nreview output:\n%s", res.output)
 	}
 	if !res.startupHooksRan {
@@ -212,30 +212,25 @@ func (r *reviewCanaryRepo) assertCanaryDidNotRun(t *testing.T, res reviewResult)
 	}
 }
 
-func fileExists(path string) bool {
+func canaryFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// sessionStateFiles lists the session state files Entire's hooks write.
-func sessionStateFiles(dir string) []string {
+// canarySessionStateFiles lists the session state files Entire's hooks write.
+func canarySessionStateFiles(dir string) []string {
 	matches, _ := filepath.Glob(filepath.Join(dir, "*.json")) //nolint:errcheck // a static pattern cannot be malformed
 	return matches
 }
 
-// strconvQuote encodes s as a double-quoted string literal, valid in JS/TS.
-func strconvQuote(s string) string {
-	return strconv.Quote(s)
-}
-
-// shellQuote single-quotes s for a POSIX shell.
-func shellQuote(s string) string {
+// canaryShellQuote single-quotes s for a POSIX shell.
+func canaryShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // shellWriteMarker is a POSIX command that records it ran.
 func shellWriteMarker(marker string) string {
-	return "echo ran > " + shellQuote(marker)
+	return "echo ran > " + canaryShellQuote(marker)
 }
 
 // claudeSessionStartCanary adds a SessionStart hook to the .claude/settings.json
@@ -313,7 +308,7 @@ func piPastConfig(output string) bool {
 func piExtensionCanary(_ *testing.T, _, marker string) map[string]string {
 	return map[string]string{
 		".pi/extensions/canary/index.ts": "import { writeFileSync } from \"node:fs\";\n" +
-			"writeFileSync(" + strconvQuote(marker) + ", \"ran\");\n" +
+			"writeFileSync(" + strconv.Quote(marker) + ", \"ran\");\n" +
 			"export default function () {}\n",
 	}
 }
