@@ -441,11 +441,15 @@ lands between the parent session's turns, while the session is IDLE — the
 fast-path trailer decision (`tryAgentCommitFastPath`,
 `strategy/manual_commit_hooks.go`) used to trust only ACTIVE sessions, so
 these commits shipped with no `Entire-Checkpoint` trailer at all. An IDLE
-session with a fresh task record (`idleWithTaskContent`: in-flight or
-completed-unmaterialized, each record bounded by its `StartedAt` age against
+session with a fresh in-flight task record (`idleWithLiveTaskRecord`, each
+record bounded by its `StartedAt` age against
 `activeSessionInteractionThreshold`, 24h) is now linkable too, so a subagent
 that dies without a completion signal doesn't leave the session trusted
-forever. The same predicate feeds `shouldCondenseWithOverlapCheck`'s
+forever. A completed record confers no trust: its subagent can no longer be
+the committer, and completion merged its files into `FilesTouched`, so the
+ordinary overlap check links a commit that carries them. Trusting completed
+records let a read-only reviewer's session condense into other sessions'
+commits. The same predicate feeds `shouldCondenseWithOverlapCheck`'s
 overlap-check bypass, so the trigger and the condensation trust share one
 rule. The trailer's content guarantee is the materializer itself: the
 commit's condensation stores each record's transcript-so-far under the
