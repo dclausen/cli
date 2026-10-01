@@ -447,7 +447,7 @@ func (p *Proxy) doWithFailover(ctx context.Context, makeSuffix string, method st
 		if resp.StatusCode == http.StatusInsufficientStorage {
 			msg := readErrorMessage(resp)
 			debuglog.Printf("node %s returned HTTP 507: %s", node, msg)
-			lastErr = &InsufficientStorageError{ServerMsg: msg}
+			lastErr = HTTPErrorMessage(resp.StatusCode, msg, p.ErrorBaseURL())
 			continue
 		}
 

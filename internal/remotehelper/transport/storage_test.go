@@ -75,6 +75,9 @@ func TestInsufficientStorageAdvancesToNextReplica(t *testing.T) {
 	}))
 	defer ok.Close()
 	p, failed := recordingProxy(t, []string{full.URL, ok.URL})
+	// doWithFailover starts at a random node; pin the full one so the 507
+	// branch is exercised on every run.
+	p.stickyNode = full.URL
 
 	resp, err := p.ServiceRPC(context.Background(), "git-receive-pack", strings.NewReader("body"))
 	if err != nil {
