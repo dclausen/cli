@@ -29,13 +29,13 @@ import (
 // what they mean.
 //
 // It makes billable API calls, so it is opt-in: run with
-// ENTIRE_TEXTGEN_LIVE=1 on a machine where the agent CLIs are installed and
-// logged in. ENTIRE_TEXTGEN_LIVE_AGENTS (comma-separated binaries: claude,
+// ENTIRE_TEST_REAL_AGENTS=1 on a machine where the agent CLIs are installed and
+// logged in. ENTIRE_TEST_REAL_AGENTS_ONLY (comma-separated binaries: claude,
 // copilot, codex, agent, agy) narrows the set; a binary that is not on PATH
 // is skipped.
 func TestTextGeneration_LiveHasNoToolReach(t *testing.T) {
-	if os.Getenv("ENTIRE_TEXTGEN_LIVE") == "" {
-		t.Skip("set ENTIRE_TEXTGEN_LIVE=1 to run against the real agent CLIs (makes billable API calls)")
+	if os.Getenv("ENTIRE_TEST_REAL_AGENTS") == "" {
+		t.Skip("set ENTIRE_TEST_REAL_AGENTS=1 to run against the real agent CLIs (makes billable API calls)")
 	}
 	generators := []struct {
 		binary string
@@ -47,7 +47,7 @@ func TestTextGeneration_LiveHasNoToolReach(t *testing.T) {
 		{"agent", &cursor.CursorAgent{}},
 		{"agy", &antigravity.AntigravityAgent{}},
 	}
-	only := os.Getenv("ENTIRE_TEXTGEN_LIVE_AGENTS")
+	only := os.Getenv("ENTIRE_TEST_REAL_AGENTS_ONLY")
 
 	// The canary lives in the shared temp dir: outside the run's working
 	// directory, but inside what Copilot grants by default and what every

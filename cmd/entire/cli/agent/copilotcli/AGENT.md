@@ -182,7 +182,7 @@ all: the allowlist names a tool that does not exist (an empty
 `--available-tools` leaves every tool available), and `-s` keeps Copilot's
 "Disabled tools" notice off stdout. It runs from a fresh empty directory.
 `generateTextArgs` in `generate.go` documents each flag;
-`TestTextGeneration_LiveHasNoToolReach` (opt-in, `ENTIRE_TEXTGEN_LIVE=1`)
+`TestTextGeneration_LiveHasNoToolReach` (opt-in, `ENTIRE_TEST_REAL_AGENTS=1`)
 checks the contract against the installed CLI.
 
 This matches the pattern used by every other summary-capable agent in the
