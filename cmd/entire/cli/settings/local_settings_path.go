@@ -1,13 +1,38 @@
 package settings
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 
 	"github.com/entireio/cli/cmd/entire/cli/entiredir"
 	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
+	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
+
+// LocalSettingsPath returns the settings.local.json that applies to the
+// current worktree (see localSettingsPathIn) and whether it is the main
+// worktree's. Every reader and writer of the local layer resolves through
+// here, so a write made in a linked worktree lands in the file that worktree
+// actually reads instead of creating one that hides it.
+func LocalSettingsPath(ctx context.Context) (string, bool, error) {
+	if root, ok := worktreeRootFromContext(ctx); ok {
+		path, inherited := localSettingsPathIn(root)
+		return path, inherited, nil
+	}
+	own, err := entiredir.PathTo(ctx, EntireSettingsLocalFile)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve local settings path: %w", err)
+	}
+	root, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return own, false, nil //nolint:nilerr // no repository: nothing to inherit from
+	}
+	path, inherited := localSettingsPathIn(root)
+	return path, inherited, nil
+}
 
 // localSettingsPathIn returns the local settings file that applies to
 // worktreeRoot, and whether it belongs to the main worktree.

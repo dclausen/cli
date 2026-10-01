@@ -105,3 +105,26 @@ func TestLocalSettingsPathIn(t *testing.T) {
 		assert.False(t, inherited)
 	})
 }
+
+// Not parallel: t.Chdir.
+func TestLocalSettingsPath_FromLinkedWorktreeCwd(t *testing.T) {
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile), `{"external_agents":true}`)
+	t.Chdir(linked)
+
+	path, inherited, err := LocalSettingsPath(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(mainRoot, EntireSettingsLocalFile), path)
+	assert.True(t, inherited)
+}
+
+func TestLocalSettingsPath_FromExplicitWorktreeRoot(t *testing.T) {
+	t.Parallel()
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile), `{"external_agents":true}`)
+
+	path, inherited, err := LocalSettingsPath(WithWorktreeRoot(t.Context(), linked))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(mainRoot, EntireSettingsLocalFile), path)
+	assert.True(t, inherited)
+}
