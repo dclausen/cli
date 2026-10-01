@@ -2,9 +2,9 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -46,39 +46,59 @@ var generateTextDisabledFeatures = []string{
 
 // GenerateText sends a prompt to the Codex CLI and returns the raw text response.
 //
-// codex exits with "Unknown feature flag: <name>" when asked to disable a
-// feature it has never had, which an older codex does for names added after
-// it shipped. Such a name is dropped and the call retried: a feature that
-// version does not know cannot give the model a tool, so the run stays
-// tool-free. Names codex lists as removed are accepted as-is.
+// An older codex exits with "Unknown feature flag: <name>" when asked to
+// disable a feature added after it shipped, so the features passed are first
+// narrowed to the ones the installed codex knows (knownFeatures). That is
+// decided by a separate, prompt-free `codex features list`, never by the
+// generation run's own output: a run whose prompt is untrusted must not be
+// able to talk Entire into dropping a --disable and retrying. A feature the
+// installed codex does not know cannot give the model a tool, so leaving it
+// out keeps the run tool-free. If the probe fails, every feature is passed and
+// an unknown one fails the run instead.
 func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model string) (string, error) {
-	disabled := slices.Clone(generateTextDisabledFeatures)
-	for {
-		result, capturedStderr, stdoutBytes, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", generateTextArgs(disabled, model), prompt)
-		if err == nil {
-			return result, nil
-		}
-		if strings.Contains(capturedStderr, "'"+flagIgnoreUserConfig+"'") {
-			// Not retried without it: that would let the user's MCP servers and
-			// hooks back into a run whose prompt is untrusted.
-			return "", &agent.TextGenerationError{
-				Err:         fmt.Errorf("codex text generation failed: this codex does not support %s, which Entire needs to generate summaries without the user's MCP servers and hooks; update codex (0.122 or newer): %w", flagIgnoreUserConfig, err),
-				Stderr:      capturedStderr,
-				StdoutBytes: stdoutBytes,
-			}
-		}
-		if name, ok := unknownDisabledFeature(capturedStderr, disabled); ok {
-			logging.Debug(ctx, "codex does not know a feature Entire disables for text generation; retrying without it",
-				slog.String("feature", name))
-			disabled = slices.DeleteFunc(disabled, func(f string) bool { return f == name })
-			continue
-		}
+	disabled := generateTextDisabledFeatures
+	if known, err := c.knownFeatures(ctx); err == nil {
+		disabled = slices.DeleteFunc(slices.Clone(disabled), func(f string) bool { return !known[f] })
+	} else {
+		logging.Debug(ctx, "codex features probe failed; disabling the full feature list",
+			slog.String("error", err.Error()))
+	}
+
+	result, capturedStderr, stdoutBytes, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", generateTextArgs(disabled, model), prompt)
+	if err == nil {
+		return result, nil
+	}
+	if strings.Contains(capturedStderr, "'"+flagIgnoreUserConfig+"'") {
 		return "", &agent.TextGenerationError{
-			Err:         fmt.Errorf("codex text generation failed: %w", err),
+			Err:         fmt.Errorf("codex text generation failed: this codex does not support %s, which Entire needs to generate summaries without the user's MCP servers and hooks; update codex (0.122 or newer): %w", flagIgnoreUserConfig, err),
 			Stderr:      capturedStderr,
 			StdoutBytes: stdoutBytes,
 		}
 	}
+	return "", &agent.TextGenerationError{
+		Err:         fmt.Errorf("codex text generation failed: %w", err),
+		Stderr:      capturedStderr,
+		StdoutBytes: stdoutBytes,
+	}
+}
+
+// knownFeatures returns the feature names the installed codex lists, from
+// `codex features list` (one "<name> <stage> <enabled>" row per feature).
+func (c *CodexAgent) knownFeatures(ctx context.Context) (map[string]bool, error) {
+	out, _, _, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", []string{"features", "list"}, "")
+	if err != nil {
+		return nil, fmt.Errorf("codex features list: %w", err)
+	}
+	known := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			known[fields[0]] = true
+		}
+	}
+	if len(known) == 0 {
+		return nil, errors.New("codex features list: no features")
+	}
+	return known, nil
 }
 
 // generateTextArgs builds the codex argv for one text-generation call.
@@ -102,17 +122,3 @@ func generateTextArgs(disabled []string, model string) []string {
 
 // flagIgnoreUserConfig is present in codex-cli since at least 0.122.0.
 const flagIgnoreUserConfig = "--ignore-user-config"
-
-var unknownFeaturePattern = regexp.MustCompile(`Unknown feature flag: (\S+)`)
-
-// unknownDisabledFeature returns the feature codex rejected as unknown, when
-// it is one of disabled. Anything else is a real failure, so the loop in
-// GenerateText ends: each retry removes one name, and only a name still in
-// the list can trigger another.
-func unknownDisabledFeature(stderr string, disabled []string) (string, bool) {
-	m := unknownFeaturePattern.FindStringSubmatch(stderr)
-	if m == nil || !slices.Contains(disabled, m[1]) {
-		return "", false
-	}
-	return m[1], true
-}
