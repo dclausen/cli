@@ -84,17 +84,20 @@ dialog. Instead the helper that passed the dialog serves its unsealed
 bundles over a Unix socket (`unlock.go`), and a nested helper asks before
 prompting (`openSealedSlot`).
 
-- The socket is `<cache dir>/unlock/git-<pid>.sock`, named after the serving
-  helper's parent, the user's `git` process. A client walks its own parent
-  chain looking for a socket named after each ancestor, so only a process
-  inside a running push finds one.
+- Git runs a remote helper through a `git remote-entire` wrapper process, so
+  the helper's parent is that wrapper and the user's `git push` is one level
+  up. The server therefore opens one socket per ancestor whose process name
+  is `git`, at `<cache dir>/unlock/git-<pid>.sock`. Shells and agents above
+  git get none. A client walks its own parent chain looking for a socket
+  named after each ancestor; the user's push is the one nested helpers
+  share with the outer helper.
 - The server reads the peer's pid and uid from the kernel (`LOCAL_PEERPID`,
   `LOCAL_PEERCRED`) and walks the peer's parent chain through
-  `kern.proc.pid` until it reaches its own parent. It refuses when the uid
-  differs, the chain never reaches that git process, any process in the
-  chain started before git did, its own parent pid has changed (git exited
-  and the helper was reparented), or the git pid's start time changed (pid
-  reuse).
+  `kern.proc.pid` until it reaches the socket's anchor. It refuses when the
+  uid differs, the chain never reaches the anchor, any process in the chain
+  started before the anchor did, the anchor is no longer above the server
+  itself (git exited and the helper was reparented), or the anchor pid's
+  start time changed (pid reuse).
 - Only a process that unsealed through the dialog serves. A nested helper
   that received its bundle over the socket does not.
 - The plaintext never touches disk. The socket node is 0600 inside a 0700

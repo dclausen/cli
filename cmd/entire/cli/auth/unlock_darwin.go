@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 
@@ -16,9 +17,14 @@ func lookupProc(pid int) (procInfo, error) {
 		return procInfo{}, fmt.Errorf("kern.proc.pid %d: %w", pid, err)
 	}
 	st := kp.Proc.P_starttime
+	comm := kp.Proc.P_comm[:]
+	if i := bytes.IndexByte(comm, 0); i >= 0 {
+		comm = comm[:i]
+	}
 	return procInfo{
 		ppid:  int(kp.Eproc.Ppid),
 		start: st.Sec*1_000_000 + int64(st.Usec),
+		comm:  string(comm),
 	}, nil
 }
 

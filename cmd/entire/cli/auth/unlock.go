@@ -22,15 +22,21 @@ import (
 // A user's `git push` to an entire:// remote runs one helper process for the
 // whole push, and the pre-push hook spawns further git processes that each
 // need the same login. Each would otherwise show its own dialog. Instead,
-// the helper that passed the dialog serves its unsealed bundles over a Unix
-// socket, and only to processes that descend from its parent git process.
+// the helper that passed the dialog serves its unsealed bundles over Unix
+// sockets, and only to processes that descend from the same git process.
 //
-// The plaintext never touches disk. The socket carries no secret on its
-// own: a client must be a descendant of the serving helper's parent, checked
-// through the kernel-reported peer pid and the process table, and the
-// parent must still be the same process it was when serving began. The
-// hardened-runtime release builds keep other processes out of the helper's
-// memory; see docs/architecture/token-protection.md.
+// Git runs a remote helper through a `git remote-<name>` wrapper, so the
+// helper's parent is that wrapper and the user's `git push` is further up.
+// The server therefore anchors one socket on every ancestor that is a git
+// process, and a client walks its own ancestry looking for a socket named
+// after each. The user's push is the ancestor they share.
+//
+// The plaintext never touches disk. A socket carries no secret on its own:
+// a client must descend from the socket's anchor, checked through the
+// kernel-reported peer pid and the process table, and the anchor must still
+// be the same process it was when serving began. Hardened-runtime release
+// builds keep other processes out of the helper's memory; see
+// docs/architecture/token-protection.md.
 
 const (
 	unlockDirName  = "unlock"
@@ -39,6 +45,8 @@ const (
 	unlockMaxBytes = 1 << 20
 	// Unix socket paths are limited to 104 bytes on macOS.
 	unlockMaxPath = 100
+	// Anchors are ancestors running git itself, not shells or agents.
+	unlockAnchorComm = "git"
 )
 
 // ErrUnlockUnsupported: this platform cannot identify socket peers.
@@ -48,6 +56,13 @@ var ErrUnlockUnsupported = errors.New("per-push unlock unsupported on this platf
 type procInfo struct {
 	ppid  int
 	start int64 // process start, microseconds since the epoch
+	comm  string
+}
+
+// anchor is a git ancestor a socket is named after.
+type anchor struct {
+	pid   int
+	start int64
 }
 
 // Platform hooks; tests substitute fakes. serveBundles is what a server
@@ -55,7 +70,7 @@ type procInfo struct {
 var (
 	procLookup   = lookupProc
 	peerLookup   = lookupPeer
-	currentPPID  = os.Getppid // the server's parent, re-read per request
+	currentPPID  = os.Getppid // where the server's own ancestry begins
 	walkStartPID = os.Getppid // where a client's ancestry walk begins
 	serveBundles = snapshotBundles
 )
@@ -70,20 +85,39 @@ type unlockPayload struct {
 	Bundles map[string]tokenBundle `json:"bundles"`
 }
 
-func unlockSocketName(gitPID int) string {
-	return fmt.Sprintf("git-%d.sock", gitPID)
+func unlockSocketName(pid int) string {
+	return fmt.Sprintf("git-%d.sock", pid)
+}
+
+// gitAncestors lists the git processes above pid, nearest first.
+func gitAncestors(pid int) ([]anchor, error) {
+	var out []anchor
+	for depth := 0; depth < unlockMaxDepth && pid > 1; depth++ {
+		info, err := procLookup(pid)
+		if err != nil {
+			return out, err
+		}
+		if info.comm == unlockAnchorComm {
+			out = append(out, anchor{pid: pid, start: info.start})
+		}
+		pid = info.ppid
+	}
+	return out, nil
 }
 
 // UnlockServer serves this process's unsealed bundles to descendants of
-// its parent git process.
+// its git ancestors.
 type UnlockServer struct {
-	ln       *net.UnixListener
-	root     *os.Root
-	name     string
-	gitPID   int
-	gitStart int64
-	uid      int
-	wg       sync.WaitGroup
+	root      *os.Root
+	uid       int
+	listeners []*anchorListener
+	wg        sync.WaitGroup
+}
+
+type anchorListener struct {
+	ln     *net.UnixListener
+	name   string
+	anchor anchor
 }
 
 // StartUnlockServer starts serving when this process unsealed a bundle
@@ -94,17 +128,19 @@ func StartUnlockServer(ctx context.Context) (func(), error) {
 	if !prompted.Load() {
 		return noop, nil
 	}
-	gitPID := currentPPID()
-	if gitPID <= 1 {
+	anchors, err := gitAncestors(currentPPID())
+	if err != nil && errors.Is(err, ErrUnlockUnsupported) {
 		return noop, nil
 	}
-	git, err := procLookup(gitPID)
-	if err != nil {
-		if errors.Is(err, ErrUnlockUnsupported) {
-			return noop, nil
-		}
-		return noop, fmt.Errorf("inspect parent process: %w", err)
+	if len(anchors) == 0 {
+		return noop, nil
 	}
+	return startUnlockServer(ctx, anchors)
+}
+
+// startUnlockServer listens on one socket per anchor.
+func startUnlockServer(ctx context.Context, anchors []anchor) (func(), error) {
+	noop := func() {}
 	root, err := userdirs.CacheRoot()
 	if err != nil {
 		return noop, fmt.Errorf("open cache dir: %w", err)
@@ -116,41 +152,50 @@ func StartUnlockServer(ctx context.Context) (func(), error) {
 	if err != nil {
 		return noop, fmt.Errorf("resolve cache dir: %w", err)
 	}
-	name := filepath.Join(unlockDirName, unlockSocketName(gitPID))
-	path := filepath.Join(dir, name)
-	if len(path) > unlockMaxPath {
-		return noop, fmt.Errorf("unlock socket path too long: %d bytes", len(path))
+	s := &UnlockServer{root: root, uid: os.Getuid()}
+	for _, a := range anchors {
+		name := filepath.Join(unlockDirName, unlockSocketName(a.pid))
+		path := filepath.Join(dir, name)
+		if len(path) > unlockMaxPath {
+			s.stop()
+			return noop, fmt.Errorf("unlock socket path too long: %d bytes", len(path))
+		}
+		// A stale socket from a dead helper under the same anchor pid.
+		if err := osroot.RemoveNoSymlinks(root, name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.stop()
+			return noop, fmt.Errorf("remove stale unlock socket: %w", err)
+		}
+		ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+		if err != nil {
+			s.stop()
+			return noop, fmt.Errorf("listen on unlock socket: %w", err)
+		}
+		// Belt and braces with the 0700 directory: the check is the peer test.
+		if err := os.Chmod(path, 0o600); err != nil {
+			_ = ln.Close()
+			s.stop()
+			return noop, fmt.Errorf("chmod unlock socket: %w", err)
+		}
+		al := &anchorListener{ln: ln, name: name, anchor: a}
+		s.listeners = append(s.listeners, al)
+		s.wg.Add(1)
+		go s.acceptLoop(ctx, al)
 	}
-	// A stale socket from a dead helper with the same parent pid.
-	if err := osroot.RemoveNoSymlinks(root, name); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return noop, fmt.Errorf("remove stale unlock socket: %w", err)
-	}
-	s := &UnlockServer{root: root, name: name, gitPID: gitPID, gitStart: git.start, uid: os.Getuid()}
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
-	if err != nil {
-		return noop, fmt.Errorf("listen on unlock socket: %w", err)
-	}
-	// Belt and braces with the 0700 directory: the check is the peer test.
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
-		return noop, fmt.Errorf("chmod unlock socket: %w", err)
-	}
-	s.ln = ln
-	s.wg.Add(1)
-	go s.acceptLoop(ctx)
 	return s.stop, nil
 }
 
 func (s *UnlockServer) stop() {
-	_ = s.ln.Close()
-	_ = osroot.RemoveNoSymlinks(s.root, s.name) //nolint:errcheck // best-effort cleanup; a stale socket is removed on the next start
+	for _, al := range s.listeners {
+		_ = al.ln.Close()
+		_ = osroot.RemoveNoSymlinks(s.root, al.name) //nolint:errcheck // best-effort cleanup; a stale socket is removed on the next start
+	}
 	s.wg.Wait()
 }
 
-func (s *UnlockServer) acceptLoop(ctx context.Context) {
+func (s *UnlockServer) acceptLoop(ctx context.Context, al *anchorListener) {
 	defer s.wg.Done()
 	for {
-		conn, err := s.ln.AcceptUnix()
+		conn, err := al.ln.AcceptUnix()
 		if err != nil {
 			return
 		}
@@ -161,40 +206,41 @@ func (s *UnlockServer) acceptLoop(ctx context.Context) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handle(conn)
+			s.handle(conn, al.anchor)
 		}()
 	}
 }
 
-func (s *UnlockServer) handle(conn *net.UnixConn) {
+func (s *UnlockServer) handle(conn *net.UnixConn, a anchor) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(unlockTimeout)) //nolint:errcheck // a failed deadline only loses the timeout; the peer check still runs
 	pid, uid, err := peerLookup(conn)
-	if err != nil || uid != s.uid || !s.authorized(pid) {
+	if err != nil || uid != s.uid || !authorized(pid, a) {
 		return
 	}
 	payload := unlockPayload{Version: bundleVersion, Bundles: serveBundles()}
 	_ = json.NewEncoder(conn).Encode(payload) //nolint:errcheck,errchkjson // the client falls back to its own dialog on a short read
 }
 
-// authorized reports whether peerPID descends from the same, still-running
-// git process this server was started under.
-func (s *UnlockServer) authorized(peerPID int) bool {
-	if currentPPID() != s.gitPID {
-		return false // git exited; we were reparented
+// authorized reports whether peerPID descends from anchor a, which must
+// still be the same running process and still be above this server.
+func authorized(peerPID int, a anchor) bool {
+	if !descendsFrom(currentPPID(), a) {
+		return false // our git ancestor is gone; we were reparented
 	}
-	git, err := procLookup(s.gitPID)
-	if err != nil || git.start != s.gitStart {
-		return false // pid reused
-	}
-	pid := peerPID
+	return descendsFrom(peerPID, a)
+}
+
+// descendsFrom walks up from pid looking for a, refusing on pid reuse or a
+// process older than its supposed ancestor.
+func descendsFrom(pid int, a anchor) bool {
 	for depth := 0; depth < unlockMaxDepth && pid > 1; depth++ {
-		if pid == s.gitPID {
-			return true
-		}
 		info, err := procLookup(pid)
-		if err != nil || info.start < s.gitStart {
+		if err != nil || info.start < a.start {
 			return false // a descendant cannot predate its ancestor
+		}
+		if pid == a.pid {
+			return info.start == a.start
 		}
 		pid = info.ppid
 	}
