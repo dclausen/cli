@@ -750,3 +750,25 @@ func TestReleaseUncondensedReservations(t *testing.T) {
 		assert.Equal(t, want, st.PendingCondensationID(), sid)
 	}
 }
+
+// The session's recorded home and the hook's resolved worktree can name one
+// directory under different spellings (a symlinked temp dir, a trailing
+// slash). An unmoved session must not be re-homed, and candidates from one
+// worktree must not count as spanning several.
+func TestWorktreeComparisons_SameDirUnderAnotherSpelling(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(home, link))
+	trailing := home + string(filepath.Separator)
+
+	state := &SessionState{WorktreePath: home}
+	require.True(t, isSessionHomeWorktree(link, state))
+	require.True(t, isSessionHomeWorktree(trailing, state))
+	require.False(t, isSessionHomeWorktree(t.TempDir(), state))
+
+	same := []*SessionState{{SessionID: "a", WorktreePath: home}, {SessionID: "b", WorktreePath: link}, {SessionID: "c", WorktreePath: trailing}}
+	require.Len(t, sessionsFromSingleWorktree(same), 3)
+	spanning := []*SessionState{{SessionID: "a", WorktreePath: home}, {SessionID: "b", WorktreePath: t.TempDir()}}
+	require.Empty(t, sessionsFromSingleWorktree(spanning))
+}

@@ -400,7 +400,7 @@ func sessionsFromSingleWorktree(candidates []*SessionState) []*SessionState {
 	}
 	first := candidates[0].WorktreePath
 	for _, state := range candidates[1:] {
-		if state.WorktreePath != first {
+		if !paths.SameDir(state.WorktreePath, first) {
 			return nil
 		}
 	}
