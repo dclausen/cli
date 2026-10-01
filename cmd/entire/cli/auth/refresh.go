@@ -64,6 +64,22 @@ func (s *contextTokenStore) reason() string {
 	return promptReason(action, s.issuer, s.handle)
 }
 
+// currentRefresh returns the refresh token to carry forward when a save
+// omits one. The slot's current ciphertext is authoritative: if another
+// process rotated it since our load, its bundle is what must survive, and
+// this process only knows that bundle if it already unsealed it. The last
+// loaded value is the fallback.
+func (s *contextTokenStore) currentRefresh() string {
+	if enc, err := tokenstore.Get(s.service, s.handle); err == nil && isSealed(enc) {
+		if b, ok := cachedBundle(enc); ok {
+			return b.Refresh
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastRefresh
+}
+
 func (s *contextTokenStore) LoadTokens(string) (tokens.TokenSet, error) {
 	enc, err := tokenstore.Get(s.service, s.handle)
 	// Map "no credential stored" to auth-go's sentinel so tokenmanager
@@ -117,9 +133,7 @@ func (s *contextTokenStore) SaveTokens(_ string, t tokens.TokenSet) error {
 	if err == nil {
 		refresh := t.RefreshToken
 		if refresh == "" {
-			s.mu.Lock()
-			refresh = s.lastRefresh
-			s.mu.Unlock()
+			refresh = s.currentRefresh()
 		}
 		enc, err := sealSlot(sl, tokenBundle{Issuer: s.issuer, Handle: s.handle, Access: t.AccessToken, Refresh: refresh}, expiresIn)
 		if err != nil {

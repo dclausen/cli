@@ -143,6 +143,42 @@ func TestSealedStore_SaveCarriesRefreshForward(t *testing.T) {
 	}
 }
 
+func TestSealedStore_SaveCarriesCurrentSlotRefresh(t *testing.T) {
+	_, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc-1", RefreshToken: "ref-old"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadTokens(""); err != nil {
+		t.Fatal(err)
+	}
+	// Another process rotates the slot; this process has unsealed that
+	// newer bundle too (as auth-go's re-read after locking would).
+	sl, err := protection.sealer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := sealSlot(sl, tokenBundle{Issuer: c.CoreURL, Handle: c.Handle, Access: "acc-1", Refresh: "ref-new"}, 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.Set(c.KeychainService, c.Handle, rotated); err != nil {
+		t.Fatal(err)
+	}
+	// A save without a refresh token must carry the slot's current one, not
+	// the stale value from the earlier load.
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc-2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadTokens("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "acc-2" || got.RefreshToken != "ref-new" {
+		t.Fatalf("stale refresh carried forward: %+v", got)
+	}
+}
+
 func TestSealedStore_RejectsRedirectedContext(t *testing.T) {
 	_, c := protectedFixture(t)
 	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
