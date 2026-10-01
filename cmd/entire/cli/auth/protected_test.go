@@ -1,0 +1,314 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/entireio/auth-go/tokens"
+	authtokenstore "github.com/entireio/auth-go/tokenstore"
+
+	"github.com/entireio/cli/internal/entireclient/contexts"
+	"github.com/entireio/cli/internal/entireclient/tokenstore"
+	"github.com/entireio/cli/internal/entireclient/tokenstore/senclave"
+)
+
+// fakeSealer is a reversible stand-in for the Secure Enclave key.
+type fakeSealer struct {
+	mu      sync.Mutex
+	unseals int
+	reasons []string
+	fail    error
+}
+
+const fakeSealPrefix = "FAKESEAL|"
+
+func (f *fakeSealer) Seal(plaintext []byte) ([]byte, error) {
+	return append([]byte(fakeSealPrefix), plaintext...), nil
+}
+
+func (f *fakeSealer) Unseal(ciphertext []byte, reason string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unseals++
+	f.reasons = append(f.reasons, reason)
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	s := string(ciphertext)
+	if !strings.HasPrefix(s, fakeSealPrefix) {
+		return nil, errors.New("fake: not sealed")
+	}
+	return []byte(strings.TrimPrefix(s, fakeSealPrefix)), nil
+}
+
+func (f *fakeSealer) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unseals
+}
+
+func (f *fakeSealer) lastReason() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.reasons) == 0 {
+		return ""
+	}
+	return f.reasons[len(f.reasons)-1]
+}
+
+// protectedFixture isolates the token store and installs a fake sealer.
+func protectedFixture(t *testing.T) (*fakeSealer, *contexts.Context) {
+	t.Helper()
+	t.Cleanup(tokenstore.UseFileBackendForTesting(filepath.Join(t.TempDir(), "tokens.json")))
+	fs := &fakeSealer{}
+	SetSealerForTesting(t, fs)
+	c := &contexts.Context{
+		Name:            "prod",
+		CoreURL:         "https://core.example.test/",
+		Handle:          "toothbrush",
+		KeychainService: tokenstore.CoreKeyringService("https://core.example.test"),
+	}
+	return fs, c
+}
+
+func TestSealedStore_RoundTripOnePrompt(t *testing.T) {
+	fs, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+
+	exp := time.Now().Add(30 * time.Minute)
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc-1", RefreshToken: "ref-1", ExpiresAt: exp}); err != nil {
+		t.Fatalf("SaveTokens: %v", err)
+	}
+	if fs.count() != 0 {
+		t.Fatalf("save must not prompt; unseals=%d", fs.count())
+	}
+	raw, err := tokenstore.Get(c.KeychainService, c.Handle)
+	if err != nil || !isSealed(raw) {
+		t.Fatalf("access slot not sealed: %q err=%v", raw, err)
+	}
+	if strings.Contains(raw, "acc-1") || strings.Contains(raw, "ref-1") {
+		t.Fatalf("plaintext leaked into slot: %q", raw)
+	}
+	if _, err := tokenstore.Get(tokenstore.RefreshService(c.KeychainService), c.Handle); !errors.Is(err, tokenstore.ErrNotFound) {
+		t.Fatalf("refresh slot should be cleared, err=%v", err)
+	}
+
+	store.setPromptAction("git push to cluster.example.test")
+	got, err := store.LoadTokens("")
+	if err != nil {
+		t.Fatalf("LoadTokens: %v", err)
+	}
+	if got.AccessToken != "acc-1" || got.RefreshToken != "ref-1" {
+		t.Fatalf("tokens mismatch: %+v", got)
+	}
+	if got.ExpiresAt.IsZero() || got.ExpiresAt.After(exp.Add(2*time.Second)) {
+		t.Fatalf("expiry not carried: %v", got.ExpiresAt)
+	}
+	if fs.count() != 1 {
+		t.Fatalf("one load must be one prompt; unseals=%d", fs.count())
+	}
+	want := "git push to cluster.example.test with Entire login toothbrush@core.example.test"
+	if fs.lastReason() != want {
+		t.Fatalf("reason = %q, want %q", fs.lastReason(), want)
+	}
+}
+
+func TestSealedStore_SaveCarriesRefreshForward(t *testing.T) {
+	_, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc-1", RefreshToken: "ref-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadTokens(""); err != nil {
+		t.Fatal(err)
+	}
+	// Server did not rotate: an empty refresh means "leave as-is".
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc-2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadTokens("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "acc-2" || got.RefreshToken != "ref-1" {
+		t.Fatalf("refresh not carried forward: %+v", got)
+	}
+}
+
+func TestSealedStore_RejectsRedirectedContext(t *testing.T) {
+	_, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc", RefreshToken: "ref"}); err != nil {
+		t.Fatal(err)
+	}
+	// contexts.json edited to point the same slot at another login server.
+	evil := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: "https://evil.example.test"}
+	if _, err := evil.LoadTokens(""); !errors.Is(err, ErrBundleMismatch) {
+		t.Fatalf("err = %v, want ErrBundleMismatch", err)
+	}
+	// The sealed value copied into another account's slot.
+	raw, err := tokenstore.Get(c.KeychainService, c.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.Set(c.KeychainService, "someone-else", raw); err != nil {
+		t.Fatal(err)
+	}
+	other := &contextTokenStore{service: c.KeychainService, handle: "someone-else", issuer: c.CoreURL}
+	if _, err := other.LoadTokens(""); !errors.Is(err, ErrBundleMismatch) {
+		t.Fatalf("handle mismatch err = %v, want ErrBundleMismatch", err)
+	}
+}
+
+func TestSealedStore_DeclinedPromptIsClassified(t *testing.T) {
+	fs, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc"}); err != nil {
+		t.Fatal(err)
+	}
+	fs.fail = senclave.ErrCanceled
+	_, err := store.LoadTokens("")
+	if !PromptDeclined(err) {
+		t.Fatalf("err = %v, want PromptDeclined", err)
+	}
+	if _, err := LoginTokenForContext(c); !PromptDeclined(err) {
+		t.Fatalf("LoginTokenForContext err = %v, want PromptDeclined", err)
+	}
+}
+
+func TestSealedStore_PlaintextStillReadable(t *testing.T) {
+	_, c := protectedFixture(t)
+	// A slot written before protection was turned on.
+	if err := tokenstore.Set(c.KeychainService, c.Handle, tokenstore.EncodeTokenWithExpiration("plain-acc", 600)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.Set(tokenstore.RefreshService(c.KeychainService), c.Handle, "plain-ref"); err != nil {
+		t.Fatal(err)
+	}
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	got, err := store.LoadTokens("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "plain-acc" || got.RefreshToken != "plain-ref" {
+		t.Fatalf("plaintext load: %+v", got)
+	}
+	tok, err := LoginTokenForContext(c)
+	if err != nil || tok != "plain-acc" {
+		t.Fatalf("LoginTokenForContext = %q, %v", tok, err)
+	}
+}
+
+func TestSealedStore_ProtectionOffUsesPlaintext(t *testing.T) {
+	t.Cleanup(tokenstore.UseFileBackendForTesting(filepath.Join(t.TempDir(), "tokens.json")))
+	SetSealerForTesting(t, nil)
+	store := &contextTokenStore{service: "entire-core:https://core.example.test", handle: "h", issuer: "https://core.example.test"}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc", RefreshToken: "ref"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := tokenstore.Get(store.service, store.handle)
+	if err != nil || isSealed(raw) || !strings.HasPrefix(raw, "acc|") {
+		t.Fatalf("expected plaintext slot, got %q err=%v", raw, err)
+	}
+	if TokensProtected() {
+		t.Fatal("TokensProtected should be false")
+	}
+}
+
+func TestSealedStore_MissingSlotIsNotLoggedIn(t *testing.T) {
+	_, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if _, err := store.LoadTokens(""); !errors.Is(err, authtokenstore.ErrNotFound) {
+		t.Fatalf("err = %v, want auth-go ErrNotFound", err)
+	}
+}
+
+func TestRecordLoginContext_SealsWhenProtected(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("ENTIRE_CONFIG_DIR", cfgDir)
+	fs, _ := protectedFixture(t)
+
+	token := makeJWT(t, fmt.Sprintf(`{"iss":"https://core.example.test","handle":"toothbrush","exp":%d}`, time.Now().Add(time.Hour).Unix()))
+	if _, err := RecordLoginContext(token, "refresh-1", true); err != nil {
+		t.Fatalf("RecordLoginContext: %v", err)
+	}
+	service := tokenstore.CoreKeyringService("https://core.example.test")
+	raw, err := tokenstore.Get(service, "toothbrush")
+	if err != nil || !isSealed(raw) {
+		t.Fatalf("login not sealed: %q err=%v", raw, err)
+	}
+	if _, err := tokenstore.Get(tokenstore.RefreshService(service), "toothbrush"); !errors.Is(err, tokenstore.ErrNotFound) {
+		t.Fatalf("refresh slot should be empty, err=%v", err)
+	}
+	if fs.count() != 0 {
+		t.Fatalf("login must not prompt; unseals=%d", fs.count())
+	}
+	b, _, err := openSealedSlot(raw, "https://core.example.test", "toothbrush", "test")
+	if err != nil || b.Access != token || b.Refresh != "refresh-1" {
+		t.Fatalf("bundle = %+v err=%v", b, err)
+	}
+}
+
+func TestEnableDisableProtection_RewritesSlots(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("ENTIRE_CONFIG_DIR", cfgDir)
+	fs, c := protectedFixture(t)
+	if err := contexts.Save(cfgDir, &contexts.File{CurrentContext: c.Name, Contexts: []*contexts.Context{c}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.Set(c.KeychainService, c.Handle, tokenstore.EncodeTokenWithExpiration("acc", 900)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokenstore.Set(tokenstore.RefreshService(c.KeychainService), c.Handle, "ref"); err != nil {
+		t.Fatal(err)
+	}
+
+	sealed, created, err := EnableProtection(cfgDir)
+	if err != nil {
+		t.Fatalf("EnableProtection: %v", err)
+	}
+	if created || len(sealed) != 1 || sealed[0] != "prod" {
+		t.Fatalf("sealed=%v created=%v", sealed, created)
+	}
+	raw, err := tokenstore.Get(c.KeychainService, c.Handle)
+	if err != nil || !isSealed(raw) {
+		t.Fatalf("slot not sealed: %q err=%v", raw, err)
+	}
+	// Idempotent.
+	if again, _, err := EnableProtection(cfgDir); err != nil || len(again) != 0 {
+		t.Fatalf("second enable sealed=%v err=%v", again, err)
+	}
+
+	unsealed, err := DisableProtection(cfgDir)
+	if err != nil {
+		t.Fatalf("DisableProtection: %v", err)
+	}
+	if len(unsealed) != 1 || fs.count() != 1 {
+		t.Fatalf("unsealed=%v prompts=%d", unsealed, fs.count())
+	}
+	raw, err = tokenstore.Get(c.KeychainService, c.Handle)
+	if err != nil || !strings.HasPrefix(raw, "acc|") {
+		t.Fatalf("slot not plaintext: %q err=%v", raw, err)
+	}
+	ref, err := tokenstore.Get(tokenstore.RefreshService(c.KeychainService), c.Handle)
+	if err != nil || ref != "ref" {
+		t.Fatalf("refresh = %q err=%v", ref, err)
+	}
+}
+
+func TestPromptAction_FromContext(t *testing.T) {
+	t.Parallel()
+	ctx := WithPromptAction(context.Background(), "git push to h")
+	if got := promptActionFrom(ctx); got != "git push to h" {
+		t.Fatalf("got %q", got)
+	}
+	if got := promptActionFrom(context.Background()); !strings.HasPrefix(got, "entire") {
+		t.Fatalf("default action %q", got)
+	}
+}

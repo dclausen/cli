@@ -99,6 +99,12 @@ func run(args []string) int {
 	defer stop()
 
 	skipTLS := os.Getenv("ENTIRE_TLS_SKIP_VERIFY") == "true"
+	if skipTLS && auth.TokensProtected() {
+		// A protected bearer must not cross a verification-free hop: the
+		// env var is agent-settable and a MITM proxy would read the token.
+		skipTLS = false
+		fmt.Fprintln(os.Stderr, "git-remote-entire: ENTIRE_TLS_SKIP_VERIFY ignored: tokens are Secure Enclave protected")
+	}
 
 	nodeCfg := replicas.Resolve(parsedURL)
 
@@ -212,10 +218,12 @@ func setAuthWithProvider(provider credentialProvider) transport.SetAuthFunc {
 		// Refuse to attach credentials to a request we can't classify as a
 		// known git smart-HTTP endpoint. Sending a bearer to an unexpected
 		// endpoint is never right.
-		if gitActionFromRequest(req) == "" {
+		action := gitActionFromRequest(req)
+		if action == "" {
 			return fmt.Errorf("refusing to attach credentials: %s %s is not a recognised git smart-HTTP endpoint", req.Method, req.URL.Path)
 		}
-		token, err := provider(req.Context())
+		// Protected tokens prompt on read; the dialog names this action.
+		token, err := provider(auth.WithPromptAction(req.Context(), gitPromptAction(action, req.URL.Host)))
 		if err != nil {
 			return fmt.Errorf("resolve git credential: %w", err)
 		}
@@ -412,6 +420,20 @@ func coreTrusted(coreURL string, trusted []string) bool {
 	return false
 }
 
+// Classified smart-HTTP actions.
+const (
+	gitActionPush = "push"
+	gitActionPull = "pull"
+)
+
+// gitPromptAction phrases a classified action for the token dialog.
+func gitPromptAction(action, host string) string {
+	if action == gitActionPush {
+		return "git push to " + host
+	}
+	return "git fetch from " + host
+}
+
 // gitActionFromRequest classifies a smart-HTTP request as "pull" or "push".
 // The bearer doesn't vary by action, but the classification still gates
 // which endpoints may carry credentials (and labels the timing logs).
@@ -422,17 +444,17 @@ func gitActionFromRequest(req *http.Request) string {
 	case http.MethodPost:
 		switch {
 		case strings.HasSuffix(path, "/git-receive-pack"):
-			return "push"
+			return gitActionPush
 		case strings.HasSuffix(path, "/git-upload-pack"):
-			return "pull"
+			return gitActionPull
 		}
 	case http.MethodGet:
 		if strings.HasSuffix(path, "/info/refs") {
 			switch req.URL.Query().Get("service") {
 			case "git-receive-pack":
-				return "push"
+				return gitActionPush
 			case "git-upload-pack":
-				return "pull"
+				return gitActionPull
 			}
 		}
 	}
