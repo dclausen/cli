@@ -153,10 +153,11 @@ the commands are always runnable in every build.
   caller has to rejoin. **Identity is split across providers**, so the view takes
   whichever half each one has. GitHub supplies a human handle
   (`github:gtrrz-victor`); Google supplies a display name and a handle
-  synthesised as `google-<subject id>`, which qualifies to `google:google-100…`
-  — the provider twice. That prefix is dropped when what
-  follows it IS the `providerUserId`, so the handle is provably the minted form
-  and a GitHub user genuinely named `github-foo` keeps their name. A `name` row
+  minted as `google-<subject id>`, which would qualify to `google:google-100…`
+  — the provider twice. How each provider's handle is shown and typed is owned
+  by `providerIdentity` (`provider_identity.go`): GitHub handles pass through
+  unchanged (so a user genuinely named `github-foo` keeps that name), while
+  Google's render as `google:<subject id>`. A `name` row
   carries the display name, and earns its line only where the handle is not
   already that name — the test is the value, not the provider, so a GitHub
   account that does carry a display name grows the row like any other. In JSON
@@ -164,11 +165,14 @@ the commands are always runnable in every build.
   envelope is a session's name, and one document must not spell two subjects
   the same way — it also matches `entire experts` and /me's own `displayName`.
   It is uncollapsed, as `--json` never applies a text-view collapse.
-  **The trade-off is deliberate and worth knowing:** the de-duplicated spelling
-  does not resolve as a grantee — `GET /identity/handles/google/<subject id>`
-  answers 404 while the doubled form resolves — so for synthetic handles `user`
-  is a legible identity, not a value to paste into `entire grant`. It stays
-  grant-able for every provider that issues real usernames. `auth status` also marks the caller's
+  The same mapping runs in reverse wherever a grantee is typed:
+  `/identity/handles` resolves only the stored `google-<subject id>`, so
+  `entire grant` restores the prefix before resolving and accepts either
+  spelling. `grant … list` tables and pickers show the display form too, so
+  `user`, list rows and the accepted grantee are one spelling for every
+  provider in text output. Every `--json` surface keeps the wire value instead
+  — `auth status --json` `user` included (`google:google-100…`) — so a script
+  can compare it with `grant … list --json` grantee names directly. `auth status` also marks the caller's
   own row `(current)`, matching the login JWT's `fid` (refresh-token family id)
   claim against the listed session ids, since a session IS a refresh-token
   family. That match is the only thing entitling the verdict line to state an
@@ -316,8 +320,8 @@ the commands are always runnable in every build.
   grants, a `/gh/` ref lists the placement's collaborators from
   `GET /mirrors/collaborators` (live GitHub-admin gated against the caller's own
   GitHub identity, so a service-account token cannot answer it). The mirror
-  branch renders `GRANTEE`/`ROLE` — `grantColumns` without the provenance the
-  mirror endpoint does not report — and its `--json` rewrites the
+  branch renders `GRANTEE`/`ROLE` — `grantColumns` without `NAME` and the
+  provenance columns, neither of which the mirror endpoint reports — and its `--json` rewrites the
   collaborator model into the grant vocabulary through `mergeSynthesizedFields`
   — `accountId` → `granteeId`, `handle` → `granteeName`, plus `source` =
   `github`, where a mirror's access does come from — so one script reads either
@@ -442,25 +446,28 @@ the commands are always runnable in every build.
   are best-effort without `--cluster`: if either fails (a core that 404s or
   503s the listing, a catalog hiccup), resolution degrades to the home cluster
   instead of failing a clone that has always worked.
-  A trailing `.git` is decoration on a `/gh/` mirror ref and **part of the name**
-  on a native `/et/` one (`mirrorGitDirSuffix` documents the mechanics). GitHub
-  rejects a repository name ending in `.git` outright, so on a mirror path the
-  suffix can only ever be decoration and dropping it is what lets a pasted
-  `git clone` URL resolve. The server is the opposite case: entiredb permits an
-  interior dot (the same rule that makes `entire-trails.el` legal), `POST
-  /api/v1/repos {"name":"foo.git"}` returns 201, and the data plane resolves
-  `/et/` paths verbatim — so `parseNativeCloneRef` keeps the suffix, `repo
-  create` forwards such a name, and a native lookup asks for `foo.git`. Trimming
-  it there resolved a *different* repository — sibling repos `foo` and `foo.git`
-  both exist, so `repo delete /et/p/foo.git` destroyed the neighbour and printed
-  the path the user typed beside the survivor's ULID, reading as success. Every
-  remaining trim is therefore a `/gh/` grammar, and
-  `gitremote.splitOwnerRepo` skips the trim for `ForgeNative` so a native remote
-  reads back the name it was cloned under. Two consequences worth knowing — a
-  trim can *manufacture* a dot-only segment (`..git` → `.`), which both the
-  `/gh/` grammar and `splitOwnerRepo` refuse; and `resolveRepoRef`'s
-  project-scoped miss names the suffix in its hint rather than stripping it,
-  since a bare name in that position is a name, not a path.
+  A trailing `.git` is **never part of a repo name**, on either backend
+  (`gitDirSuffix` documents the mechanics). One rule, three mechanics. Every ref
+  parser drops it on the way in — `parseNativeCloneRef`, `parseMirrorCloneRef`,
+  `parseTrailRepoShape`, `parseExpertsRepo`, `parseMirrorCloneURL`, and
+  `gitremote.splitOwnerRepo` for a remote read back from git config; the one
+  deliberate exception is a bare name under `--project`, which is a name and not
+  a path, so `resolveRepoRef` looks it up verbatim and names the suffix in its
+  miss hint rather than stripping it. Nothing appends it to an Entire path, so an
+  `entire://` URL, an `/et/` or `/gh/` ref, an API argument and anything the CLI
+  echoes back are all suffix-free — appending stays correct only on a
+  third-party forge clone URL, where it is that host's convention (the
+  checkpoint-remote URL builders, and `cleanRemoteURLForReport`, which reports
+  nothing at all for a remote with no upstream forge rather than synthesizing a
+  URL that addresses nothing). And `repo create` refuses a name ending in it.
+  `/et/p/foo` and `/et/p/foo.git` therefore address one repository, spelled `foo`.
+  Order matters where a URL is parsed: `splitOwnerRepo` strips trailing
+  separators **before** the suffix, the order canonical git uses in
+  `git_url_basename`, so a pasted `…/foo.git/` resolves like `…/foo.git` and
+  `…/o/../` cannot carry a `..` past the dot-only guard still wearing a slash.
+  That guard is the other thing to know — a trim can *manufacture* a dot-only
+  segment (`..git` → `.`), a path-traversal shape for any caller that joins it,
+  and both the `/gh/` grammar and `splitOwnerRepo` refuse it.
 - The three `grant` subtrees (`org grant`, `project grant`, `repo grant`) are one
   generic builder plus three target descriptions in `grant.go`; a new target is
   a `grantTarget` value, not a fourth copy of the leaves.
@@ -621,12 +628,13 @@ cluster named `et` while `entire://gh/...` got an actionable message.
 cluster host rather than inventing a forge host. The legacy `/git/` prefix is
 excluded because `repo clone` cannot act on such a ref.
 
-**Being a forge token says nothing about which APIs accept it** — the name says
-syntax on purpose. Trails are the current example: entire-api takes `et` in the
-path but cannot resolve it, so `entire trail` refuses it locally with the real
-reason (`errTrailsNativeUnsupported`). That refusal has to cover *both* ways a
-forge reaches the API — named in `--repo` and inferred from the origin remote —
-and the inferred one is the common path.
+**Being a forge token says nothing about which route accepts it** — the name
+says syntax on purpose. Trails are the current example: a mirror is addressed by
+`forge/owner/repo`, a native repo only by its ULID, so `trailRepoBasePath`
+switches on the forge *after* `IsForgePathToken` has answered yes, and a native
+ref with no resolved repo ID fails there rather than at the grammar. That
+narrowing has to cover *both* ways a forge reaches the API — named in `--repo`
+and inferred from the origin remote — and the inferred one is the common path.
 
 Experimental commands (gated by the build-time visibility flag above — visible
 and grouped under "Experimental commands:" in developer/nightly builds, hidden

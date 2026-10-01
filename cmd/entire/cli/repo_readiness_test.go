@@ -234,8 +234,8 @@ func TestRepoCreateReadinessResults(t *testing.T) {
 
 type repoReadFunc func(context.Context, coreapi.GetRepoParams) (*coreapi.Repo, error)
 
-func (f repoReadFunc) GetRepo(ctx context.Context, p coreapi.GetRepoParams) (*coreapi.Repo, error) {
-	return f(ctx, p)
+func (f repoReadFunc) GetRepo(ctx context.Context, p coreapi.GetRepoParams) (*coreapi.RepoHeaders, error) {
+	return repoHeaders(f(ctx, p))
 }
 
 func TestAwaitRepoActive(t *testing.T) {
@@ -685,7 +685,14 @@ func TestAwaitRepoActiveRetainsOnlyCreationCoordinates(t *testing.T) {
 	require.JSONEq(t, `"entire://cell.example/et/acme/web"`, string(result.AdditionalProps["remote"]))
 	require.Equal(t, "active", result.State.Or(""))
 	require.False(t, result.ProvisionReason.IsSet(), "do not preserve stale lifecycle enrichment")
-	require.Equal(t, *snapshot, *result)
+	// Exactly the snapshot plus the creation coordinates: nothing else from
+	// the creation response survives.
+	require.Equal(t, coreapi.Repo{
+		ID: testDeleteULID, Name: "web", OwningProjectId: testProjectULID,
+		State:       coreapi.NewOptString("active"),
+		ClusterHost: coreapi.NewOptString("cell.example"), Path: coreapi.NewOptString("/et/acme/web"),
+		AdditionalProps: coreapi.RepoAdditional{"remote": []byte(`"entire://cell.example/et/acme/web"`)},
+	}, *result)
 }
 
 func TestRepoMirrorZeroTimeout(t *testing.T) {

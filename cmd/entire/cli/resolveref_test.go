@@ -444,20 +444,19 @@ func nativePathHandler(t *testing.T, gotFullName *string) http.HandlerFunc {
 	}
 }
 
-// TestResolveRepoRef_NativePathKeepsGitSuffix pins that a native ref carries a
-// trailing `.git` into the lookup. The handler answers any name with the "web"
-// row; what matters is the name the server was asked for. Trimming the suffix
-// asked for "widgets/web", so a repo named web.git resolved to a different
-// repo's ULID.
-func TestResolveRepoRef_NativePathKeepsGitSuffix(t *testing.T) {
+// TestResolveRepoRef_NativePathDropsGitSuffix pins that a trailing `.git` on a
+// native ref is an alias, not a name: it never reaches the lookup. The handler
+// answers any name with the "web" row; what matters is the name the server was
+// asked for.
+func TestResolveRepoRef_NativePathDropsGitSuffix(t *testing.T) {
 	t.Parallel()
 	var gotFullName string
 	c, _ := resolveTestClient(t, nativePathHandler(t, &gotFullName))
 	if _, err := resolveRepoRef(context.Background(), c, "/et/widgets/web.git", ""); err != nil {
 		t.Fatalf("resolveRepoRef: %v", err)
 	}
-	if gotFullName != "widgets/web.git" {
-		t.Errorf("server received fullName=%q, want %q", gotFullName, "widgets/web.git")
+	if gotFullName != "widgets/web" {
+		t.Errorf("server received fullName=%q, want %q", gotFullName, "widgets/web")
 	}
 }
 
@@ -471,6 +470,8 @@ func TestResolveRepoRef_NativePathKeepsGitSuffix(t *testing.T) {
 // so these two are the only cases that can tell the sources apart.
 func TestResolveRepoRef_NativePathEchoesOnlyTheServersName(t *testing.T) {
 	t.Parallel()
+	// The typed ref carries the `.git` alias; the resolver drops it, so the
+	// requested name below is the suffix-free spelling.
 	const ref = "/et/audit1/victim.git"
 
 	// resolutionHandler answers the one POST /repos/resolve a native path ref
@@ -484,7 +485,7 @@ func TestResolveRepoRef_NativePathEchoesOnlyTheServersName(t *testing.T) {
 			}
 			if err := printJSON(w, &coreapi.ResolveReposResponse{Resolutions: []coreapi.RepoResolution{{
 				Provider:          repoProviderEntire,
-				RequestedFullName: "audit1/victim.git",
+				RequestedFullName: "audit1/victim",
 				FullName:          fullName,
 				Status:            coreapi.RepoResolutionStatusReady,
 				RepoId:            coreapi.NewOptString(ulidRepoWeb),
@@ -496,12 +497,12 @@ func TestResolveRepoRef_NativePathEchoesOnlyTheServersName(t *testing.T) {
 
 	t.Run("a differing server name is the one echoed", func(t *testing.T) {
 		t.Parallel()
-		c, _ := resolveTestClient(t, resolutionHandler(coreapi.NewOptString("audit1/victim")))
+		c, _ := resolveTestClient(t, resolutionHandler(coreapi.NewOptString("audit1/renamed")))
 		got, err := resolveRepoRefResolved(context.Background(), c, ref, "")
 		require.NoError(t, err)
 		require.Equal(t, ulidRepoWeb, got.ID)
-		require.Equal(t, "/et/audit1/victim", got.Name, "the label must carry the name the server matched")
-		require.Equal(t, "/et/audit1/victim ("+ulidRepoWeb+")", resolvedRefLabel(ref, got))
+		require.Equal(t, "/et/audit1/renamed", got.Name, "the label must carry the name the server matched")
+		require.Equal(t, "/et/audit1/renamed ("+ulidRepoWeb+")", resolvedRefLabel(ref, got))
 	})
 
 	t.Run("no server name leaves the label to the typed ref", func(t *testing.T) {
@@ -703,7 +704,7 @@ func TestResolveRepoPath(t *testing.T) {
 
 	t.Run("a native path resolves in one call", func(t *testing.T) {
 		t.Parallel()
-		for _, ref := range []string{"/et/widgets/web", "et/widgets/web"} {
+		for _, ref := range []string{"/et/widgets/web", "et/widgets/web", "/et/widgets/web.git"} {
 			t.Run(ref, func(t *testing.T) {
 				t.Parallel()
 				var gotFullName string
@@ -715,15 +716,6 @@ func TestResolveRepoPath(t *testing.T) {
 				require.EqualValues(t, 1, calls.Load(), "repos/resolve")
 			})
 		}
-	})
-
-	t.Run("a native path keeps a .git suffix", func(t *testing.T) {
-		t.Parallel()
-		var gotFullName string
-		c, _ := resolveTestClient(t, nativePathHandler(t, &gotFullName))
-		_, err := resolveRepoPath(context.Background(), c, "/et/widgets/web.git")
-		require.NoError(t, err)
-		require.Equal(t, "widgets/web.git", gotFullName)
 	})
 
 	t.Run("a ULID-shaped segment is still a name", func(t *testing.T) {
@@ -892,6 +884,28 @@ func TestResolveAccountRef(t *testing.T) {
 		}
 	})
 
+	// `project create --owner` takes the same spellings a grantee does.
+	for _, ref := range []string{"google:1001", "google:google-1001"} {
+		t.Run("google owner "+ref+" resolves the minted handle", func(t *testing.T) {
+			t.Parallel()
+			c, _ := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/google/google-1001") {
+					t.Errorf("resolved path %q, want the minted handle google-1001", r.URL.Path)
+				}
+				if err := printJSON(w, &coreapi.ResolvedIdentity{AccountId: ulidResolvedAcct, Provider: providerGoogle, Handle: "google-1001", ProviderUserId: "1001"}); err != nil {
+					t.Errorf("encode identity: %v", err)
+				}
+			})
+			got, err := resolveAccountRef(context.Background(), c, ref)
+			if err != nil {
+				t.Fatalf("resolveAccountRef: %v", err)
+			}
+			if got != ulidResolvedAcct {
+				t.Errorf("resolveAccountRef = %q, want %q", got, ulidResolvedAcct)
+			}
+		})
+	}
+
 	t.Run("non-qualified handle fails before any network call", func(t *testing.T) {
 		t.Parallel()
 		c, calls := resolveTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -928,6 +942,30 @@ func TestResolveGranteeProvider(t *testing.T) {
 			t.Errorf("handle ref made %d HTTP calls, want 1", n)
 		}
 	})
+
+	// `auth status` shows a Google login as google:<subject id>; the server
+	// only resolves its minted google-<subject id>, so both spellings must look
+	// up the minted one.
+	for _, ref := range []string{"google:1001", "google:google-1001"} {
+		t.Run("google grantee "+ref+" resolves the minted handle", func(t *testing.T) {
+			t.Parallel()
+			c, _ := resolveTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/google/google-1001") {
+					t.Errorf("resolved path %q, want the minted handle google-1001", r.URL.Path)
+				}
+				if err := printJSON(w, &coreapi.ResolvedIdentity{AccountId: ulidResolvedAcct, Provider: providerGoogle, Handle: "google-1001", ProviderUserId: "1001"}); err != nil {
+					t.Errorf("encode identity: %v", err)
+				}
+			})
+			provider, puid, err := resolveGranteeProvider(context.Background(), c, ref)
+			if err != nil {
+				t.Fatalf("resolveGranteeProvider: %v", err)
+			}
+			if provider != providerGoogle || puid != "1001" {
+				t.Errorf("resolveGranteeProvider = (%q, %q), want (google, 1001)", provider, puid)
+			}
+		})
+	}
 
 	t.Run("non-qualified handle fails before any network call", func(t *testing.T) {
 		t.Parallel()

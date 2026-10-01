@@ -225,6 +225,25 @@ write into a checkpoint the session did not stamp for this commit is refused
 (`stampedByAnotherCommit`). Merge commits stay unlinked by design; the
 merged commits keep their own trailers.
 
+**Redone commits inherit their trailers too** (`inheritReplacedCommitsTrailers`).
+After `git reset` and new commits, the dropped commits are read from HEAD's
+reflog, not ORIG_HEAD (which unstaging or a stash overwrites): walking back from
+the newest entry, resets that did not move HEAD are skipped, and the tip the
+last real reset left is where the dropped work starts. Dropped means only that
+tip reaches it: commits HEAD, a remote or another branch still reach (merged-in
+main, a teammate's commit an undone rebase brought in) are never inherited,
+while a backup branch pointing at the tip itself does not count. A dropped
+commit's trailers are carried into the new message when every staged file it
+changed has exactly the content it had at that tip, so an agent's ten commits
+redone as three logical ones keep every checkpoint, each on the commit that now
+holds its files, while one coincidentally identical file (a lockfile, an empty
+`__init__.py`, the same deletion) among rewritten ones inherits nothing. Commits
+made since the reset keep the redo open only while each of them redid some of
+the dropped work; any other ref operation (checkout, merge, rebase, pull) ends
+it. Folding with `git reset --soft HEAD~1 && git commit --amend` inherits the
+folded commit's trailers too. Inherited trailers are links, exactly as for a
+squash, and are recorded so post-commit never condenses into one.
+
 **Worktree matching** (always computed; the sole mechanism for commits with
 no recorded agent in their ancestry — human commits, detached runners): exact
 `WorktreePath` match first, then sessions from a sibling worktree of the same
@@ -422,11 +441,15 @@ lands between the parent session's turns, while the session is IDLE — the
 fast-path trailer decision (`tryAgentCommitFastPath`,
 `strategy/manual_commit_hooks.go`) used to trust only ACTIVE sessions, so
 these commits shipped with no `Entire-Checkpoint` trailer at all. An IDLE
-session with a fresh task record (`idleWithTaskContent`: in-flight or
-completed-unmaterialized, each record bounded by its `StartedAt` age against
+session with a fresh in-flight task record (`idleWithLiveTaskRecord`, each
+record bounded by its `StartedAt` age against
 `activeSessionInteractionThreshold`, 24h) is now linkable too, so a subagent
 that dies without a completion signal doesn't leave the session trusted
-forever. The same predicate feeds `shouldCondenseWithOverlapCheck`'s
+forever. A completed record confers no trust: its subagent can no longer be
+the committer, and completion merged its files into `FilesTouched`, so the
+ordinary overlap check links a commit that carries them. Trusting completed
+records let a read-only reviewer's session condense into other sessions'
+commits. The same predicate feeds `shouldCondenseWithOverlapCheck`'s
 overlap-check bypass, so the trigger and the condensation trust share one
 rule. The trailer's content guarantee is the materializer itself: the
 commit's condensation stores each record's transcript-so-far under the

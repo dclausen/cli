@@ -17,8 +17,10 @@ import (
 // flagOutputFormat selects the CLI's response encoding; modelHaiku is the
 // default model for Entire's own generation calls (fast and cheap).
 const (
-	flagOutputFormat = "--output-format"
-	modelHaiku       = "haiku"
+	flagOutputFormat   = "--output-format"
+	flagSettingSources = "--setting-sources"
+	flagStrictMCP      = "--strict-mcp-config"
+	modelHaiku         = "haiku"
 )
 
 // buildGenerateArgs assembles the claude CLI argv for a --print text-generation
@@ -63,9 +65,9 @@ func buildGenerateArgs(model, settingsPath string) []string {
 	args := []string{
 		"--print", flagOutputFormat, "json",
 		"--model", model,
-		"--setting-sources", "",
+		flagSettingSources, "",
 		"--tools", "",
-		"--strict-mcp-config",
+		flagStrictMCP,
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -85,9 +87,9 @@ func buildStreamingGenerateArgs(model, settingsPath string) []string {
 		"--include-partial-messages",
 		"--verbose",
 		"--model", model,
-		"--setting-sources", "",
+		flagSettingSources, "",
 		"--tools", "",
-		"--strict-mcp-config",
+		flagStrictMCP,
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -129,14 +131,11 @@ func writeAuthSettingsFile(apiKeyHelper string) (string, func(), error) {
 // the claude CLI does: $CLAUDE_CONFIG_DIR/settings.json when set, otherwise
 // ~/.claude/settings.json.
 func userClaudeSettingsPath() (string, error) {
-	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
-		return filepath.Join(dir, "settings.json"), nil
-	}
-	home, err := os.UserHomeDir()
+	configDir, err := resolveClaudeConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return filepath.Join(configDir, "settings.json"), nil
 }
 
 // readUserAPIKeyHelper returns the apiKeyHelper field from the user's claude
