@@ -128,3 +128,57 @@ func TestLocalSettingsPath_FromExplicitWorktreeRoot(t *testing.T) {
 	assert.Equal(t, filepath.Join(mainRoot, EntireSettingsLocalFile), path)
 	assert.True(t, inherited)
 }
+
+func TestLoad_LinkedWorktreeInheritsMainLocalSettings(t *testing.T) {
+	t.Parallel()
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile),
+		`{"enabled":true,"external_agents":true,"commit_linking":"always"}`)
+
+	s, err := Load(WithWorktreeRoot(t.Context(), linked))
+	require.NoError(t, err)
+	assert.True(t, s.Enabled)
+	assert.Equal(t, CommitLinkingAlways, s.CommitLinking)
+	assert.True(t, s.ExternalAgents, "an untracked main-worktree file still grants external_agents")
+	_, rejected := s.ExternalAgentsRejection()
+	assert.False(t, rejected)
+}
+
+// Trust follows the file: a local file tracked in the main worktree is
+// rejected in its linked worktrees exactly as it is in the main one.
+func TestLoad_InheritedFileTrackedInMainIsDropped(t *testing.T) {
+	t.Parallel()
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile),
+		`{"commit_linking":"always","external_agents":true}`)
+	testutil.RunGit(t, mainRoot, "add", "-f", EntireSettingsLocalFile)
+
+	s, err := Load(WithWorktreeRoot(t.Context(), linked))
+	require.NoError(t, err)
+	assert.NotEqual(t, CommitLinkingAlways, s.CommitLinking)
+	assert.False(t, s.ExternalAgents)
+	assert.NotEmpty(t, s.LocalLayerRejection(), "the same rejection as a tracked file in the worktree itself")
+}
+
+func TestLoad_LinkedWorktreeOwnFileWins(t *testing.T) {
+	t.Parallel()
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile), `{"external_agents":true}`)
+	writeSettingsFile(t, filepath.Join(linked, EntireSettingsLocalFile), `{"log_level":"debug"}`)
+
+	s, err := Load(WithWorktreeRoot(t.Context(), linked))
+	require.NoError(t, err)
+	assert.False(t, s.ExternalAgents, "no merging: the worktree's own file is the whole local layer")
+	assert.Equal(t, "debug", s.LogLevel)
+}
+
+// Not parallel: t.Chdir. Hooks resolve settings from the process directory.
+func TestLoad_FromLinkedWorktreeCwdInheritsMainLocalSettings(t *testing.T) {
+	mainRoot, linked := worktreePair(t)
+	writeSettingsFile(t, filepath.Join(mainRoot, EntireSettingsLocalFile), `{"external_agents":true}`)
+	t.Chdir(linked)
+
+	s, err := Load(t.Context())
+	require.NoError(t, err)
+	assert.True(t, s.ExternalAgents)
+}

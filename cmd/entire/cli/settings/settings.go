@@ -663,17 +663,19 @@ func settingsAbsPaths(ctx context.Context) (base, local string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("resolve project settings path: %w", err)
 	}
-	local, err = entiredir.PathTo(ctx, EntireSettingsLocalFile)
+	local, _, err = LocalSettingsPath(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve local settings path: %w", err)
+		return "", "", err
 	}
 	return base, local, nil
 }
 
 // worktreeSettingsPaths resolves the base and local settings file paths under
-// an explicit worktree root.
+// an explicit worktree root. The local file may be the main worktree's; see
+// localSettingsPathIn.
 func worktreeSettingsPaths(worktreeRoot string) (base, local string) {
-	return filepath.Join(worktreeRoot, EntireSettingsFile), filepath.Join(worktreeRoot, EntireSettingsLocalFile)
+	local, _ = localSettingsPathIn(worktreeRoot)
+	return filepath.Join(worktreeRoot, EntireSettingsFile), local
 }
 
 func loadForWorktreeRoot(ctx context.Context, worktreeRoot string) (*EntireSettings, error) {
