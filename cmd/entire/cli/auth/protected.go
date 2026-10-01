@@ -105,11 +105,13 @@ func SetSealerForTesting(t interface{ Cleanup(fn func()) }, sl senclave.Sealer) 
 		return sl, nil
 	}
 	protection.mu.Unlock()
+	forgetBundles()
 	t.Cleanup(func() {
 		protection.mu.Lock()
 		protection.open = prevOpen
 		protection.cached = nil
 		protection.mu.Unlock()
+		forgetBundles()
 	})
 }
 
@@ -179,36 +181,84 @@ func sealSlot(sl senclave.Sealer, b tokenBundle, expiresIn int64) (string, error
 	if err != nil {
 		return "", fmt.Errorf("seal tokens: %w", err)
 	}
-	return tokenstore.EncodeTokenWithExpiration(sealedPrefix+base64.StdEncoding.EncodeToString(ct), expiresIn), nil
+	encoded := tokenstore.EncodeTokenWithExpiration(sealedPrefix+base64.StdEncoding.EncodeToString(ct), expiresIn)
+	// What this process just sealed it may read back without a prompt.
+	rememberBundle(encoded, b)
+	return encoded, nil
+}
+
+// unsealedCache remembers bundles this process already unsealed or sealed,
+// keyed by the slot's exact encoded value. One command builds several token
+// managers and each re-reads the slot; without this every read would be a
+// dialog. Identical ciphertext means identical plaintext, and a slot
+// rotated by another process has new ciphertext, so it prompts again.
+var unsealedCache = struct {
+	mu sync.Mutex
+	m  map[string]tokenBundle
+}{m: map[string]tokenBundle{}}
+
+func cachedBundle(encoded string) (tokenBundle, bool) {
+	unsealedCache.mu.Lock()
+	defer unsealedCache.mu.Unlock()
+	b, ok := unsealedCache.m[encoded]
+	return b, ok
+}
+
+func rememberBundle(encoded string, b tokenBundle) {
+	unsealedCache.mu.Lock()
+	defer unsealedCache.mu.Unlock()
+	unsealedCache.m[encoded] = b
+}
+
+func forgetBundles() {
+	unsealedCache.mu.Lock()
+	defer unsealedCache.mu.Unlock()
+	unsealedCache.m = map[string]tokenBundle{}
 }
 
 // openSealedSlot decrypts a sealed slot value and checks it belongs to
-// issuer and handle. reason is the dialog text.
+// issuer and handle. reason is the dialog text. A bundle this process has
+// already unsealed or sealed is returned without a prompt.
 func openSealedSlot(encoded, issuer, handle, reason string) (tokenBundle, time.Time, error) {
-	sl, err := protection.sealer()
-	if err != nil {
-		if errors.Is(err, ErrProtectionOff) {
-			return tokenBundle{}, time.Time{}, errors.New("stored tokens are sealed but no Secure Enclave key is enrolled")
+	_, expiresAt := tokenstore.DecodeTokenWithExpiration(encoded)
+	b, ok := cachedBundle(encoded)
+	if !ok {
+		var err error
+		b, err = unsealSlot(encoded, reason)
+		if err != nil {
+			return tokenBundle{}, time.Time{}, err
 		}
-		return tokenBundle{}, time.Time{}, err
-	}
-	payload, expiresAt := tokenstore.DecodeTokenWithExpiration(encoded)
-	ct, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(payload, sealedPrefix))
-	if err != nil {
-		return tokenBundle{}, time.Time{}, fmt.Errorf("decode sealed tokens: %w", err)
-	}
-	plain, err := sl.Unseal(ct, reason)
-	if err != nil {
-		return tokenBundle{}, time.Time{}, mapUnsealErr(err)
-	}
-	var b tokenBundle
-	if err := json.Unmarshal(plain, &b); err != nil {
-		return tokenBundle{}, time.Time{}, fmt.Errorf("decode token bundle: %w", err)
 	}
 	if b.Version != bundleVersion || b.Issuer != normalizeIssuer(issuer) || b.Handle != handle {
 		return tokenBundle{}, time.Time{}, ErrBundleMismatch
 	}
+	rememberBundle(encoded, b)
 	return b, expiresAt, nil
+}
+
+// unsealSlot decrypts a sealed slot value through the enclave. Prompts.
+func unsealSlot(encoded, reason string) (tokenBundle, error) {
+	sl, err := protection.sealer()
+	if err != nil {
+		if errors.Is(err, ErrProtectionOff) {
+			return tokenBundle{}, errors.New("stored tokens are sealed but no Secure Enclave key is enrolled")
+		}
+		return tokenBundle{}, err
+	}
+	payload, _ := tokenstore.DecodeTokenWithExpiration(encoded)
+	ct, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(payload, sealedPrefix))
+	if err != nil {
+		return tokenBundle{}, fmt.Errorf("decode sealed tokens: %w", err)
+	}
+	plain, err := sl.Unseal(ct, reason)
+	if err != nil {
+		return tokenBundle{}, mapUnsealErr(err)
+	}
+	var b tokenBundle
+	if err := json.Unmarshal(plain, &b); err != nil {
+		return tokenBundle{}, fmt.Errorf("decode token bundle: %w", err)
+	}
+	return b, nil
 }
 
 func mapUnsealErr(err error) error {
@@ -370,6 +420,7 @@ func DisableProtection(cfgDir string) (unsealed []string, err error) {
 		return unsealed, fmt.Errorf("remove %s: %w", ProtectedKeyFile, err)
 	}
 	protection.reset()
+	forgetBundles()
 	return unsealed, nil
 }
 

@@ -99,6 +99,8 @@ func TestSealedStore_RoundTripOnePrompt(t *testing.T) {
 		t.Fatalf("refresh slot should be cleared, err=%v", err)
 	}
 
+	// Another process would not have the just-sealed bundle cached.
+	forgetBundles()
 	store.setPromptAction("git push to cluster.example.test")
 	got, err := store.LoadTokens("")
 	if err != nil {
@@ -173,6 +175,7 @@ func TestSealedStore_DeclinedPromptIsClassified(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs.fail = senclave.ErrCanceled
+	forgetBundles()
 	_, err := store.LoadTokens("")
 	if !PromptDeclined(err) {
 		t.Fatalf("err = %v, want PromptDeclined", err)
@@ -285,6 +288,8 @@ func TestEnableDisableProtection_RewritesSlots(t *testing.T) {
 		t.Fatalf("second enable sealed=%v err=%v", again, err)
 	}
 
+	// `auth unprotect` runs in a fresh process with nothing cached.
+	forgetBundles()
 	unsealed, err := DisableProtection(cfgDir)
 	if err != nil {
 		t.Fatalf("DisableProtection: %v", err)
@@ -299,6 +304,58 @@ func TestEnableDisableProtection_RewritesSlots(t *testing.T) {
 	ref, err := tokenstore.Get(tokenstore.RefreshService(c.KeychainService), c.Handle)
 	if err != nil || ref != "ref" {
 		t.Fatalf("refresh = %q err=%v", ref, err)
+	}
+}
+
+func TestSealedStore_OnePromptPerProcess(t *testing.T) {
+	fs, c := protectedFixture(t)
+	store := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+	if err := store.SaveTokens("", tokens.TokenSet{AccessToken: "acc-1", RefreshToken: "ref-1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Same process that sealed it: no prompt at all.
+	if _, err := store.LoadTokens(""); err != nil {
+		t.Fatal(err)
+	}
+	if fs.count() != 0 {
+		t.Fatalf("load after own save prompted %d times", fs.count())
+	}
+
+	// A fresh process: the first read prompts, every later read of the
+	// same slot (other token managers, auth-go's re-read) does not.
+	forgetBundles()
+	for i := range 3 {
+		other := &contextTokenStore{service: c.KeychainService, handle: c.Handle, issuer: c.CoreURL}
+		if _, err := other.LoadTokens(""); err != nil {
+			t.Fatalf("load %d: %v", i, err)
+		}
+	}
+	if _, err := LoginTokenForContext(c); err != nil {
+		t.Fatal(err)
+	}
+	if fs.count() != 1 {
+		t.Fatalf("expected exactly one prompt, got %d", fs.count())
+	}
+
+	// A slot rotated by another process has new ciphertext: prompt again.
+	sl, err := protection.sealer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := sealSlot(sl, tokenBundle{Issuer: c.CoreURL, Handle: c.Handle, Access: "acc-2", Refresh: "ref-2"}, 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgetBundles()
+	if err := tokenstore.Set(c.KeychainService, c.Handle, rotated); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadTokens("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "acc-2" || fs.count() != 2 {
+		t.Fatalf("rotated slot: access=%q prompts=%d", got.AccessToken, fs.count())
 	}
 }
 

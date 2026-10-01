@@ -60,6 +60,13 @@ forged by the caller.
 
 ## Prompt count
 
+One process unseals a given slot at most once. `unsealedCache` in
+`protected.go` remembers every bundle the process unsealed or sealed, keyed
+by the slot's exact encoded value. A command builds several token managers
+and auth-go re-reads the store after taking its refresh lock; without the
+cache each of those reads was a dialog. A slot rotated by another process
+has new ciphertext and prompts again.
+
 | Operation | Prompts |
 | --- | --- |
 | `entire login`, token refresh | 0 |
