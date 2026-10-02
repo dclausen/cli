@@ -1959,6 +1959,7 @@ func clearFilesystemStagedFiles(ctx context.Context, sessionID string) {
 
 func ensureCondensationAttemptID(ctx context.Context, state *SessionState) (id.CheckpointID, bool, error) {
 	if checkpointID := state.PendingCondensationID(); checkpointID != id.EmptyCheckpointID {
+		beginWritingUnder(state, checkpointID)
 		return checkpointID, false, nil
 	}
 	checkpointID, err := cpkg.GenerateCheckpointID(ctx)

@@ -177,8 +177,12 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 		UntrackedScanSkipped: scanSkipped,
 		TranscriptOffset:     transcriptOffset,
 	}
-	if existing, readErr := entiredir.ReadFile(root, sessionMetadataName(sessionID)+"/"+paths.PromptFileName); readErr == nil {
+	switch existing, readErr := entiredir.ReadFile(root, sessionMetadataName(sessionID)+"/"+paths.PromptFileName); {
+	case readErr == nil:
 		state.PromptOffset = len(existing)
+	case !errors.Is(readErr, fs.ErrNotExist):
+		// Earlier turns' prompts may be there, so offset 0 would claim them.
+		state.PromptOffset = unknownPromptOffset
 	}
 
 	// Out-of-band token baseline: agents whose token usage lives outside the

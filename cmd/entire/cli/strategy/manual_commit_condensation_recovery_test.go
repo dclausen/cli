@@ -189,3 +189,27 @@ func TestPreservesInterruptedCondensation(t *testing.T) {
 	require.False(t, preservesInterruptedCondensation(begun, reservedID), "the same ID resumes it")
 	require.False(t, preservesInterruptedCondensation(&SessionState{SessionID: "s"}, commitID))
 }
+
+// Writing under prepare-commit-msg's stamped ID turns the reservation into an
+// ordinary condensation attempt: if the write is cut short, it must survive as
+// an interrupted condensation (resumed or recovered), not be released as an
+// untouched reservation and leave the commit's trailer dangling.
+func TestStampedReservationBecomesAnAttemptOnceWritten(t *testing.T) {
+	t.Parallel()
+	stampedID := id.MustCheckpointID("333333333333")
+
+	adopted := &SessionState{SessionID: "s"}
+	adopted.ReserveStampedCheckpoint(stampedID)
+	got, created, err := ensureCondensationAttemptID(context.Background(), adopted)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, stampedID, got)
+	require.False(t, adopted.StampedReservationFor(stampedID), "adopting the ID to write under it makes it an attempt")
+
+	failed := &SessionState{SessionID: "s"}
+	failed.ReserveStampedCheckpoint(stampedID)
+	beginWritingUnder(failed, stampedID)
+	require.Equal(t, stampedID, failed.PendingCondensationID())
+	require.False(t, failed.StampedReservationFor(stampedID))
+	require.True(t, preservesInterruptedCondensation(failed, id.MustCheckpointID("444444444444")))
+}

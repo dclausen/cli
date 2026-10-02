@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -688,12 +689,22 @@ func loadForWorktreeRoot(ctx context.Context, worktreeRoot string) (*EntireSetti
 	return loadMergedSettings(ctx, settingsFileAbs, preferencesFileAbs, localSettingsFileAbs)
 }
 
-func clonePreferencesPathForWorktreeRoot(_ context.Context, worktreeRoot string) (string, error) {
-	metadata, err := gitrepo.ResolveWorktreeMetadata(worktreeRoot)
+func clonePreferencesPathForWorktreeRoot(ctx context.Context, worktreeRoot string) (string, error) {
+	// Asks git, so its safe.directory and ownership checks apply, but without
+	// the GIT_DIR/GIT_WORK_TREE a hook inherits: those name the repository
+	// the hook fired in, not worktreeRoot.
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreeRoot, "rev-parse", "--git-common-dir")
+	cmd.Env = gitrepo.EnvWithoutRepoOverrides()
+	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve git common dir: %w", err)
 	}
-	return filepath.Join(metadata.CommonDir, ClonePreferencesFile), nil
+
+	commonDir := strings.TrimSpace(string(output))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(worktreeRoot, commonDir)
+	}
+	return filepath.Join(filepath.Clean(commonDir), ClonePreferencesFile), nil
 }
 
 // worktreeRootOfSettingsFile recovers the worktree root a settings path was

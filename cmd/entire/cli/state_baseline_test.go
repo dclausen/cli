@@ -189,3 +189,31 @@ func TestCarryTurnPrompt_UndoesTheCopyWhenTheSourceCannotBeTrimmed(t *testing.T)
 	require.NoError(t, err)
 	require.Contains(t, string(still), "this turn")
 }
+
+// A prompt.txt that exists but cannot be read at turn start leaves the turn's
+// starting offset unknown. Carrying from offset 0 would move every earlier
+// turn's prompt and delete it from the tree whose saved steps it belongs to,
+// so an unknown offset carries nothing.
+//
+// Not parallel: setupTestRepo changes the process directory.
+func TestPromptOffset_UnreadablePromptFileSkipsTheCarry(t *testing.T) {
+	setupTestRepo(t)
+	ctx := context.Background()
+	const sessionID = "sess-unreadable-prompt"
+	// A directory where the file should be: present, but not readable as one.
+	require.NoError(t, os.MkdirAll(filepath.Join(".entire", "metadata", sessionID, "prompt.txt"), 0o750))
+	require.NoError(t, CapturePrePromptState(ctx, nil, sessionID, ""))
+	state, err := LoadPrePromptState(ctx, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, unknownPromptOffset, state.PromptOffset)
+
+	src := t.TempDir()
+	testutil.InitRepo(t, src)
+	srcPrompt := filepath.Join(src, ".entire", "metadata", sessionID, "prompt.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(srcPrompt), 0o750))
+	require.NoError(t, os.WriteFile(srcPrompt, []byte("earlier turns"), 0o600))
+	require.NoError(t, carryTurnPrompt(ctx, src, sessionID, unknownPromptOffset))
+	got, err := os.ReadFile(srcPrompt)
+	require.NoError(t, err)
+	require.Equal(t, "earlier turns", string(got), "nothing is carried out of the source")
+}

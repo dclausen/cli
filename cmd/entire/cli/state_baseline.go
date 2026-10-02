@@ -174,6 +174,11 @@ func removeBaselineIn(worktree, name string) error {
 // lock, possibly in the tree being carried out of, and an unlocked
 // read-write-trim could write cleared prompts back.
 func carryTurnPrompt(ctx context.Context, from, sessionID string, offset int) error {
+	if offset == unknownPromptOffset {
+		logging.Debug(logging.WithComponent(ctx, "state"), "turn's prompt offset is unknown; not carrying it",
+			slog.String("session_id", sessionID))
+		return nil
+	}
 	var carryErr error
 	err := strategy.MutateSessionState(ctx, sessionID, func(*strategy.SessionState) error {
 		carryErr = carryTurnPromptLocked(ctx, from, sessionID, offset)
@@ -265,6 +270,10 @@ func promptBoundary(content []byte, offset int) bool {
 	}
 	return offset == 0 || offset == len(content) || bytes.HasPrefix(content[offset:], []byte(promptSeparator))
 }
+
+// unknownPromptOffset marks a turn whose start in prompt.txt could not be read:
+// its prompt is left where it is rather than guessed at.
+const unknownPromptOffset = -1
 
 // promptSeparator joins the prompts of successive turns in prompt.txt.
 const promptSeparator = "\n\n---\n\n"
