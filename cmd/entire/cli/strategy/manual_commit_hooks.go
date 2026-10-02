@@ -3121,7 +3121,6 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 		if transcriptPath != "" && state.TranscriptPath != transcriptPath {
 			state.TranscriptPath = transcriptPath
 		}
-		captureSessionBranch(repo, state)
 		captureSessionOwner(state)
 		reconcileWorktreePathForResumedTurn(ctx, state)
 		s.rehomeSessionToCurrentWorktree(ctx, repo, state, false)
@@ -3131,9 +3130,10 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 		// BaseCommit as the base tree (preserving correct agent-line counts
 		// when HEAD moved between turns via pull/rebase). Migrate runs BEFORE
 		// the LastCheckpointID clear so the reconcile guard can read it.
-		// Both read this tree's HEAD against the session's shadow branch, so
-		// they apply only where the session is homed (see sessionHomedHere).
+		// These, and the recorded branch, read this tree's HEAD, so they apply
+		// only where the session is homed (see sessionHomedHere).
 		if sessionHomedHere(ctx, state) {
+			captureSessionBranch(repo, state)
 			promptAttr := s.calculatePromptAttributionAtStart(ctx, repo, state)
 			state.PendingPromptAttribution = &promptAttr
 

@@ -125,6 +125,8 @@ func TestFollow_RefusedRehomeWritesNothingIntoTheHome(t *testing.T) {
 	require.Equal(t, 1, after.StepCount, "no step from another tree on the home's branch")
 	require.NotContains(t, after.FilesTouched, "b.txt")
 	require.NotNil(t, after.CaptureDegradedAt, "the uncaptured turn ends degraded, not as a clean capture")
+	require.NotEmpty(t, before.Branch)
+	require.Equal(t, before.Branch, after.Branch, "resume maps the session to its home's branch, not the worktree's")
 }
 
 // A subagent working in a worktree records incremental TodoWrite checkpoints
