@@ -11,12 +11,6 @@ import (
 
 // This test changes CWD and agent environment through setupAttachTestRepo.
 func TestAttach_RepeatedSessionTokenScope(t *testing.T) {
-	const first = `{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1"}
-{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":5}},"uuid":"a1"}
-`
-	const next = `{"type":"user","message":{"role":"user","content":"next"},"uuid":"u2"}
-{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":20,"output_tokens":7}},"uuid":"a2"}
-`
 	for _, tc := range []struct {
 		name       string
 		transcript string
@@ -24,9 +18,9 @@ func TestAttach_RepeatedSessionTokenScope(t *testing.T) {
 		input      int
 		total      int
 	}{
-		{name: "appended", transcript: first + next, start: 2, input: 20, total: 30},
-		{name: "unchanged", transcript: first, start: 2, input: 0, total: 10},
-		{name: "rewritten", transcript: next, start: 0, input: 20, total: 20},
+		{name: "appended", transcript: attachFirstTurn + attachNextTurn, start: 2, input: 20, total: 30},
+		{name: "unchanged", transcript: attachFirstTurn, start: 2, input: 0, total: 10},
+		{name: "rewritten", transcript: attachNextTurn, start: 0, input: 20, total: 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setupAttachTestRepo(t)
@@ -34,7 +28,7 @@ func TestAttach_RepeatedSessionTokenScope(t *testing.T) {
 			ctx := t.Context()
 			opts := attachOptions{Force: true}
 			var out bytes.Buffer
-			setupClaudeTranscript(t, sessionID, first)
+			setupClaudeTranscript(t, sessionID, attachFirstTurn)
 			if err := runAttach(ctx, &out, &out, sessionID, agent.AgentNameClaudeCode, opts); err != nil {
 				t.Fatal(err)
 			}

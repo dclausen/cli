@@ -141,7 +141,17 @@ previous stored snapshot establishes `CheckpointTranscriptStart` and scopes
 checkpoint tokens to later messages, while session-state tokens remain cumulative.
 Missing prior content, rewritten transcripts, changed redaction, and OpenCode's
 whole-document JSON export use a full snapshot with offset zero. Repeating attach
-on an already-attached HEAD leaves its stored transcript and metadata unchanged.
+on an already-attached HEAD leaves its stored transcript and metadata unchanged,
+including review sessions. An ordinary snapshot cannot be converted into a review
+in place, but a later commit can capture a new review snapshot. Subsequent attaches
+without `--review` preserve the session's review kind, skills, and prompt.
+
+A manual attach receipt binds the saved checkpoint to the pre-amend HEAD. If
+attach only printed a trailer, or amending failed, retrying on that same HEAD
+reuses the snapshot and offers to link it again. A different HEAD never reuses
+that receipt. External agent token calculators receive the byte offset of the
+new messages in the **raw** transcript, converted from the stored line boundary;
+redacted byte lengths must not be used as protocol offsets.
 
 #### Key Files
 

@@ -243,22 +243,14 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 		return err
 	}
 
-	// Preserve the review-upgrade guard, but do not treat a session's last
-	// checkpoint as its only snapshot: later commits need the latest transcript.
-	if opts.Review && existingState != nil && !existingState.LastCheckpointID.IsEmpty() {
-		// Review-upgrade isn't supported yet: the existing checkpoint's
-		// metadata tree would need to be rewritten with Kind/ReviewSkills/
-		// ReviewPrompt set, and a new commit pushed onto entire/checkpoints/v1.
-		// Error out with a concrete message rather than silently linking the
-		// checkpoint without the review metadata.
-		return fmt.Errorf(
-			"session %s already has checkpoint %s; rewriting an existing checkpoint as a review is not supported yet",
-			sessionID, existingState.LastCheckpointID.String(),
-		)
+	// HEAD is authoritative once linked. Before linking, a receipt allows
+	// retries to reuse exactly the snapshot saved for this commit.
+	checkpointID, linkedToHead := resolveCheckpointID(ctx, headCommit)
+	isExistingCheckpoint := linkedToHead
+	if pendingID := attachReceiptForHead(existingState, headCommit); !linkedToHead && !pendingID.IsEmpty() {
+		checkpointID = pendingID
+		isExistingCheckpoint = true
 	}
-
-	// Determine checkpoint ID: reuse from HEAD if one exists, otherwise generate new.
-	checkpointID, isExistingCheckpoint := resolveCheckpointID(ctx, headCommit)
 
 	// If HEAD references an existing checkpoint, make sure we have it locally
 	// before writing — otherwise we'd create a fresh session 0 under the same
@@ -286,18 +278,23 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	// idempotency. This also preserves snapshots when local state is missing
 	// or points to a newer checkpoint on another commit.
 	if isExistingCheckpoint {
-		exists, readErr := checkpointHasSessionMetadata(ctx, repo, refs, checkpointID, sessionID)
+		metadata, readErr := attachSessionMetadata(ctx, repo, refs, checkpointID, sessionID)
 		if readErr != nil {
 			return fmt.Errorf("failed to check checkpoint %s for session %s: %w", checkpointID.String(), sessionID, readErr)
 		}
-		if exists {
-			if opts.Review {
+		if metadata != nil {
+			if opts.Review && !session.Kind(metadata.Kind).IsReview() {
 				return fmt.Errorf(
 					"session %s is already recorded in checkpoint %s; rewriting an existing checkpoint as a review is not supported yet",
 					sessionID, checkpointID.String(),
 				)
 			}
-			fmt.Fprintf(w, "Session %s already has checkpoint %s on HEAD\n", sessionID, checkpointID)
+			if linkedToHead {
+				fmt.Fprintf(w, "Session %s already has checkpoint %s on HEAD\n", sessionID, checkpointID)
+			} else {
+				fmt.Fprintf(w, "Session %s already has checkpoint %s\n", sessionID, checkpointID)
+				amendOrPrintTrailer(logCtx, w, errW, headCommit, checkpointID.String(), opts.Force)
+			}
 			return nil
 		}
 	}
@@ -340,10 +337,7 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	if err != nil {
 		return err
 	}
-	checkpointTokens := tokenUsage
-	if transcriptStart > 0 {
-		checkpointTokens = agent.CalculateTokenUsage(logCtx, ag, transcriptData, transcriptStart, "")
-	}
+	checkpointTokens := attachCheckpointTokens(logCtx, ag, transcriptData, transcriptStart, tokenUsage)
 
 	writeOpts := cpkg.WriteOptions{
 		CheckpointID:              checkpointID,
@@ -364,6 +358,11 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 		writeOpts.ReviewSkills = reviewSkills
 		writeOpts.ReviewPrompt = reviewPromptForAttach(meta, opts)
 		writeOpts.HasReview = true
+	} else if existingState != nil && existingState.Kind.IsReview() {
+		writeOpts.Kind = string(existingState.Kind)
+		writeOpts.ReviewSkills = existingState.ReviewSkills
+		writeOpts.ReviewPrompt = existingState.ReviewPrompt
+		writeOpts.HasReview = true
 	}
 
 	// ReservedSession routes by the checkpoint ID's backend, as condensation
@@ -375,13 +374,13 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	}
 
 	// Create or update session state.
-	if err := saveAttachSessionState(logCtx, repo, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage, opts, reviewSkills); err != nil {
+	if err := saveAttachSessionState(logCtx, repo, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage, opts, reviewSkills, headCommit.Hash.String()); err != nil {
 		logging.Warn(logCtx, "failed to save session state", "error", err)
 	}
 
 	fmt.Fprintf(w, "Attached session %s\n", sessionID)
 	printAttachFooter(w, meta, tokenUsage)
-	if isExistingCheckpoint {
+	if linkedToHead {
 		fmt.Fprintf(w, "  Added to existing checkpoint %s\n", checkpointID)
 		return nil
 	}
@@ -456,16 +455,23 @@ func attachSummaryLine(meta transcriptMetadata, tokenUsage *agent.TokenUsage) st
 	return strings.Join(parts, " · ")
 }
 
-// checkpointHasSessionMetadata reports whether sessionID has existing metadata
+// attachSessionMetadata returns sessionID's existing metadata
 // at Primary. Reads target Primary directly, not refs.Read, because this guard
 // must reflect what the next write would target.
-func checkpointHasSessionMetadata(ctx context.Context, repo *git.Repository, refs cpkg.PersistentRefs, checkpointID id.CheckpointID, sessionID string) (bool, error) {
+func attachSessionMetadata(ctx context.Context, repo *git.Repository, refs cpkg.PersistentRefs, checkpointID id.CheckpointID, sessionID string) (*cpkg.Metadata, error) {
 	store, err := openAttachStore(ctx, repo, refs.PrimaryAsLocalRead())
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	index, err := attachSessionIndex(ctx, store, checkpointID, sessionID)
-	return index >= 0, err
+	if err != nil || index < 0 {
+		return nil, err
+	}
+	metadata, err := store.ReadSessionMetadata(ctx, checkpointID, index)
+	if err != nil {
+		return nil, fmt.Errorf("read attached session metadata: %w", err)
+	}
+	return metadata, nil
 }
 
 func attachSessionIndex(ctx context.Context, store cpkg.PersistentStore, checkpointID id.CheckpointID, sessionID string) (int, error) {
@@ -687,6 +693,20 @@ func suggestFetchCommand(ctx context.Context, refspec string) string {
 	return fmt.Sprintf("git fetch %s %s", resolveCheckpointFetchTarget(ctx), refspec)
 }
 
+// attachReceiptForHead returns the saved snapshot only while the receipt still
+// describes both HEAD and the session's most recent checkpoint.
+func attachReceiptForHead(state *session.State, head *object.Commit) id.CheckpointID {
+	if state == nil || state.AttachReceipt == nil {
+		return id.EmptyCheckpointID
+	}
+	receipt := state.AttachReceipt
+	headHash := head.Hash.String()
+	if receipt.CommitHash == headHash && receipt.CheckpointID == state.LastCheckpointID {
+		return receipt.CheckpointID
+	}
+	return id.EmptyCheckpointID
+}
+
 func resolveCheckpointID(ctx context.Context, headCommit *object.Commit) (id.CheckpointID, bool) {
 	existing := trailers.ParseAllCheckpoints(headCommit.Message)
 	if len(existing) > 0 {
@@ -705,7 +725,7 @@ func resolveCheckpointID(ctx context.Context, headCommit *object.Commit) (id.Che
 // saveAttachSessionState creates or updates the session state file for the attached session.
 // If existingState is non-nil, it is updated in place (avoids a redundant disk load).
 // reviewSkills is the resolved skills list when opts.Review is true; ignored otherwise.
-func saveAttachSessionState(ctx context.Context, repo *git.Repository, existingState *session.State, sessionID string, agentType types.AgentType, transcriptPath string, checkpointID id.CheckpointID, meta transcriptMetadata, tokenUsage *agent.TokenUsage, opts attachOptions, reviewSkills []string) error {
+func saveAttachSessionState(ctx context.Context, repo *git.Repository, existingState *session.State, sessionID string, agentType types.AgentType, transcriptPath string, checkpointID id.CheckpointID, meta transcriptMetadata, tokenUsage *agent.TokenUsage, opts attachOptions, reviewSkills []string, commitHash string) error {
 	stateStore, err := session.NewStateStore(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open session store: %w", err)
@@ -735,6 +755,7 @@ func saveAttachSessionState(ctx context.Context, repo *git.Repository, existingS
 	state.AgentType = agentType
 	state.TranscriptPath = transcriptPath
 	state.LastCheckpointID = checkpointID
+	state.AttachReceipt = &session.AttachReceipt{CommitHash: commitHash, CheckpointID: checkpointID}
 	// Only transition to Ended if the session is not already active — avoid
 	// breaking an ongoing session whose BaseCommit has just been restored above.
 	if !state.Phase.IsActive() {

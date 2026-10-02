@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/session"
@@ -49,6 +50,21 @@ func attachTranscriptStart(ctx context.Context, store cpkg.PersistentStore, stat
 		return 0, nil
 	}
 	return bytes.Count(previous, []byte{'\n'}), nil
+}
+
+// attachCheckpointTokens translates the stored line boundary into the agent's
+// token-calculation offset, retaining the cumulative result for full snapshots.
+func attachCheckpointTokens(ctx context.Context, ag agent.Agent, data []byte, startLine int, total *agent.TokenUsage) *agent.TokenUsage {
+	if startLine == 0 {
+		return total
+	}
+	offset := startLine
+	if external.IsExternal(ag) {
+		// The external protocol takes byte offsets into the raw transcript;
+		// redacted byte lengths differ and cannot address the original input.
+		offset = len(data) - len(transcript.SliceFromLine(data, startLine))
+	}
+	return agent.CalculateTokenUsage(ctx, ag, data, offset, "")
 }
 
 // transcriptMetadata holds metadata extracted from a single transcript parse pass.
