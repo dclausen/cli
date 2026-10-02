@@ -130,6 +130,10 @@ type stubCrossRepoReader struct {
 	transcript []byte
 	metaErr    error
 	sessions   int
+	// resolvedSHA records the commit SHA resolveCommitCheckpoint was asked
+	// about; resolveErr makes it fail.
+	resolvedSHA string
+	resolveErr  error
 }
 
 func (s *stubCrossRepoReader) Read(context.Context, id.CheckpointID) (*checkpoint.CheckpointSummary, error) {
@@ -190,6 +194,14 @@ func (s *stubCrossRepoReader) GetCheckpointAuthor(context.Context, id.Checkpoint
 
 func (s *stubCrossRepoReader) checkpointCommit(context.Context, id.CheckpointID) ([]associatedCommit, error) {
 	return []associatedCommit{{SHA: "13e379e4b", ShortSHA: "13e379e", Message: "foreign commit"}}, nil
+}
+
+func (s *stubCrossRepoReader) resolveCommitCheckpoint(_ context.Context, sha string) (id.CheckpointID, error) {
+	s.resolvedSHA = sha
+	if s.resolveErr != nil {
+		return id.EmptyCheckpointID, s.resolveErr
+	}
+	return testAPICheckpointID, nil
 }
 
 // withStubCrossRepoReader points the cross-repo path at stub and records the
@@ -318,14 +330,63 @@ func TestRunCrossRepoExplain_EmptyTranscriptIsAnError(t *testing.T) {
 }
 
 func TestRunCrossRepoExplain_RejectsPrefix(t *testing.T) {
-	withStubCrossRepoReader(t, &stubCrossRepoReader{})
+	for name, target := range map[string]string{
+		"ulid prefix":       "01KXGT",
+		"short commit hash": "13e379e",
+		"39-hex":            strings.Repeat("a", 39),
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := &stubCrossRepoReader{}
+			withStubCrossRepoReader(t, stub)
 
-	err := runCrossRepoExplain(context.Background(), io.Discard, io.Discard, crossRepoExplainOptions{
+			err := runCrossRepoExplain(context.Background(), io.Discard, io.Discard, crossRepoExplainOptions{
+				repoFlag:     "gh/acme/widgets",
+				target:       target,
+				sessionIndex: -1,
+			})
+			require.ErrorContains(t, err, "requires a full checkpoint ID")
+			// The message has to name the other accepted form, or an agent that
+			// pasted a short SHA from a search hit learns only half the rule.
+			assert.Contains(t, err.Error(), "commit SHA")
+			assert.Empty(t, stub.resolvedSHA, "a non-SHA target must never reach the cell as a commit")
+		})
+	}
+}
+
+// ENT-2102: a search hit's commit SHA is what agents paste. Cross-repo has no
+// local git to read the Entire-Checkpoint trailer from, so the SHA resolves to
+// its checkpoint through the owning repo's cell, then renders as usual.
+func TestRunCrossRepoExplain_CommitSHAResolvesToCheckpoint(t *testing.T) {
+	stub := &stubCrossRepoReader{transcript: []byte(`{"type":"user","message":{"role":"user","content":"do the foreign thing"}}` + "\n")}
+	asked := withStubCrossRepoReader(t, stub)
+
+	sha := "13E379E4B0000000000000000000000000000000"
+	var out bytes.Buffer
+	require.NoError(t, runCrossRepoExplain(context.Background(), &out, io.Discard, crossRepoExplainOptions{
 		repoFlag:     "gh/acme/widgets",
-		target:       "01KXGT",
+		target:       sha,
+		sessionIndex: -1,
+		noPager:      true,
+		verbose:      true,
+	}))
+	assert.Equal(t, "gh/acme/widgets", *asked)
+	assert.Equal(t, strings.ToLower(sha), stub.resolvedSHA, "the SHA is resolved in the target repo, lowercased")
+	assert.Contains(t, out.String(), testAPICheckpointID.String(), "the resolved checkpoint is what gets rendered")
+	assert.Contains(t, out.String(), "do the foreign thing")
+}
+
+func TestRunCrossRepoExplain_CommitSHAResolutionErrorSurfaces(t *testing.T) {
+	stub := &stubCrossRepoReader{resolveErr: errors.New("commit 13e379e in gh/acme/widgets has no linked Entire checkpoint")}
+	withStubCrossRepoReader(t, stub)
+
+	var errOut bytes.Buffer
+	err := runCrossRepoExplain(context.Background(), io.Discard, &errOut, crossRepoExplainOptions{
+		repoFlag:     "gh/acme/widgets",
+		target:       "13e379e4b0000000000000000000000000000000",
 		sessionIndex: -1,
 	})
-	require.ErrorContains(t, err, "requires a full checkpoint ID")
+	require.ErrorContains(t, err, "no linked Entire checkpoint")
+	assert.NotContains(t, errOut.String(), "✓", "a failed resolution must not report success first")
 }
 
 func TestCrossRepoExplainSessionIndex(t *testing.T) {

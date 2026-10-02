@@ -11,6 +11,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/gitremote"
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 // crossRepoReader is the read surface cross-repo explain needs: the two
@@ -22,6 +23,10 @@ type crossRepoReader interface {
 	checkpoint.SessionReader
 	GetCheckpointAuthor(ctx context.Context, checkpointID id.CheckpointID) (checkpoint.Author, error)
 	checkpointCommit(ctx context.Context, checkpointID id.CheckpointID) ([]associatedCommit, error)
+	// resolveCommitCheckpoint maps a full commit SHA to the one checkpoint
+	// that produced it (ENT-2102): the cross-repo stand-in for reading the
+	// commit's Entire-Checkpoint trailer out of local git.
+	resolveCommitCheckpoint(ctx context.Context, sha string) (id.CheckpointID, error)
 }
 
 // newCrossRepoReader builds the API-backed reader for a forge-qualified repo.
@@ -68,7 +73,8 @@ func crossRepoReadSource(ctx context.Context) (string, bool) {
 // foreign repo's checkpoint.
 type crossRepoExplainOptions struct {
 	repoFlag string
-	// target is the checkpoint the user asked for, before ID validation.
+	// target is the checkpoint ID or full commit SHA the user asked for,
+	// before validation.
 	target string
 
 	json          bool
@@ -190,12 +196,18 @@ func runCrossRepoExplain(ctx context.Context, w, errW io.Writer, opts crossRepoE
 	}
 	repoRef := explainRepoRef(forge, owner, repoName)
 
-	// A prefix can't be resolved without listing the foreign repo's
-	// checkpoints, which is `entire search`'s job, so cross-repo needs the
-	// whole ID.
-	cid, err := id.NewCheckpointID(opts.target)
-	if err != nil {
-		return fmt.Errorf("--repo requires a full checkpoint ID (12-char hex or 26-char ULID); a prefix cannot be resolved in another repo: %w", err)
+	// The target is either a full checkpoint ID or a full commit SHA — the
+	// two identifiers a search hit carries. A prefix of either can't be
+	// resolved without listing the foreign repo's checkpoints or commits,
+	// which is `entire search`'s job, so cross-repo needs the whole thing.
+	// Shape is checked before any network call so a typo fails instantly.
+	var cid id.CheckpointID
+	isCommit := plumbing.IsHash(opts.target)
+	if !isCommit {
+		cid, err = id.NewCheckpointID(opts.target)
+		if err != nil {
+			return fmt.Errorf("--repo requires a full checkpoint ID (12-char hex or 26-char ULID) or a full commit SHA; a prefix cannot be resolved in another repo: %w", err)
+		}
 	}
 
 	reader, err := newCrossRepoReader(ctx, opts.insecureHTTP, forge, owner, repoName)
@@ -204,6 +216,18 @@ func runCrossRepoExplain(ctx context.Context, w, errW io.Writer, opts crossRepoE
 			return rendered
 		}
 		return err
+	}
+	if isCommit {
+		// No local git here to read the Entire-Checkpoint trailer from, so
+		// ask the owning repo's cell which checkpoint the commit links.
+		sha := strings.ToLower(opts.target)
+		stop := startSpinner(errW, fmt.Sprintf("Resolving commit %s in %s", abbreviateSHA(sha), repoRef))
+		cid, err = reader.resolveCommitCheckpoint(ctx, sha)
+		if err != nil {
+			stop(false)
+			return err
+		}
+		stop(true)
 	}
 	// Marked for the renderers: a foreign checkpoint cannot be written to, so
 	// they must not offer actions that only work in the owning repo.

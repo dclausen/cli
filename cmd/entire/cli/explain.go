@@ -259,13 +259,15 @@ Viewing specific items:
   entire checkpoint explain --commit <ref>        Force interpretation as commit ref
 
 Checkpoints in another repo:
-  entire checkpoint explain <id> --repo gh/owner/name
-  entire checkpoint explain <id> --repo et/project/repo
+  entire checkpoint explain <id-or-sha> --repo gh/owner/name
+  entire checkpoint explain <id-or-sha> --repo et/project/repo
                  Explain a checkpoint owned by another repository — the
                  drill-down for a cross-repo 'entire search' hit. Reads it from
                  that repo's Entire API; nothing is written to this repo.
-                 Needs a full checkpoint ID (positional or --checkpoint) and a
-                 checkpoint that has been pushed.
+                 Needs a full checkpoint ID or a full commit SHA (positional
+                 or --checkpoint) and a checkpoint that has been pushed. A
+                 commit SHA is resolved to its checkpoint by that repo's
+                 Entire API, so prefixes cannot be used here.
 
 Filtering the list view:
   --session      Filter checkpoints by session ID (or prefix)

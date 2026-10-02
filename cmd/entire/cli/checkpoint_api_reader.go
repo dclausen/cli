@@ -81,6 +81,15 @@ type apiCheckpointEnvelope struct {
 	RepoFullName string             `json:"repo_full_name"`
 }
 
+// apiCommitCheckpointsBody is the body of GET
+// /repos/{repo_id}/commits/{sha}/checkpoints (entire-api's
+// RepoCheckpointsOutputBody): the checkpoints linked to one commit. Only the
+// fields the resolver reads are declared.
+type apiCommitCheckpointsBody struct {
+	Checkpoints  []apiCheckpointInfo `json:"checkpoints"`
+	RepoFullName string              `json:"repo_full_name"`
+}
+
 type apiCheckpointInfo struct {
 	CheckpointID         string                 `json:"checkpointId"`
 	CommitSha            string                 `json:"commitSha"`
@@ -205,13 +214,9 @@ func (r *apiCheckpointReader) checkpointCommit(ctx context.Context, checkpointID
 		// than asserting either way.
 		return nil, nil
 	}
-	short := sha
-	if len(short) > 7 {
-		short = short[:7]
-	}
 	return []associatedCommit{{
 		SHA:      sha,
-		ShortSHA: short,
+		ShortSHA: abbreviateSHA(sha),
 		Message:  info.CommitSubject,
 		Author:   info.CommitAuthor,
 		Date:     parseAPITime(info.CommitDate),
@@ -337,6 +342,90 @@ func (r *apiCheckpointReader) readRawTranscript(ctx context.Context, checkpointI
 	return body, nil
 }
 
+// --- commit → checkpoint ------------------------------------------------
+
+// resolveCommitCheckpoint maps a full commit SHA to the checkpoint that
+// produced it, through the owning repo's cell. It is the cross-repo stand-in
+// for reading the commit's Entire-Checkpoint trailer out of local git, which
+// `explain --repo` cannot do because the commit is not in this repo.
+//
+// The server lists every checkpoint linked to the commit. Exactly one is the
+// only unambiguous answer: zero means the commit has nothing to explain, and
+// several means there is no "the" checkpoint — mirror the local
+// ambiguous-prefix behaviour and name the candidates instead of guessing.
+//
+// Only the repo identity of the listing is verified here. The checkpoint it
+// names is read through loadDetail next, which re-verifies both the repo and
+// the checkpoint ID against the envelope, so a wrong-checkpoint listing cannot
+// reach the renderer unchecked. The listing's per-checkpoint commitSha is NOT
+// compared to the requested SHA: a checkpoint linked to several commits
+// (amend, redo) reports its latest one, and rejecting the honest answer for an
+// earlier SHA would break the exact case this resolver exists for.
+func (r *apiCheckpointReader) resolveCommitCheckpoint(ctx context.Context, sha string) (id.CheckpointID, error) {
+	// The server canonicalizes SHAs to lowercase; send that form rather than
+	// depending on the route being case-blind.
+	sha = strings.ToLower(strings.TrimSpace(sha))
+	short := abbreviateSHA(sha)
+
+	path := fmt.Sprintf("/api/v1/repos/%s/commits/%s/checkpoints",
+		url.PathEscape(r.repoID), url.PathEscape(sha))
+	resp, err := r.client.Get(ctx, path)
+	if err != nil {
+		return id.EmptyCheckpointID, fmt.Errorf("resolve commit %s in %s: %w", short, r.ownerRepo, err)
+	}
+	defer resp.Body.Close()
+
+	if err := api.CheckResponse(resp); err != nil {
+		if api.IsHTTPErrorStatus(err, http.StatusNotFound) {
+			return id.EmptyCheckpointID, fmt.Errorf("commit %s is not available for %s yet: it may not have been pushed, or Entire may not have finished ingesting it", short, r.ownerRepo)
+		}
+		if api.IsHTTPErrorStatus(err, http.StatusForbidden) {
+			return id.EmptyCheckpointID, r.forbiddenError()
+		}
+		return id.EmptyCheckpointID, fmt.Errorf("resolve commit %s in %s: %w", short, r.ownerRepo, err)
+	}
+
+	var body apiCommitCheckpointsBody
+	if err := api.DecodeJSON(resp, &body); err != nil {
+		return id.EmptyCheckpointID, fmt.Errorf("resolve commit %s in %s: %w", short, r.ownerRepo, err)
+	}
+	if err := r.verifyRepoIdentity(body.RepoFullName, "commit "+short); err != nil {
+		return id.EmptyCheckpointID, err
+	}
+
+	switch len(body.Checkpoints) {
+	case 0:
+		return id.EmptyCheckpointID, fmt.Errorf("commit %s in %s has no linked Entire checkpoint: it may have been made without Entire, or Entire may not have finished ingesting its checkpoint", short, r.ownerRepo)
+	case 1:
+		cid, err := id.NewCheckpointID(body.Checkpoints[0].CheckpointID)
+		if err != nil {
+			return id.EmptyCheckpointID, fmt.Errorf("commit %s in %s links a checkpoint the server named unusably: %w (this looks like a server-side bug, please report it)", short, r.ownerRepo, err)
+		}
+		return cid, nil
+	default:
+		ids := make([]string, 0, len(body.Checkpoints))
+		for i := range body.Checkpoints {
+			ids = append(ids, body.Checkpoints[i].CheckpointID)
+		}
+		return id.EmptyCheckpointID, fmt.Errorf("commit %s in %s links %d checkpoints; rerun with one of their IDs instead of the commit: %s", short, r.ownerRepo, len(ids), strings.Join(ids, ", "))
+	}
+}
+
+// abbreviateSHA shortens a full SHA for messages; a value that is already
+// short (or not a SHA at all) is returned unchanged.
+func abbreviateSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// forbiddenError is the one message for a 403 from any cell route: the
+// login cannot read this repo's checkpoints, whichever route said so.
+func (r *apiCheckpointReader) forbiddenError() error {
+	return fmt.Errorf("your login cannot read checkpoints in %s", r.ownerRepo)
+}
+
 // --- envelope fetch ---------------------------------------------------
 
 // loadDetail fetches (and memoizes) the checkpoint envelope.
@@ -362,7 +451,7 @@ func (r *apiCheckpointReader) loadDetail(ctx context.Context, checkpointID id.Ch
 			return nil, fmt.Errorf("checkpoint %s is not available for %s yet: it may not have been pushed, or Entire may not have finished ingesting it. Checkpoints you have not pushed are only readable in the repo that created them", checkpointID, r.ownerRepo)
 		}
 		if api.IsHTTPErrorStatus(err, http.StatusForbidden) {
-			return nil, fmt.Errorf("your login cannot read checkpoints in %s", r.ownerRepo)
+			return nil, r.forbiddenError()
 		}
 		return nil, fmt.Errorf("read checkpoint %s from %s: %w", checkpointID, r.ownerRepo, err)
 	}
@@ -414,16 +503,24 @@ func (r *apiCheckpointReader) verifyResponseIdentity(checkpointID id.CheckpointI
 		return fmt.Errorf("checkpoint identity mismatch: requested checkpoint %s from %s, but the server returned checkpoint %q; refusing to display possibly-mismatched data (this looks like a server-side bug, please report it)",
 			checkpointID, r.ownerRepo, got)
 	}
-	// repo_full_name is REQUIRED, not best-effort. It is the only field that
-	// ties the response to the repo that was asked about: checkpointId alone
-	// proves nothing, since any response -- including one carrying another
-	// repo's private transcripts -- satisfies it by echoing the ID it was
-	// handed. Tolerating an empty value therefore let the verified party opt
-	// out of its own verification, which is not verification. Every 200 from
-	// a real cell carries it (checked against aws-us-east-2: "entireio/cli").
-	if env.RepoFullName == "" {
-		return fmt.Errorf("checkpoint identity unverifiable: requested checkpoint %s from %s, but the server returned no repo_full_name to confirm which repo answered; refusing to display possibly-mismatched data (this looks like a server-side bug, please report it)",
-			checkpointID, r.ownerRepo)
+	return r.verifyRepoIdentity(env.RepoFullName, "checkpoint "+checkpointID.String())
+}
+
+// verifyRepoIdentity checks a response's repo_full_name against the repo this
+// reader was built for. what names the thing that was requested ("checkpoint
+// <id>", "commit <sha>") for the message.
+//
+// repo_full_name is REQUIRED, not best-effort. It is the only field that ties
+// a response to the repo that was asked about: an echoed checkpoint ID or
+// commit SHA alone proves nothing, since any response -- including one
+// carrying another repo's private transcripts -- satisfies it by echoing what
+// it was handed. Tolerating an empty value would let the verified party opt
+// out of its own verification, which is not verification. Every 200 from a
+// real cell carries it (checked against aws-us-east-2: "entireio/cli").
+func (r *apiCheckpointReader) verifyRepoIdentity(got, what string) error {
+	if got == "" {
+		return fmt.Errorf("checkpoint identity unverifiable: requested %s from %s, but the server returned no repo_full_name to confirm which repo answered; refusing to display possibly-mismatched data (this looks like a server-side bug, please report it)",
+			what, r.ownerRepo)
 	}
 	// entire-api (repoFullNameOr) legitimately falls back to echoing the bare
 	// repo ULID when the repo's metadata has not resolved a display name yet,
@@ -431,9 +528,9 @@ func (r *apiCheckpointReader) verifyResponseIdentity(checkpointID id.CheckpointI
 	// right for repoFullName -- forge owner/repo names are case-insensitive -- and
 	// the repo ULID is compared byte-for-byte, canonical uppercase like any
 	// other ULID.
-	if got := env.RepoFullName; !strings.EqualFold(got, r.repoFullName) && got != r.repoID {
-		return fmt.Errorf("checkpoint identity mismatch: requested checkpoint %s from %s, but the server returned data for repo %q; refusing to display possibly-mismatched data (this looks like a server-side bug, please report it)",
-			checkpointID, r.ownerRepo, got)
+	if !strings.EqualFold(got, r.repoFullName) && got != r.repoID {
+		return fmt.Errorf("checkpoint identity mismatch: requested %s from %s, but the server returned data for repo %q; refusing to display possibly-mismatched data (this looks like a server-side bug, please report it)",
+			what, r.ownerRepo, got)
 	}
 	return nil
 }

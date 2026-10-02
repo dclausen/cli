@@ -39,9 +39,13 @@ the commands are always runnable in every build.
   reads the checkpoint from that repo's entire-api cell over
   HTTP (`/repos/{repo_id}/checkpoints/{id}` plus `.../transcript/raw`) rather
   than fetching git objects, so a foreign checkpoint never enters this repo's
-  object store, ref namespace, or `tokens profile`. It needs a full checkpoint
-  ID and a pushed checkpoint; `--commit`, `--session`, `--search-all`, and
-  `--generate` are rejected with it, and naming the current repo is a no-op
+  object store, ref namespace, or `tokens profile`. It takes a full checkpoint
+  ID or a full commit SHA — the SHA is resolved through
+  `/repos/{repo_id}/commits/{sha}/checkpoints`, the cross-repo stand-in for the
+  local `Entire-Checkpoint` trailer read, and exactly one linked checkpoint is
+  required (zero or several is an error naming the candidates) — and a pushed
+  checkpoint; prefixes are rejected. `--commit`, `--session`, `--search-all`,
+  and `--generate` are rejected with it, and naming the current repo is a no-op
   that falls through to the local path. See `checkpoint_api_reader.go`
   (`apiCheckpointReader`, which implements the two checkpoint reader tiers and
   deliberately not `Writer`) and `explain_repo.go`.
