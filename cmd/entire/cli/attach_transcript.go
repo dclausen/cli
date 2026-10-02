@@ -12,6 +12,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/textutil"
@@ -30,7 +31,7 @@ func attachTranscriptStart(ctx context.Context, store cpkg.PersistentStore, stat
 	}
 	index, err := attachSessionIndex(ctx, store, state.LastCheckpointID, state.SessionID)
 	if err != nil {
-		return 0, fmt.Errorf("read previous attach checkpoint: %w", err)
+		return attachPrefixUnavailable(ctx, err)
 	}
 	if index < 0 {
 		return 0, nil
@@ -40,7 +41,7 @@ func attachTranscriptStart(ctx context.Context, store cpkg.PersistentStore, stat
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read previous attach transcript: %w", err)
+		return attachPrefixUnavailable(ctx, err)
 	}
 	if content == nil {
 		return 0, nil
@@ -50,6 +51,19 @@ func attachTranscriptStart(ctx context.Context, store cpkg.PersistentStore, stat
 		return 0, nil
 	}
 	return bytes.Count(previous, []byte{'\n'}), nil
+}
+
+// Previous snapshots are only prefix evidence; losing them must not prevent
+// capturing the full current transcript. Cancellation still stops the command.
+func attachPrefixUnavailable(ctx context.Context, err error) (int, error) {
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("read previous attach snapshot: %w", ctx.Err())
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return 0, fmt.Errorf("read previous attach snapshot: %w", err)
+	}
+	logging.Warn(ctx, "previous attach snapshot unavailable; capturing full transcript", "error", err)
+	return 0, nil
 }
 
 // attachCheckpointTokens translates the stored line boundary into the agent's

@@ -95,7 +95,8 @@ Otherwise a new checkpoint is created.
 
 The same session can be attached to later commits to capture its latest
 conversation. Repeating attach on a commit that already contains the session
-leaves that checkpoint unchanged.
+leaves that checkpoint unchanged. Sessions already checkpointed by hooks must
+continue through the normal commit workflow instead of creating new attachments.
 
 Use --review to tag the attached session as an agent review. The
 first user prompt in the transcript is recorded as the review prompt.
@@ -256,7 +257,7 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	// before writing — otherwise we'd create a fresh session 0 under the same
 	// ID and overwrite the original on push.
 	refs := opts.committedRefs(ctx)
-	refreshedRepo, err := ensureCheckpointAvailable(ctx, logCtx, repo, refs, checkpointID, isExistingCheckpoint)
+	refreshedRepo, err := ensureCheckpointAvailable(ctx, logCtx, repo, refs, checkpointID, linkedToHead)
 	if refreshedRepo != nil && refreshedRepo != repo {
 		oldRepo := repo
 		repo = refreshedRepo
@@ -274,6 +275,7 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 		return err
 	}
 
+	previousState := existingState
 	// HEAD's stored session membership, not LastCheckpointID, determines
 	// idempotency. This also preserves snapshots when local state is missing
 	// or points to a newer checkpoint on another commit.
@@ -283,20 +285,21 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 			return fmt.Errorf("failed to check checkpoint %s for session %s: %w", checkpointID.String(), sessionID, readErr)
 		}
 		if metadata != nil {
-			if opts.Review && !session.Kind(metadata.Kind).IsReview() {
-				return fmt.Errorf(
-					"session %s is already recorded in checkpoint %s; rewriting an existing checkpoint as a review is not supported yet",
-					sessionID, checkpointID.String(),
-				)
-			}
-			if linkedToHead {
-				fmt.Fprintf(w, "Session %s already has checkpoint %s on HEAD\n", sessionID, checkpointID)
-			} else {
-				fmt.Fprintf(w, "Session %s already has checkpoint %s\n", sessionID, checkpointID)
-				amendOrPrintTrailer(logCtx, w, errW, headCommit, checkpointID.String(), opts.Force)
-			}
-			return nil
+			return reuseAttachSnapshot(logCtx, w, errW, headCommit, checkpointID, metadata, linkedToHead, opts)
 		}
+	}
+
+	// An absent pending snapshot has never been linked by this attach. Mint a
+	// fresh ID rather than recreating data under an ID that may exist remotely.
+	if isExistingCheckpoint && !linkedToHead {
+		checkpointID, err = cpkg.GenerateCheckpointID(ctx)
+		if err != nil {
+			return fmt.Errorf("create replacement attach checkpoint: %w", err)
+		}
+		previousState = nil
+	}
+	if existingState != nil && (existingState.LastCheckpointCommitHash != "" || existingState.CheckpointTranscriptStart > 0) {
+		return fmt.Errorf("session %s is already tracked by hooks; use the normal commit workflow to capture its next checkpoint", sessionID)
 	}
 
 	ag, transcriptPath, err := resolveAgentAndTranscript(logCtx, w, sessionID, agentName, existingState)
@@ -333,7 +336,7 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	if redactErr != nil {
 		return fmt.Errorf("failed to redact transcript: %w", redactErr)
 	}
-	transcriptStart, err := attachTranscriptStart(logCtx, store, existingState, ag.Type(), redactedTranscript.Bytes())
+	transcriptStart, err := attachTranscriptStart(logCtx, store, previousState, ag.Type(), redactedTranscript.Bytes())
 	if err != nil {
 		return err
 	}
@@ -388,6 +391,21 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	fmt.Fprintf(w, "  Created checkpoint %s\n", checkpointID)
 	amendOrPrintTrailer(logCtx, w, errW, headCommit, checkpointID.String(), opts.Force)
 
+	return nil
+}
+
+// reuseAttachSnapshot preserves an existing snapshot and, for a pending receipt,
+// retries only linking it to the commit.
+func reuseAttachSnapshot(ctx context.Context, w, errW io.Writer, head *object.Commit, checkpointID id.CheckpointID, metadata *cpkg.Metadata, linkedToHead bool, opts attachOptions) error {
+	if opts.Review && !session.Kind(metadata.Kind).IsReview() {
+		return fmt.Errorf("session %s is already recorded in checkpoint %s; rewriting an existing checkpoint as a review is not supported yet", metadata.SessionID, checkpointID)
+	}
+	if linkedToHead {
+		fmt.Fprintf(w, "Session %s already has checkpoint %s on HEAD\n", metadata.SessionID, checkpointID)
+	} else {
+		fmt.Fprintf(w, "Session %s already has checkpoint %s\n", metadata.SessionID, checkpointID)
+		amendOrPrintTrailer(ctx, w, errW, head, checkpointID.String(), opts.Force)
+	}
 	return nil
 }
 

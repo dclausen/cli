@@ -139,6 +139,9 @@ to reuse on every later commit. Each new attachment stores the full current
 transcript. For append-only JSONL, a verified complete-line prefix from the
 previous stored snapshot establishes `CheckpointTranscriptStart` and scopes
 checkpoint tokens to later messages, while session-state tokens remain cumulative.
+Prior-snapshot read failures warn and fall back to a full snapshot; cancellation
+and deadlines still stop attach. This fallback applies only to prefix evidence,
+not to membership or availability checks for a checkpoint referenced by HEAD.
 Missing prior content, rewritten transcripts, changed redaction, and OpenCode's
 whole-document JSON export use a full snapshot with offset zero. Repeating attach
 on an already-attached HEAD leaves its stored transcript and metadata unchanged,
@@ -146,10 +149,19 @@ including review sessions. An ordinary snapshot cannot be converted into a revie
 in place, but a later commit can capture a new review snapshot. Subsequent attaches
 without `--review` preserve the session's review kind, skills, and prompt.
 
+A session already checkpointed by hooks (`LastCheckpointCommitHash` non-empty or
+`CheckpointTranscriptStart > 0`) cannot be captured again by attach: hooks own
+its transcript and token window. The membership check precedes this guard so
+reattaching an existing snapshot stays a no-op. `AttachedManually` is not an
+ownership signal because it also marks sessions imported before hooks took over.
+
 A manual attach receipt binds the saved checkpoint to the pre-amend HEAD. If
 attach only printed a trailer, or amending failed, retrying on that same HEAD
 reuses the snapshot and offers to link it again. A different HEAD never reuses
-that receipt. External agent token calculators receive the byte offset of the
+that receipt. If the pending snapshot is absent locally, discard the receipt
+and create a fresh ID with a full snapshot. Never recreate the missing snapshot
+under its old ID or relax the availability gate for checkpoints linked by HEAD.
+External agent token calculators receive the byte offset of the
 new messages in the **raw** transcript, converted from the stored line boundary;
 redacted byte lengths must not be used as protocol offsets.
 
