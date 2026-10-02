@@ -1,14 +1,55 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	cpkg "github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 	"github.com/entireio/cli/cmd/entire/cli/textutil"
 	"github.com/entireio/cli/cmd/entire/cli/transcript"
 )
+
+// attachTranscriptStart scopes append-only JSONL snapshots to their new content.
+// Compare stored bytes, after sanitization/redaction, rather than trusting a
+// stale line count after an agent rewrites or truncates its transcript. If the
+// earlier snapshot is absent or no longer a complete prefix (including a changed
+// redaction policy), capture the full transcript instead of skipping content.
+// OpenCode exports a JSON document with message offsets, not JSONL line offsets.
+func attachTranscriptStart(ctx context.Context, store cpkg.PersistentStore, state *session.State, agentType types.AgentType, current []byte) (int, error) {
+	if state == nil || state.LastCheckpointID.IsEmpty() || agentType == agent.AgentTypeOpenCode {
+		return 0, nil
+	}
+	index, err := attachSessionIndex(ctx, store, state.LastCheckpointID, state.SessionID)
+	if err != nil {
+		return 0, fmt.Errorf("read previous attach checkpoint: %w", err)
+	}
+	if index < 0 {
+		return 0, nil
+	}
+	content, err := store.ReadSessionContent(ctx, state.LastCheckpointID, index)
+	if errors.Is(err, cpkg.ErrNoTranscript) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read previous attach transcript: %w", err)
+	}
+	if content == nil {
+		return 0, nil
+	}
+	previous := content.Transcript
+	if !bytes.HasSuffix(previous, []byte{'\n'}) || !bytes.HasPrefix(current, previous) {
+		return 0, nil
+	}
+	return bytes.Count(previous, []byte{'\n'}), nil
+}
 
 // transcriptMetadata holds metadata extracted from a single transcript parse pass.
 type transcriptMetadata struct {

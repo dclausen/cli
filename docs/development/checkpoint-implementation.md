@@ -131,6 +131,18 @@ The manual-commit strategy (`manual_commit*.go`) does not modify the active bran
 - **A tracked `.entire/settings.local.json` is ignored wholesale**: the local layer's premise is that it is per-clone and per-developer (it is gitignored, `entire enable --local` writes it, and `CheckpointRemoteIsLocalOnly` treats presence there as proof the developer chose it). `.gitignore` does not apply to an already-tracked path, so a committed one arrives by cloning and would override project settings for everyone. `loadMergedSettings` drops the layer when the file is **proven** tracked, records `EntireSettings.LocalLayerRejection()`, and the redaction consumer prints it with the `git rm --cached` fix. It never errors — one committed file must not brick `status`/`doctor`. Two deliberately opposite failure directions, expressed as the three-state `localTrust` (`localUnverifiable` is the zero value so a forgotten assignment fails safe): an *unverifiable* repo keeps the layer (losing all local settings is worse than the risk) but still drops the exec-bearing settings, OPF `command` and `external_agents` (being wrong there means running someone else's binary); *no* repository counts as proof of locality. `CheckpointRemoteIsLocalOnly` reads the raw file outside the loader, so it repeats the check itself.
 - Safe to use on main/master since it never modifies commit history
 
+#### Manual attachment
+
+Manual `session attach` uses HEAD's checkpoint membership for idempotency;
+`LastCheckpointID` is only the previous session snapshot, not a permanent link
+to reuse on every later commit. Each new attachment stores the full current
+transcript. For append-only JSONL, a verified complete-line prefix from the
+previous stored snapshot establishes `CheckpointTranscriptStart` and scopes
+checkpoint tokens to later messages, while session-state tokens remain cumulative.
+Missing prior content, rewritten transcripts, changed redaction, and OpenCode's
+whole-document JSON export use a full snapshot with offset zero. Repeating attach
+on an already-attached HEAD leaves its stored transcript and metadata unchanged.
+
 #### Key Files
 
 - `strategy.go` - Shared types only, no behaviour: the sentinel errors (`ErrNoMetadata`, `ErrNoSession`, `ErrNotTaskCheckpoint`, `ErrEmptyRepository`), the argument and result structs (`SessionInfo`, `PendingCheckpoint`, `StepContext`, `TaskStepContext`, `TaskCheckpoint`, `SubagentCheckpoint`, `RestoredSession`), and `TaskMetadataDir()`. The strategy type itself and its constructor live in `manual_commit.go`.
