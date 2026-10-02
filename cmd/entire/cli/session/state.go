@@ -105,10 +105,10 @@ type CondensationAttempt struct {
 	CheckpointID    id.CheckpointID `json:"checkpoint_id"`
 	RecoveryPending bool            `json:"recovery_pending,omitempty"`
 	// Stamped marks a reservation prepare-commit-msg made when it stamped the
-	// trailer: nothing has been written under the ID yet. It becomes an
-	// ordinary attempt once a condensation may have written under it (adopted
-	// to write, or a write failed); untouched, post-commit releases it, and one
-	// left by a commit that never landed does not stop a later commit.
+	// trailer, for that commit's post-commit alone. It is never a condensation
+	// attempt: post-commit condenses under it or releases it, one left by a
+	// commit that never landed blocks no later commit, and an eager or doctor
+	// condensation starts a fresh attempt instead of writing under it.
 	Stamped bool `json:"stamped,omitempty"`
 }
 

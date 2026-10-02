@@ -1958,8 +1958,9 @@ func clearFilesystemStagedFiles(ctx context.Context, sessionID string) {
 }
 
 func ensureCondensationAttemptID(ctx context.Context, state *SessionState) (id.CheckpointID, bool, error) {
-	if checkpointID := state.PendingCondensationID(); checkpointID != id.EmptyCheckpointID {
-		beginWritingUnder(state, checkpointID)
+	// A stamped reservation names a commit that may never have landed, so no
+	// commit may reference it: start a fresh attempt instead of writing under it.
+	if checkpointID := state.PendingCondensationID(); checkpointID != id.EmptyCheckpointID && !state.StampedReservationFor(checkpointID) {
 		return checkpointID, false, nil
 	}
 	checkpointID, err := cpkg.GenerateCheckpointID(ctx)

@@ -570,6 +570,11 @@ func isNearerOwner(depth, bestDepth int, state, best *SessionState) bool {
 // pure comparison by design: an earlier version re-resolved the worktree
 // here and read resolution failure as "home", which would have mutated a
 // guest session's state in exactly the way the gate exists to prevent.
+// ErrSessionHomedElsewhere is returned by SaveStep and SaveTaskStep when the
+// hook runs in a worktree the session could not be re-homed to: the step is
+// not written, and the caller should treat this turn's capture as degraded.
+var ErrSessionHomedElsewhere = errors.New("session is homed in another worktree that still holds its work")
+
 // sessionHomedHere reports whether the session is homed in the worktree this
 // hook runs in. A hook that followed its agent into another worktree whose
 // session could not be re-homed (the home still holds a step) must not write

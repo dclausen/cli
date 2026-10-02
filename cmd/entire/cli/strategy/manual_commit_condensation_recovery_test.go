@@ -190,26 +190,49 @@ func TestPreservesInterruptedCondensation(t *testing.T) {
 	require.False(t, preservesInterruptedCondensation(&SessionState{SessionID: "s"}, commitID))
 }
 
-// Writing under prepare-commit-msg's stamped ID turns the reservation into an
-// ordinary condensation attempt: if the write is cut short, it must survive as
-// an interrupted condensation (resumed or recovered), not be released as an
-// untouched reservation and leave the commit's trailer dangling.
-func TestStampedReservationBecomesAnAttemptOnceWritten(t *testing.T) {
+// A stamped reservation is only prepare-commit-msg's marker for its own
+// commit; condensation attempts are separate and work as they always have.
+// Across every reservation state and trailer: a commit is held back only by an
+// ordinary attempt for another ID, and an eager or doctor condensation never
+// writes under a stamped ID (no commit may reference it) nor leaves one behind
+// that would hold later commits back.
+func TestReservationStates(t *testing.T) {
 	t.Parallel()
-	stampedID := id.MustCheckpointID("333333333333")
+	x := id.MustCheckpointID("555555555555")
+	y := id.MustCheckpointID("666666666666")
+	states := map[string]func() *SessionState{
+		"no attempt": func() *SessionState { return &SessionState{SessionID: "s"} },
+		"stamped X": func() *SessionState {
+			st := &SessionState{SessionID: "s"}
+			st.ReserveStampedCheckpoint(x)
+			return st
+		},
+		"attempt X": func() *SessionState {
+			st := &SessionState{SessionID: "s"}
+			st.BeginCondensationAttempt(x)
+			return st
+		},
+	}
+	for name, mk := range states {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			for _, trailer := range []id.CheckpointID{x, y} {
+				want := name == "attempt X" && trailer == y
+				require.Equal(t, want, preservesInterruptedCondensation(mk(), trailer), "trailer %s", trailer)
+			}
 
-	adopted := &SessionState{SessionID: "s"}
-	adopted.ReserveStampedCheckpoint(stampedID)
-	got, created, err := ensureCondensationAttemptID(context.Background(), adopted)
-	require.NoError(t, err)
-	require.False(t, created)
-	require.Equal(t, stampedID, got)
-	require.False(t, adopted.StampedReservationFor(stampedID), "adopting the ID to write under it makes it an attempt")
-
-	failed := &SessionState{SessionID: "s"}
-	failed.ReserveStampedCheckpoint(stampedID)
-	beginWritingUnder(failed, stampedID)
-	require.Equal(t, stampedID, failed.PendingCondensationID())
-	require.False(t, failed.StampedReservationFor(stampedID))
-	require.True(t, preservesInterruptedCondensation(failed, id.MustCheckpointID("444444444444")))
+			st := mk()
+			got, created, err := ensureCondensationAttemptID(context.Background(), st)
+			require.NoError(t, err)
+			require.Equal(t, got, st.PendingCondensationID())
+			require.False(t, st.StampedReservationFor(got), "an eager/doctor attempt is ordinary")
+			if name == "attempt X" {
+				require.Equal(t, x, got)
+				require.False(t, created)
+			} else {
+				require.NotEqual(t, x, got, "never writes under a stamped ID")
+				require.True(t, created)
+			}
+		})
+	}
 }

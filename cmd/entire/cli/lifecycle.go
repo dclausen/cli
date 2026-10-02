@@ -1289,6 +1289,13 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	}
 
 	if err := strat.SaveStep(ctx, stepCtx); err != nil {
+		if errors.Is(err, strategy.ErrSessionHomedElsewhere) {
+			// The agent worked in a worktree its session cannot move to yet.
+			// Nothing was written; end the turn degraded, as an uncaptured one.
+			logging.Info(logCtx, "checkpoint skipped: the session is homed in another worktree; capture degraded this turn")
+			finishTurn(true)
+			return nil
+		}
 		if errors.Is(err, gitrepo.ErrStatusBudgetExceeded) {
 			// The first-checkpoint status read inside the save breached its
 			// budget. Hooks must never fail on status cost — skip this turn's

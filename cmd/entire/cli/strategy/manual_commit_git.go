@@ -49,7 +49,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		invalidateStaleSubagentSnapshot(&step, state)
 		s.rehomeSessionToCurrentWorktree(ctx, repo, state, len(step.ModifiedFiles)+len(step.NewFiles)+len(step.DeletedFiles) > 0)
 		if !sessionHomedHere(ctx, state) {
-			return ErrMutationSkip
+			return ErrSessionHomedElsewhere
 		}
 		_, migrateSpan := perf.Start(ctx, "migrate_shadow_branch")
 		if _, _, err := s.migrateShadowBranchIfNeeded(ctx, repo, state); err != nil {
@@ -252,7 +252,7 @@ func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepCo
 		// home worktree's, unless the home still holds pending work.
 		s.rehomeSessionToCurrentWorktree(ctx, repo, state, len(step.ModifiedFiles)+len(step.NewFiles)+len(step.DeletedFiles) > 0)
 		if !sessionHomedHere(ctx, state) {
-			return ErrMutationSkip
+			return ErrSessionHomedElsewhere
 		}
 		if _, _, err := s.migrateShadowBranchIfNeeded(ctx, repo, state); err != nil {
 			return fmt.Errorf("failed to check/migrate shadow branch: %w", err)

@@ -1827,9 +1827,6 @@ func (s *ManualCommitStrategy) condenseAndUpdateState(
 	}
 	result, err := s.CondenseSession(ctx, repo, checkpointID, state, committedFiles, opts)
 	if err != nil {
-		// The write may have started: keep the ID as an interrupted attempt so
-		// it is resumed or recovered, not released with the trailer dangling.
-		beginWritingUnder(state, checkpointID)
 		logging.Warn(logCtx, "condensation failed",
 			slog.String("session_id", state.SessionID),
 			slog.String("error", err.Error()),
@@ -2792,15 +2789,6 @@ func (s *ManualCommitStrategy) addTrailerForAgentCommit(logCtx context.Context, 
 	}
 	reserveCheckpointForStampedSessions(logCtx, []*SessionState{state}, cpID)
 	return nil
-}
-
-// beginWritingUnder turns prepare-commit-msg's stamped reservation of
-// checkpointID into an ordinary condensation attempt once anything may have
-// been written under it.
-func beginWritingUnder(state *SessionState, checkpointID id.CheckpointID) {
-	if state.StampedReservationFor(checkpointID) {
-		state.BeginCondensationAttempt(checkpointID)
-	}
 }
 
 // preservesInterruptedCondensation reports whether the session is mid-way
