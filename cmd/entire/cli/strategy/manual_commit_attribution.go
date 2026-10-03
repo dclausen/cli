@@ -307,7 +307,7 @@ func CalculateAttributionWithAccumulated(ctx context.Context, p AttributionParam
 	agentLinesInCommit := max(0, totalAgentAdded-pureUserRemoved-humanModifiedAgent)
 
 	// Phase 6: Compute agent deletions and non-agent removals
-	agentRemovedInCommit := computeAgentDeletions(p.BaseTree, p.ShadowTree, p.HeadTree, p.FilesTouched, classified.removedFromAgentFiles)
+	agentRemovedInCommit := computeAgentDeletions(p.BaseTree, p.ShadowTree, p.HeadTree, p.FilesTouched, p.PendingSubagentFiles, classified.removedFromAgentFiles)
 
 	agentChangedLines := agentLinesInCommit + agentRemovedInCommit
 	totalLinesChanged := agentChangedLines + pureUserAdded + totalHumanModified + pureUserRemoved + nonAgent.userRemovedFromNonAgentFiles
@@ -512,11 +512,17 @@ func classifyBaselineEdits(baselineAddedPerFile map[string]int, filesTouched []s
 // computeAgentDeletions calculates agent-removed lines that actually remain deleted in the commit.
 // Per-file: takes min(base→shadow removed, base→head removed) to avoid over-reporting when
 // the user re-adds lines the agent deleted. Subtracts accumulated user removals to agent files.
-func computeAgentDeletions(baseTree, shadowTree, headTree *object.Tree, filesTouched []string, accumulatedRemovedToAgentFiles int) int {
+//
+// A pending subagent file's observed content stands in for the stale snapshot,
+// as in diffAgentTouchedFiles.
+func computeAgentDeletions(baseTree, shadowTree, headTree *object.Tree, filesTouched []string, pendingSubagentFiles map[string]string, accumulatedRemovedToAgentFiles int) int {
 	var agentRemovedInCommit int
 	for _, filePath := range filesTouched {
 		baseContent := getFileContent(baseTree, filePath)
-		shadowContent := getFileContent(shadowTree, filePath)
+		shadowContent, pending := pendingSubagentFiles[filePath]
+		if !pending {
+			shadowContent = getFileContent(shadowTree, filePath)
+		}
 		headContent := getFileContent(headTree, filePath)
 
 		_, _, removedBaseToShadow := diffLines(baseContent, shadowContent)

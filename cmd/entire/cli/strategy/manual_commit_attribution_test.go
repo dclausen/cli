@@ -1670,3 +1670,21 @@ func TestWarnIfAttributionDiverged_MultipleDivergentSessions_FlagsAllOnce(t *tes
 	require.Empty(t, buf.String(),
 		"warning must stay silent on subsequent calls once every divergent session has been flagged")
 }
+
+// TestComputeAgentDeletions_PendingSubagentFileUsesObservedContent pins that a
+// subagent deletion no shadow snapshot holds yet still counts as agent
+// removal: the observed content stands in for the stale snapshot.
+func TestComputeAgentDeletions_PendingSubagentFileUsesObservedContent(t *testing.T) {
+	t.Parallel()
+
+	const path = "notes.md"
+	base := buildTestTree(t, map[string]string{path: "keep one\ndrop two\ndrop three\nkeep four\n"})
+	// The last snapshot predates the subagent's edit.
+	shadow := buildTestTree(t, map[string]string{path: "keep one\ndrop two\ndrop three\nkeep four\n"})
+	head := buildTestTree(t, map[string]string{path: "keep one\nkeep four\n"})
+	pending := map[string]string{path: "keep one\nkeep four\n"}
+
+	if got := computeAgentDeletions(base, shadow, head, []string{path}, pending, 0); got != 2 {
+		t.Errorf("agent deletions = %d, want 2", got)
+	}
+}
