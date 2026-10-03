@@ -25,7 +25,10 @@ var ErrPendingFileChanges = errors.New("session has uncommitted file changes")
 // skips SaveStep when nothing changed, so session end finds no steps and writes
 // nothing. A session with pending file changes is refused with
 // ErrPendingFileChanges; the next commit checkpoints that work, with
-// attribution, and a snapshot would only duplicate it.
+// attribution, and a snapshot would only duplicate it. "Pending" is what the
+// transcript and file-touch hooks can see: an edit made through a shell
+// command rather than an edit tool is only detected at turn end, so a snapshot
+// in that same turn is not refused and overlaps the next commit's checkpoint.
 //
 // The checkpoint is written exactly as a condensation writes one — same
 // extraction, redaction, and store write, so it is enqueued for push like any
@@ -60,7 +63,12 @@ func (s *ManualCommitStrategy) CreateSnapshotCheckpoint(ctx context.Context, ses
 
 	var result *CondenseResult
 	mutErr := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
-		if len(state.FilesTouched) > 0 {
+		// resolveFilesTouched, not state.FilesTouched alone: most agents report
+		// no per-tool file events, so FilesTouched stays empty until SaveStep at
+		// turn end, and an edit earlier in the current turn is only visible in
+		// the live transcript. Paths outside the worktree (an agent's plan
+		// files, say) are dropped there, so planning sessions are not refused.
+		if len(s.resolveFilesTouched(ctx, state)) > 0 {
 			return ErrPendingFileChanges
 		}
 		var condErr error

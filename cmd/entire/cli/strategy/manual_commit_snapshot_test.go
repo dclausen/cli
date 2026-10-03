@@ -21,8 +21,8 @@ import (
 
 // setupNoFileChangesSession records the session a snapshot is for: one that
 // changed no files, so turn end never ran SaveStep — no steps, no shadow
-// branch, no FilesTouched, only a live transcript. transcript is its content.
-func setupNoFileChangesSession(t *testing.T, sessionID, transcript string) *git.Repository {
+// branch, no FilesTouched, only a live transcript (researchTranscript).
+func setupNoFileChangesSession(t *testing.T, sessionID string) *git.Repository {
 	t.Helper()
 	dir := setupGitRepo(t)
 	t.Chdir(dir)
@@ -34,7 +34,7 @@ func setupNoFileChangesSession(t *testing.T, sessionID, transcript string) *git.
 	require.NoError(t, err)
 
 	transcriptPath := filepath.Join(t.TempDir(), "live.jsonl")
-	require.NoError(t, os.WriteFile(transcriptPath, []byte(transcript), 0o644))
+	require.NoError(t, os.WriteFile(transcriptPath, []byte(researchTranscript), 0o644))
 	now := time.Now().UTC().Truncate(time.Second)
 	require.NoError(t, SaveSessionState(context.Background(), &SessionState{
 		SessionID:           sessionID,
@@ -59,7 +59,7 @@ const researchTranscript = `{"type":"human","message":{"content":"research the r
 // exactly as it was.
 func TestCreateSnapshotCheckpoint_WritesRedactedCheckpointWithoutTouchingState(t *testing.T) {
 	sessionID := "2026-10-03-snapshot-research"
-	repo := setupNoFileChangesSession(t, sessionID, researchTranscript)
+	repo := setupNoFileChangesSession(t, sessionID)
 
 	before, err := LoadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
@@ -93,6 +93,41 @@ func TestCreateSnapshotCheckpoint_RefusesPendingFileChanges(t *testing.T) {
 	checkpoints, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).List(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, checkpoints)
+}
+
+// Most agents report no per-tool file events, so an edit made earlier in the
+// current turn is in the live transcript but not yet in FilesTouched, which
+// SaveStep fills at turn end. The guard must still see it. A file written
+// outside the worktree (an agent's plan file) is not a pending change.
+func TestCreateSnapshotCheckpoint_SeesEditsFromTheCurrentTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		writtenPath func(worktree string) string
+		wantRefused bool
+	}{
+		{"edit inside the worktree", func(wt string) string { return filepath.Join(wt, "notes.md") }, true},
+		{"plan file outside the worktree", func(string) string { return filepath.Join(t.TempDir(), "plan.md") }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// No t.Parallel: setupNoFileChangesSession uses t.Chdir.
+			sessionID := "2026-10-03-snapshot-current-turn"
+			setupNoFileChangesSession(t, sessionID)
+			state, err := LoadSessionState(context.Background(), sessionID)
+			require.NoError(t, err)
+			require.Empty(t, state.FilesTouched, "premise: the edit has not reached FilesTouched")
+
+			writeLine := `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"` +
+				tc.writtenPath(state.WorktreePath) + `","content":"x"}}]}}` + "\n"
+			require.NoError(t, os.WriteFile(state.TranscriptPath, []byte(researchTranscript+writeLine), 0o644))
+
+			_, err = (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
+			if tc.wantRefused {
+				require.ErrorIs(t, err, ErrPendingFileChanges)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestCreateSnapshotCheckpoint_UnknownSession(t *testing.T) {
@@ -175,7 +210,7 @@ func TestCreateSnapshotCheckpoint_RedactionFailureIsAnError(t *testing.T) {
 	t.Cleanup(func() { redactSessionJSONLBytes = originalRedact })
 
 	sessionID := "2026-09-30-snapshot-redaction-failure"
-	repo := setupNoFileChangesSession(t, sessionID, researchTranscript)
+	repo := setupNoFileChangesSession(t, sessionID)
 
 	_, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
 	require.ErrorContains(t, err, "forced redaction failure")
@@ -194,7 +229,7 @@ func TestCreateSnapshotCheckpoint_RedactionFailureIsAnError(t *testing.T) {
 func TestCreateSnapshotCheckpoint_RedactsUnderTheSessionLock(t *testing.T) {
 	// No t.Parallel: swaps the package-level redaction seam and uses t.Chdir.
 	sessionID := "2026-10-03-snapshot-lock"
-	setupNoFileChangesSession(t, sessionID, researchTranscript)
+	setupNoFileChangesSession(t, sessionID)
 
 	originalRedact := redactSessionJSONLBytes
 	t.Cleanup(func() { redactSessionJSONLBytes = originalRedact })
