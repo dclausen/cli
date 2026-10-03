@@ -269,6 +269,52 @@ func TestExplainCmd_TaskAndSessionIndexMutuallyExclusive(t *testing.T) {
 	require.Contains(t, err.Error(), "none of the others can be")
 }
 
+// TestExplainCmd_TaskExactToolUseIDWinsOverAgentID: tool_use_ids and agent_ids
+// share the selector namespace. When one record's agent_id equals another's
+// tool_use_id, the exact tool_use_id names its record uniquely.
+func TestExplainCmd_TaskExactToolUseIDWinsOverAgentID(t *testing.T) {
+	repo := setupExportRepo(t)
+	cpID := id.MustCheckpointID("dadadddd2222")
+	writeCheckpointForExport(t, repo, cpID, checkpoint.WriteOptions{
+		SessionID:  "session-overlapping-ids",
+		Transcript: redact.AlreadyRedacted([]byte(`{"type":"user"}` + "\n")),
+		Tasks: []checkpoint.TaskPayload{
+			{ToolUseID: "task-a", AgentID: "task-b", Transcript: redact.AlreadyRedacted([]byte("from task-a\n"))},
+			{ToolUseID: "task-b", AgentID: "agent-b", Transcript: redact.AlreadyRedacted([]byte("from task-b\n"))},
+		},
+	})
+
+	stdout, _, err := runExplainCmdForTest(t, cpID.String(), "--transcript", "--task", "task-b")
+	require.NoError(t, err)
+	require.Equal(t, "from task-b\n", stdout)
+}
+
+// TestExportTokenUsage_BoundsSubagentDepth: token usage comes from pushed
+// metadata.json / task.json. A deep subagent_tokens chain grows the indented
+// output quadratically, so the export bounds it at types.MaxSubagentDepth.
+func TestExportTokenUsage_BoundsSubagentDepth(t *testing.T) {
+	t.Parallel()
+
+	deep := &types.TokenUsage{InputTokens: 1}
+	for range 200 {
+		deep = &types.TokenUsage{InputTokens: 1, SubagentTokens: deep}
+	}
+	depth := func(u *types.TokenUsage) int {
+		n := 0
+		for ; u != nil && u.SubagentTokens != nil; u = u.SubagentTokens {
+			n++
+		}
+		return n
+	}
+
+	session := sessionMetadataToJSON(0, &checkpoint.Metadata{SessionID: "deep", TokenUsage: deep})
+	require.LessOrEqual(t, depth(session.TokenUsage), types.MaxSubagentDepth)
+	require.Equal(t, 1, session.TokenUsage.InputTokens)
+
+	task := taskEntryToJSON(checkpoint.TaskEntry{ToolUseID: "toolu_deep", Record: checkpoint.TaskRecord{TokenUsage: deep}})
+	require.LessOrEqual(t, depth(task.TokenUsage), types.MaxSubagentDepth)
+}
+
 // TestExplainCmd_TaskAmbiguousSelectorFails: a resumed subagent keeps its
 // agent_id across Task calls, so an agent_id can name several task records.
 // Picking one silently would stream the wrong transcript.

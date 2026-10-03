@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
@@ -36,11 +39,26 @@ func (s *GitStore) ListTasks(ctx context.Context, checkpointID id.CheckpointID) 
 	if err := ctx.Err(); err != nil {
 		return nil, err //nolint:wrapcheck // Propagating context cancellation
 	}
-	checkpointTree, err := s.getCheckpointFetchingTree(ctx, checkpointID)
+	checkpointTree, err := s.taskCheckpointTree(ctx, checkpointID)
 	if err != nil {
-		return nil, ErrCheckpointNotFound
+		return nil, err
 	}
 	return listTasksFromCheckpointTree(checkpointTree)
+}
+
+// taskCheckpointTree resolves the checkpoint tree for the task reads. Only a
+// genuinely absent checkpoint or metadata ref becomes ErrCheckpointNotFound;
+// a ref that resolves to an unreadable commit or tree is a storage failure
+// and is surfaced as one, as gitRefsStore.checkpointTree does.
+func (s *GitStore) taskCheckpointTree(ctx context.Context, checkpointID id.CheckpointID) (*FetchingTree, error) {
+	checkpointTree, err := s.getCheckpointFetchingTree(ctx, checkpointID)
+	if err == nil {
+		return checkpointTree, nil
+	}
+	if errors.Is(err, ErrCheckpointNotFound) || errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return nil, ErrCheckpointNotFound
+	}
+	return nil, fmt.Errorf("read checkpoint %s: %w", checkpointID, err)
 }
 
 // ReadTaskTranscript implements TaskReader for the git-branch store.
@@ -51,9 +69,9 @@ func (s *GitStore) ReadTaskTranscript(ctx context.Context, checkpointID id.Check
 	if err := ctx.Err(); err != nil {
 		return nil, err //nolint:wrapcheck // Propagating context cancellation
 	}
-	checkpointTree, err := s.getCheckpointFetchingTree(ctx, checkpointID)
+	checkpointTree, err := s.taskCheckpointTree(ctx, checkpointID)
 	if err != nil {
-		return nil, ErrCheckpointNotFound
+		return nil, err
 	}
 	return readTaskTranscriptFromCheckpointTree(checkpointTree, toolUseID)
 }
@@ -95,12 +113,16 @@ func validateTaskSelector(toolUseID string) error {
 // tasksTree returns the checkpoint's tasks/ subtree, or (nil, nil) when the
 // checkpoint has none — every checkpoint written before task records existed,
 // and every session without subagent work.
+//
+// Absence is decided from the tree entries, not from the subtree read's error:
+// go-git reports a listed subtree whose object is missing as
+// ErrDirectoryNotFound too, and that is a broken record set, not an empty one.
 func tasksTree(checkpointTree *FetchingTree) (*FetchingTree, error) {
+	if !hasRawEntry(checkpointTree, taskRecordsDirName) {
+		return nil, nil //nolint:nilnil // no task records is not an error
+	}
 	tree, err := checkpointTree.Tree(taskRecordsDirName)
 	if err != nil {
-		if errors.Is(err, object.ErrDirectoryNotFound) {
-			return nil, nil //nolint:nilnil // no task records is not an error
-		}
 		return nil, fmt.Errorf("read %s/: %w", taskRecordsDirName, err)
 	}
 	return tree, nil
@@ -168,13 +190,16 @@ func readTaskTranscriptFromCheckpointTree(checkpointTree *FetchingTree, toolUseI
 	if tasks == nil || !hasRawEntry(tasks, toolUseID) {
 		return nil, fmt.Errorf("%w: %s", ErrTaskNotFound, toolUseID)
 	}
+	// The entry is listed, so a failure here is an unreadable record, not an
+	// absent one; ErrTaskNotFound would stop the routing store from trying a
+	// fallback backend that can read it.
 	taskDir, err := tasks.Tree(toolUseID)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s: %w", ErrTaskNotFound, toolUseID, err)
+		return nil, fmt.Errorf("task %s: read tree: %w", toolUseID, err)
 	}
 	record, err := readTaskRecord(taskDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("task %s: %w", toolUseID, err)
 	}
 	name := taskTranscriptFileName(record.AgentID)
 	if !hasRawEntry(taskDir, name) {
@@ -188,11 +213,39 @@ func readTaskTranscriptFromCheckpointTree(checkpointTree *FetchingTree, toolUseI
 	if err != nil {
 		return nil, fmt.Errorf("task %s: read %s: %w", toolUseID, name, err)
 	}
-	content, err := file.Contents()
+	content, err := readTaskBlob(file, taskBlobReadLimit)
 	if err != nil {
 		return nil, fmt.Errorf("task %s: read %s: %w", toolUseID, name, err)
 	}
-	return []byte(content), nil
+	return content, nil
+}
+
+// taskBlobReadLimit bounds every task-record blob read. It reuses the cap the
+// writer enforces: prepareSubagentTranscript refuses a subagent transcript
+// over agent.MaxChunkSize, so any honestly written task blob fits, and a
+// larger one is pushed data this reader must not materialize.
+const taskBlobReadLimit = int64(agent.MaxChunkSize)
+
+// readTaskBlob reads file's content, refusing a blob larger than limit. The
+// declared size is checked first so an oversized blob is never read; the
+// LimitReader backs that up against a size header that understates.
+func readTaskBlob(file *object.File, limit int64) ([]byte, error) {
+	if file.Size > limit {
+		return nil, fmt.Errorf("blob of %d bytes exceeds the %d-byte limit", file.Size, limit)
+	}
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("open blob: %w", err)
+	}
+	defer reader.Close()
+	content, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read blob: %w", err)
+	}
+	if int64(len(content)) > limit {
+		return nil, fmt.Errorf("blob exceeds the %d-byte limit", limit)
+	}
+	return content, nil
 }
 
 // readTaskRecord parses and validates one task directory's task.json.
@@ -201,12 +254,12 @@ func readTaskRecord(taskDir *FetchingTree) (*TaskRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", taskRecordFileName, err)
 	}
-	content, err := file.Contents()
+	content, err := readTaskBlob(file, taskBlobReadLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", taskRecordFileName, err)
 	}
 	var record TaskRecord
-	if err := json.Unmarshal([]byte(content), &record); err != nil {
+	if err := json.Unmarshal(content, &record); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", taskRecordFileName, err)
 	}
 	if err := validation.ValidateAgentID(record.AgentID); err != nil {

@@ -396,18 +396,28 @@ func runExplainStreamTranscript(ctx context.Context, w, errW io.Writer, opts exp
 
 // streamTaskTranscript writes the stored transcript of the subagent task record
 // that selector names (its tool_use_id or agent_id) to w.
+//
+// An exact tool_use_id is tried first: it names one record even when another
+// record's agent_id happens to equal it, and it reads one task.json instead
+// of every record's (each a network round trip after a filtered fetch). Only
+// when no record has that tool_use_id are the records listed to match it as
+// an agent_id.
 func streamTaskTranscript(ctx context.Context, w io.Writer, reader checkpoint.TaskReader, cpID id.CheckpointID, selector string) error {
-	entries, err := reader.ListTasks(ctx, cpID)
-	if err != nil {
-		return fmt.Errorf("failed to list subagent tasks for checkpoint %s: %w", cpID, err)
+	transcript, err := reader.ReadTaskTranscript(ctx, cpID, selector)
+	if errors.Is(err, checkpoint.ErrTaskNotFound) {
+		entries, listErr := reader.ListTasks(ctx, cpID)
+		if listErr != nil {
+			return fmt.Errorf("failed to list subagent tasks for checkpoint %s: %w", cpID, listErr)
+		}
+		toolUseID, matchErr := matchTaskAgentID(entries, cpID, selector)
+		if matchErr != nil {
+			return matchErr
+		}
+		transcript, err = reader.ReadTaskTranscript(ctx, cpID, toolUseID)
+		selector = toolUseID
 	}
-	toolUseID, err := matchTaskSelector(entries, cpID, selector)
 	if err != nil {
-		return err
-	}
-	transcript, err := reader.ReadTaskTranscript(ctx, cpID, toolUseID)
-	if err != nil {
-		return fmt.Errorf("failed to read subagent transcript for task %s in checkpoint %s: %w", toolUseID, cpID, err)
+		return fmt.Errorf("failed to read subagent transcript for task %s in checkpoint %s: %w", selector, cpID, err)
 	}
 	if _, err := w.Write(transcript); err != nil {
 		return fmt.Errorf("failed to write transcript: %w", err)
@@ -415,14 +425,14 @@ func streamTaskTranscript(ctx context.Context, w io.Writer, reader checkpoint.Ta
 	return nil
 }
 
-// matchTaskSelector resolves --task to one task record's tool_use_id. The
-// selector matches a tool_use_id or an agent_id exactly. An agent_id can name
-// several records (a resumed subagent keeps its ID across Task calls), and
-// streaming an arbitrary one of them would be wrong, so that is an error.
-func matchTaskSelector(entries []checkpoint.TaskEntry, cpID id.CheckpointID, selector string) (string, error) {
+// matchTaskAgentID resolves a --task selector that is no record's tool_use_id
+// to the one record whose agent_id it is. An agent_id can name several records
+// (a resumed subagent keeps its ID across Task calls), and streaming an
+// arbitrary one of them would be wrong, so that is an error.
+func matchTaskAgentID(entries []checkpoint.TaskEntry, cpID id.CheckpointID, selector string) (string, error) {
 	var matches []string
 	for _, entry := range entries {
-		if entry.ToolUseID == selector || (entry.Err == nil && entry.Record.AgentID == selector) {
+		if entry.Err == nil && entry.Record.AgentID == selector {
 			matches = append(matches, entry.ToolUseID)
 		}
 	}
@@ -689,7 +699,7 @@ func taskEntryToJSON(entry checkpoint.TaskEntry) checkpointTaskJSON {
 		SubagentType:                rec.SubagentType,
 		TaskDescription:             rec.TaskDescription,
 		Files:                       rec.Files,
-		TokenUsage:                  rec.TokenUsage,
+		TokenUsage:                  boundedTokenUsage(rec.TokenUsage),
 		TranscriptStored:            &stored,
 		TranscriptUnavailableReason: rec.TranscriptUnavailableReason,
 	}
@@ -736,13 +746,22 @@ func sessionMetadataToJSON(idx int, meta *checkpoint.Metadata) checkpointSession
 		ts := meta.CreatedAt
 		out.CreatedAt = &ts
 	}
-	// The persisted shape as-is: subagent totals, their completeness marker,
-	// and the API call count belong to the session's usage too.
-	out.TokenUsage = meta.TokenUsage
+	// The persisted shape, subagent totals and completeness marker included,
+	// with the subagent chain bounded (see boundedTokenUsage).
+	out.TokenUsage = boundedTokenUsage(meta.TokenUsage)
 	if meta.Summary != nil {
 		out.Summary = summaryToExportJSON(meta.Summary)
 	}
 	return out
+}
+
+// boundedTokenUsage copies usage with its subagent_tokens chain truncated at
+// types.MaxSubagentDepth. The usage comes from pushed metadata.json/task.json
+// blobs, and indented JSON grows quadratically with chain depth, so a small
+// hostile record could otherwise expand into hundreds of MB of output.
+// AddTokenUsage with a nil operand is the existing depth-capped copy.
+func boundedTokenUsage(usage *types.TokenUsage) *types.TokenUsage {
+	return types.AddTokenUsage(usage, nil)
 }
 
 // summaryToExportJSON projects the full persisted summary onto the export
