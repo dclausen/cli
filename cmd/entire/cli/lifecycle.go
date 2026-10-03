@@ -1339,14 +1339,16 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 			}
 		}
 		// The refresh only stores child evidence and subagent counters, so the
-		// parent's offset does not matter; the extractor still needs its body.
+		// parent's offset does not matter. Child completion needs only the
+		// child rollouts, so an unreadable parent still refreshes, as session
+		// end does with no parent at all.
 		var parent []byte
 		if state.TranscriptPath != "" {
 			if parent, err = ag.ReadTranscript(state.TranscriptPath); err != nil {
 				logging.Debug(ctx, "codex inventory refresh: parent transcript unreadable",
 					slog.String("session_id", state.SessionID),
 					slog.String("error", err.Error()))
-				continue
+				parent = nil
 			}
 		}
 		refreshCodexInventory(ctx, ag, state.SessionID, parent, 0)
