@@ -683,6 +683,35 @@ func (s *State) FindTaskRecord(toolUseID string) *TaskRecord {
 	return nil
 }
 
+// FindTaskRecordByAgentID returns the record whose AgentID is agentID, or nil.
+// An empty agentID matches nothing. Used where the completing event names the
+// subagent but not its tool_use_id (Claude Code's SubagentStop).
+//
+// A live (uncompleted) record wins over a completed one: resuming a Claude
+// subagent reuses its agent ID under a new tool_use_id, and the earlier run's
+// completed record stays on state until condensation. A completed match is
+// returned only when no live one exists, so a redelivered stop still reaches
+// the exactly-once guard and is skipped.
+func (s *State) FindTaskRecordByAgentID(agentID string) *TaskRecord {
+	if agentID == "" {
+		return nil
+	}
+	var completed *TaskRecord
+	for i := range s.TaskRecords {
+		rec := &s.TaskRecords[i]
+		if rec.AgentID != agentID {
+			continue
+		}
+		if rec.CompletedAt.IsZero() {
+			return rec
+		}
+		if completed == nil {
+			completed = rec
+		}
+	}
+	return completed
+}
+
 // CompleteTaskRecord marks the record for toolUseID as consumed exactly
 // once: it sets CompletedAt and returns true, or returns false — a no-op —
 // when no record exists for toolUseID or it was already completed
