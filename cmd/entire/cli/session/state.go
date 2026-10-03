@@ -687,11 +687,12 @@ func (s *State) FindTaskRecord(toolUseID string) *TaskRecord {
 // An empty agentID matches nothing. Used where the completing event names the
 // subagent but not its tool_use_id (Claude Code's SubagentStop).
 //
-// A live (uncompleted) record wins over a completed one: resuming a Claude
-// subagent reuses its agent ID under a new tool_use_id, and the earlier run's
-// completed record stays on state until condensation. A completed match is
-// returned only when no live one exists, so a redelivered stop still reaches
-// the exactly-once guard and is skipped.
+// A live (uncompleted) record wins over a completed one, should two records
+// ever share an agent ID before condensation; a completed match is returned
+// only when no live one exists, so a duplicate stop still reaches the
+// exactly-once guard and is skipped. (Claude Code continues a subagent with
+// SendMessage, which reuses the agent ID without a new Agent call, so it does
+// not create a second record.)
 func (s *State) FindTaskRecordByAgentID(agentID string) *TaskRecord {
 	if agentID == "" {
 		return nil

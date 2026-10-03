@@ -1027,19 +1027,18 @@ func TestState_TaskRecordAccessors(t *testing.T) {
 		assert.Nil(t, s.FindTaskRecordByAgentID(""))
 	})
 
-	// Resuming a Claude subagent reuses its agent ID under a new tool_use_id.
-	// While the earlier run's completed record is still uncondensed, the stop
-	// must find the live record of the resumed run, not the completed one.
+	// Should two records share an agent ID before condensation, the stop must
+	// find the live one, not the completed one.
 	t.Run("find by agent id prefers the live record", func(t *testing.T) {
 		t.Parallel()
 		s := &State{TaskRecords: []TaskRecord{
 			{ToolUseID: "toolu_first", AgentID: "a1", CompletedAt: time.Now()},
-			{ToolUseID: "toolu_resume", AgentID: "a1"},
+			{ToolUseID: "toolu_second", AgentID: "a1"},
 		}}
 
 		got := s.FindTaskRecordByAgentID("a1")
 		require.NotNil(t, got)
-		assert.Equal(t, "toolu_resume", got.ToolUseID)
+		assert.Equal(t, "toolu_second", got.ToolUseID)
 
 		// With no live record left, a redelivered stop still finds the
 		// completed one, so the exactly-once guard can skip it.

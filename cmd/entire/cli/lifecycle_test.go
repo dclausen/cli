@@ -4013,21 +4013,20 @@ func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_CompletesByAge
 	assert.Equal(t, "general-purpose", rec.SubagentType)
 }
 
-// TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_ResumedSubagent
-// covers a resumed Claude subagent: the resume reuses the agent ID under a new
-// tool_use_id, and the first run's completed record can still be on state
-// (not yet condensed). The stop must complete the resumed run's live record
+// TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_PrefersLiveRecord
+// covers two records sharing an agent ID before condensation, one completed
+// and one live. A stop matched by agent ID must complete the live record
 // rather than match the completed one and skip as a duplicate.
-func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_ResumedSubagent(t *testing.T) {
+func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_PrefersLiveRecord(t *testing.T) {
 	// NOT parallel: uses t.Chdir via setupSubagentEndTestRepo.
 	_, headHash := setupSubagentEndTestRepo(t)
 	ctx := context.Background()
-	sessionID := "resumed-subagent-session"
+	sessionID := "shared-agent-id-session"
 	firstCompletedAt := time.Now().Add(-time.Minute)
 
 	saveInFlightSession(ctx, t, sessionID, headHash,
 		session.TaskRecord{ToolUseID: "toolu_first", AgentID: "a5d355711b87c5650", StartedAt: firstCompletedAt, CompletedAt: firstCompletedAt},
-		session.TaskRecord{ToolUseID: "toolu_resume", AgentID: "a5d355711b87c5650", StartedAt: time.Now()},
+		session.TaskRecord{ToolUseID: "toolu_second", AgentID: "a5d355711b87c5650", StartedAt: time.Now()},
 	)
 
 	require.NoError(t, handleLifecycleSubagentEnd(ctx, newMockAgent(), finalSubagentEvent(sessionID, "", "a5d355711b87c5650")))
@@ -4035,10 +4034,10 @@ func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_ResumedSubagen
 	state, loadErr := strategy.LoadSessionState(ctx, sessionID)
 	require.NoError(t, loadErr)
 	require.NotNil(t, state)
-	assert.Empty(t, state.LiveTaskRecords(), "the stop must complete the resumed run's live record")
+	assert.Empty(t, state.LiveTaskRecords(), "the stop must complete the live record")
 	first := state.FindTaskRecord("toolu_first")
 	require.NotNil(t, first)
-	assert.True(t, first.CompletedAt.Equal(firstCompletedAt), "the first run's record must not be re-completed")
+	assert.True(t, first.CompletedAt.Equal(firstCompletedAt), "the completed record must not be re-completed")
 }
 
 // TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_NoMarker_IsNoOp

@@ -503,7 +503,9 @@ The framework dispatcher (`DispatchLifecycleEvent` in `lifecycle.go`) handles ea
 | `Compaction` | `SessionID` | `SessionRef`, `Metadata` |
 | `SessionEnd` | `SessionID` | `SessionRef`, `Metadata` |
 | `SubagentStart` | `SessionID`, `SessionRef`, `ToolUseID` | `ToolInput`, `Metadata` |
-| `SubagentEnd` | `SessionID`, `SessionRef`, `ToolUseID` | `SubagentID`, `ToolInput`, `Metadata`, `SubagentTranscript` (authoritative subagent transcript path when the hook payload supplies one), `Final` (only for agents with a two-signal subagent model — a launch-time stub plus a separate true-completion signal, e.g. Claude Code's `SubagentStop`: the stub sets false, the completion signal sets true; single-signal agents leave it false) |
+| `SubagentEnd` | `SessionID`, `SessionRef`, and `ToolUseID` or `SubagentID` | `ToolInput`, `Metadata`, `SubagentTranscript` (authoritative subagent transcript path when the hook payload supplies one), `Final` (only for agents with a two-signal subagent model — a launch-time stub plus a separate true-completion signal, e.g. Claude Code's `SubagentStop`: the stub sets false, the completion signal sets true; single-signal agents leave it false), `SubagentLaunch` (launch-time events only: `Foreground`/`Background` when the agent's tool result says how the subagent ran, which wins over `run_in_background` in `ToolInput`) |
+
+A launch-time `SubagentEnd` needs `ToolUseID`, and should carry `SubagentID` whenever the agent reports one: a `Final` event that has only `SubagentID` (Claude Code's `SubagentStop` has no `tool_use_id`) is matched to the launch record by it.
 
 `Metadata` (`map[string]string`) holds agent-specific state that the framework stores and makes available on subsequent events. Use it for agent-internal tracking (e.g., cursor positions, background agent flags) that doesn't map to a dedicated Event field.
 
