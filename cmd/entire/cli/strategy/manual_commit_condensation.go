@@ -293,6 +293,56 @@ func resolveTaskTranscriptPath(state *SessionState, agentID string) string {
 	return ""
 }
 
+// resolveInventoryTaskTranscripts resolves, by agent ID, the transcripts of
+// task records whose declared path is missing or cannot be read, using the
+// agent's verified child inventory reader. Codex records its child's rollout
+// path on a task record only when the parent's turn-end inventory refresh sees
+// a terminal turn, so a commit the parent makes mid-turn — after the child
+// finished but before the parent's Stop — condenses a record with no path; and
+// Codex can archive or relocate a rollout after its path was recorded. The
+// Claude-layout fallback finds neither. A record whose declared path opens is
+// not offered, so the common case reads no rollout here. The extractor accepts
+// a rollout only after matching its session_meta.id to the agent ID, so this
+// never attributes a coincidental file. Only inventory entries are offered: the inventory, not
+// the task record, is the authoritative child ledger.
+func resolveInventoryTaskTranscripts(ctx context.Context, ag agent.Agent, state *SessionState) map[string]string {
+	needed := make(map[string]struct{})
+	for _, record := range state.TaskRecords {
+		if record.TranscriptUnavailable || record.AgentID == "" {
+			continue
+		}
+		if record.DeclaredTranscriptPath == "" || agent.CheckTranscriptReadable(record.DeclaredTranscriptPath) != nil {
+			needed[record.AgentID] = struct{}{}
+		}
+	}
+	var refs []agent.SubagentReference
+	for _, entry := range state.SubagentInventory {
+		if _, ok := needed[entry.AgentID]; !ok {
+			continue
+		}
+		refs = append(refs, agent.SubagentReference{
+			ObservedTurnIDs:        entry.ObservedTurnIDs,
+			AgentID:                entry.AgentID,
+			DeclaredTranscriptPath: entry.DeclaredTranscriptPath,
+			ResolvedTranscriptPath: entry.ResolvedTranscriptPath,
+		})
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	extraction, ok := agent.ExtractWithSubagentInventory(ctx, ag, nil, 0, refs)
+	if !ok {
+		return nil
+	}
+	resolved := make(map[string]string, len(extraction.Children))
+	for _, child := range extraction.Children {
+		if child.ResolvedPath != "" {
+			resolved[child.AgentID] = child.ResolvedPath
+		}
+	}
+	return resolved
+}
+
 // taskTranscriptReasonUnresolvable, taskTranscriptReasonUnreadable,
 // taskTranscriptReasonEmpty, taskTranscriptReasonRedactionFailed, and
 // taskTranscriptReasonTooLarge are the stable
@@ -347,6 +397,7 @@ func (s *ManualCommitStrategy) materializeTaskRecords(
 		return nil, assets
 	}
 
+	inventoryPaths := resolveInventoryTaskTranscripts(ctx, ag, state)
 	payloads := make([]cpkg.TaskPayload, 0, len(state.TaskRecords))
 	for _, record := range state.TaskRecords {
 		if record.ToolUseID == "" || validation.ValidateToolUseID(record.ToolUseID) != nil {
@@ -381,13 +432,17 @@ func (s *ManualCommitStrategy) materializeTaskRecords(
 		}
 
 		// Candidate transcript paths, tried in order: the agent-declared path
-		// first, then the agent-layout fallback — declared paths are
-		// unreliable (agents relocate/clean up transcripts), which is why the
-		// fallback resolver exists at all, so a declared-but-unreadable path
-		// must not short-circuit past it.
+		// first, then the agent's verified inventory resolution, then the
+		// agent-layout fallback — declared paths are unreliable (agents
+		// relocate/clean up transcripts), which is why the fallback resolvers
+		// exist at all, so a declared-but-unreadable path must not
+		// short-circuit past them.
 		var candidates []string
 		if record.DeclaredTranscriptPath != "" {
 			candidates = append(candidates, record.DeclaredTranscriptPath)
+		}
+		if resolved := inventoryPaths[record.AgentID]; resolved != "" {
+			candidates = append(candidates, resolved)
 		}
 		if fallback := resolveTaskTranscriptPath(state, record.AgentID); fallback != "" && fallback != record.DeclaredTranscriptPath {
 			candidates = append(candidates, fallback)
