@@ -359,23 +359,9 @@ for task work; the payload is materialized at condensation (below).
 
 **Producers.**
 
-- **Background launch** (`run_in_background: true` in the Task tool's input):
-  Claude Code's PostToolUse for a backgrounded Task fires at the launch
-  acknowledgment, seconds after dispatch, so the launch only records an
-  in-flight record and captures nothing. `SubagentType`/`TaskDescription` are
-  captured here because `SubagentStop`'s payload carries none of them.
-- **Foreground completion** (post-task, non-final): PostToolUse fires at true
-  completion, so the record is created-and-completed in one step, files and
-  transcript path attached.
-- **SubagentStop (final, authoritative)**: the real completion signal for
-  background tasks. `handleSubagentStopFinal` completes the live record —
-  bypassing any "no changes, skip" instinct: a read-only subagent (reviewer,
-  search agent) still produced a transcript worth materializing. File
-  attribution is analyzer-only (the subagent's own transcript, never a
-  whole-worktree scan that would sweep in the parent's concurrent work); the
-  accepted trade is that shell side-effect files the transcript never names,
-  and deletions, are under-captured. A record already completed (foreground
-  dedup, duplicate/racing Final event) is skipped.
+- **Background launch**: Claude Code reports the launch mode in the Agent tool's PostToolUse `tool_response` (`status: "async_launched"` with `isAsync`, versus `"completed"` for foreground), which the parser carries as `agent.Event.SubagentLaunch`. That report wins; `tool_input.run_in_background` (a boolean or a boolean string) is only the fallback, because Claude Code usually runs Agent calls in the background without the model passing it. A background PostToolUse fires at the launch acknowledgment, seconds after dispatch, so the launch only records an in-flight record (with the `agentId` from the response) and captures nothing. `SubagentType`/`TaskDescription` are captured here because `SubagentStop`'s payload carries none of them.
+- **Foreground completion** (post-task, non-final): PostToolUse fires at true completion, so the record is created-and-completed in one step, files and transcript path attached. Claude Code's foreground `SubagentStop` arrives just *before* this PostToolUse, when no record exists yet, and is a no-op.
+- **SubagentStop (final, authoritative)**: the real completion signal for background tasks. Claude Code's payload carries `agent_id` but no `tool_use_id`, so `handleSubagentStopFinal` finds the record by `AgentID` (`FindTaskRecordByAgentID`, a live record before a completed one) and adopts its `ToolUseID`, which keys exactly-once completion and the checkpoint's `tasks/<tool_use_id>/` tree. It then completes the live record, bypassing any "no changes, skip" instinct: a read-only subagent (reviewer, search agent) still produced a transcript worth materializing. File attribution is analyzer-only (the subagent's own transcript, never a whole-worktree scan that would sweep in the parent's concurrent work); the accepted trade is that shell side-effect files the transcript never names, and deletions, are under-captured. A record already completed (duplicate/racing Final event) is skipped. Known gap: a subagent continued with `SendMessage` gets a second `SubagentStart`/`SubagentStop` under the same `agent_id` but no new Agent call, so its stop finds the completed record and the resumed run's edits are not attributed to the task.
 - **SessionEnd sweep** (`completeLiveTaskRecords`): a session closing with
   tasks still in flight completes every remaining live record, strictly
   **before** `endSessionNow` marks `PhaseEnded` and eagerly condenses, so the

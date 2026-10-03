@@ -3607,6 +3607,69 @@ func TestHandleLifecycleSubagentEnd_LaunchDispatch(t *testing.T) {
 			"task files must merge into FilesTouched so carry-forward and PostCommit gating see them")
 	})
 
+	// Claude Code runs most Agent calls in the background without the model
+	// ever passing run_in_background; only tool_response says so. The launch
+	// must still defer to SubagentStop, or the record completes from the
+	// launch stub with no files and the real work is never captured.
+	t.Run("reported background launch records marker", func(t *testing.T) {
+		_, headHash := setupSubagentEndTestRepo(t)
+		ctx := context.Background()
+		sessionID := "async-launch-session"
+
+		saveInFlightSession(ctx, t, sessionID, headHash)
+
+		event := &agent.Event{
+			Type:           agent.SubagentEnd,
+			SessionID:      sessionID,
+			ToolUseID:      "toolu_async1",
+			SubagentID:     "agent-async1",
+			ToolInput:      json.RawMessage(`{"subagent_type":"general-purpose","description":"Add count subcommand"}`),
+			SubagentLaunch: agent.SubagentLaunchBackground,
+			Timestamp:      time.Now(),
+		}
+		require.NoError(t, handleLifecycleSubagentEnd(ctx, newMockAgent(), event))
+
+		state, loadErr := strategy.LoadSessionState(ctx, sessionID)
+		require.NoError(t, loadErr)
+		require.NotNil(t, state)
+		require.Len(t, state.LiveTaskRecords(), 1, "a reported background launch must leave an in-flight marker")
+		marker := state.TaskRecords[0]
+		assert.Equal(t, "toolu_async1", marker.ToolUseID)
+		assert.Equal(t, "agent-async1", marker.AgentID, "SubagentStop can only find the marker by agent ID")
+		assert.Equal(t, "general-purpose", marker.SubagentType)
+	})
+
+	// The reverse: the subagent already finished when PostToolUse fires, so a
+	// run_in_background the harness did not honor must not leave a marker
+	// waiting for a SubagentStop that already fired.
+	t.Run("reported foreground overrides run_in_background", func(t *testing.T) {
+		repoDir, headHash := setupSubagentEndTestRepo(t)
+		ctx := context.Background()
+		sessionID := "fg-override-session"
+
+		saveInFlightSession(ctx, t, sessionID, headHash)
+		testutil.WriteFile(t, repoDir, "foreground.txt", "written by foreground subagent")
+
+		event := &agent.Event{
+			Type:           agent.SubagentEnd,
+			SessionID:      sessionID,
+			ToolUseID:      "toolu_fg2",
+			SubagentID:     "agent-fg2",
+			ToolInput:      json.RawMessage(`{"subagent_type":"dev","run_in_background":true}`),
+			SubagentLaunch: agent.SubagentLaunchForeground,
+			Timestamp:      time.Now(),
+		}
+		require.NoError(t, handleLifecycleSubagentEnd(ctx, newMockAgent(), event))
+
+		state, loadErr := strategy.LoadSessionState(ctx, sessionID)
+		require.NoError(t, loadErr)
+		require.NotNil(t, state)
+		require.Len(t, state.TaskRecords, 1)
+		rec := state.TaskRecords[0]
+		assert.False(t, rec.CompletedAt.IsZero(), "a reported foreground completion must complete the record now")
+		assert.Contains(t, rec.Files, "foreground.txt")
+	})
+
 	// uncorrelated guards agents whose SubagentEnd carries no correlation ID at
 	// all — Copilot CLI keys every subagent on "", so the exactly-once claim
 	// would match the first one's completed record and drop each later
@@ -3919,6 +3982,83 @@ func TestHandleLifecycleSubagentEnd_SubagentStop_ClaimPreventsDoubleCapture(t *t
 	require.NotNil(t, rec)
 	assert.Equal(t, firstCompletedAt, rec.CompletedAt, "a duplicate Final event must not re-complete the record")
 	assert.Len(t, state.TaskRecords, 1, "a duplicate Final event must not register a second record")
+}
+
+// TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_CompletesByAgentID
+// pins the real Claude Code SubagentStop shape: agent_id but no tool_use_id.
+// The stop must find the launch marker by agent ID and complete it under the
+// marker's ToolUseID, which keys the checkpoint's tasks/<tool_use_id>/ tree.
+func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_CompletesByAgentID(t *testing.T) {
+	// NOT parallel: uses t.Chdir via setupSubagentEndTestRepo.
+	_, headHash := setupSubagentEndTestRepo(t)
+	ctx := context.Background()
+	sessionID := "stop-by-agent-session"
+
+	saveInFlightSession(ctx, t, sessionID, headHash, session.TaskRecord{
+		ToolUseID:    "toolu_bg_agent",
+		AgentID:      "a5d355711b87c5650",
+		StartedAt:    time.Now(),
+		SubagentType: "general-purpose",
+	})
+
+	require.NoError(t, handleLifecycleSubagentEnd(ctx, newMockAgent(), finalSubagentEvent(sessionID, "", "a5d355711b87c5650")))
+
+	state, loadErr := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, loadErr)
+	require.NotNil(t, state)
+	require.Len(t, state.TaskRecords, 1, "the stop must complete the launch record, not add one keyed on an empty ToolUseID")
+	rec := state.TaskRecords[0]
+	assert.Equal(t, "toolu_bg_agent", rec.ToolUseID)
+	assert.False(t, rec.CompletedAt.IsZero(), "the stop must complete the marker it matched by agent ID")
+	assert.Equal(t, "general-purpose", rec.SubagentType)
+}
+
+// TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_PrefersLiveRecord
+// covers two records sharing an agent ID before condensation, one completed
+// and one live. A stop matched by agent ID must complete the live record
+// rather than match the completed one and skip as a duplicate.
+func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_PrefersLiveRecord(t *testing.T) {
+	// NOT parallel: uses t.Chdir via setupSubagentEndTestRepo.
+	_, headHash := setupSubagentEndTestRepo(t)
+	ctx := context.Background()
+	sessionID := "shared-agent-id-session"
+	firstCompletedAt := time.Now().Add(-time.Minute)
+
+	saveInFlightSession(ctx, t, sessionID, headHash,
+		session.TaskRecord{ToolUseID: "toolu_first", AgentID: "a5d355711b87c5650", StartedAt: firstCompletedAt, CompletedAt: firstCompletedAt},
+		session.TaskRecord{ToolUseID: "toolu_second", AgentID: "a5d355711b87c5650", StartedAt: time.Now()},
+	)
+
+	require.NoError(t, handleLifecycleSubagentEnd(ctx, newMockAgent(), finalSubagentEvent(sessionID, "", "a5d355711b87c5650")))
+
+	state, loadErr := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, loadErr)
+	require.NotNil(t, state)
+	assert.Empty(t, state.LiveTaskRecords(), "the stop must complete the live record")
+	first := state.FindTaskRecord("toolu_first")
+	require.NotNil(t, first)
+	assert.True(t, first.CompletedAt.Equal(firstCompletedAt), "the completed record must not be re-completed")
+}
+
+// TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_NoMarker_IsNoOp
+// covers a Claude foreground subagent: its SubagentStop arrives before the
+// PostToolUse that links agent_id to tool_use_id, so no record exists yet.
+// The stop must not invent one (it would be keyed on "" and land under
+// tasks//); the PostToolUse that follows captures the subagent.
+func TestHandleLifecycleSubagentEnd_SubagentStop_WithoutToolUseID_NoMarker_IsNoOp(t *testing.T) {
+	// NOT parallel: uses t.Chdir via setupSubagentEndTestRepo.
+	_, headHash := setupSubagentEndTestRepo(t)
+	ctx := context.Background()
+	sessionID := "fg-stop-first-session"
+
+	saveInFlightSession(ctx, t, sessionID, headHash)
+
+	require.NoError(t, handleLifecycleSubagentEnd(ctx, newMockAgent(), finalSubagentEvent(sessionID, "", "a5d355711b87c5650")))
+
+	state, loadErr := strategy.LoadSessionState(ctx, sessionID)
+	require.NoError(t, loadErr)
+	require.NotNil(t, state)
+	assert.Empty(t, state.TaskRecords)
 }
 
 // TestHandleLifecycleSubagentEnd_SubagentStop_Background_ExcludesForeignWorktreeChanges
