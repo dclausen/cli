@@ -294,17 +294,16 @@ func resolveTaskTranscriptPath(state *SessionState, agentID string) string {
 }
 
 // resolveInventoryTaskTranscripts resolves, by agent ID, the transcripts of
-// task records whose declared path is missing or no longer exists, using the
+// task records whose declared path is missing or cannot be read, using the
 // agent's verified child inventory reader. Codex records its child's rollout
 // path on a task record only when the parent's turn-end inventory refresh sees
 // a terminal turn, so a commit the parent makes mid-turn — after the child
 // finished but before the parent's Stop — condenses a record with no path; and
 // Codex can archive or relocate a rollout after its path was recorded. The
-// Claude-layout fallback finds neither. A record whose declared path still
-// exists is not offered, so the common case reads no rollout here. The
-// extractor accepts a rollout only
-// after matching its session_meta.id to the agent ID, so this never attributes
-// a coincidental file. Only inventory entries are offered: the inventory, not
+// Claude-layout fallback finds neither. A record whose declared path opens is
+// not offered, so the common case reads no rollout here. The extractor accepts
+// a rollout only after matching its session_meta.id to the agent ID, so this
+// never attributes a coincidental file. Only inventory entries are offered: the inventory, not
 // the task record, is the authoritative child ledger.
 func resolveInventoryTaskTranscripts(ctx context.Context, ag agent.Agent, state *SessionState) map[string]string {
 	needed := make(map[string]struct{})
@@ -312,7 +311,7 @@ func resolveInventoryTaskTranscripts(ctx context.Context, ag agent.Agent, state 
 		if record.TranscriptUnavailable || record.AgentID == "" {
 			continue
 		}
-		if record.DeclaredTranscriptPath == "" || !fileExists(record.DeclaredTranscriptPath) {
+		if record.DeclaredTranscriptPath == "" || agent.CheckTranscriptReadable(record.DeclaredTranscriptPath) != nil {
 			needed[record.AgentID] = struct{}{}
 		}
 	}

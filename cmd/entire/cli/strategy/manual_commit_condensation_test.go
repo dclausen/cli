@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1280,10 +1281,7 @@ func TestMaterializeTaskRecords_CodexRecordWithoutPathResolvesThroughInventory(t
 
 			sessions := t.TempDir()
 			rollout := filepath.Join(sessions, "2026", "10", "03", "rollout-2026-10-03T17-06-36-"+tt.rolloutID+".jsonl")
-			require.NoError(t, os.MkdirAll(filepath.Dir(rollout), 0o755))
-			require.NoError(t, os.WriteFile(rollout, []byte(
-				`{"type":"session_meta","payload":{"id":"`+tt.rolloutID+`"}}`+"\n"+
-					`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"added count"}]}}`+"\n"), 0o600))
+			writeCodexRolloutFixture(t, rollout, tt.rolloutID)
 
 			// The shape RecordSubagentStop leaves behind before any refresh:
 			// an inventory entry and an in-flight record, neither with a path.
@@ -1317,10 +1315,7 @@ func TestMaterializeTaskRecords_CodexRelocatedRolloutResolvesThroughInventory(t 
 	name := filepath.Join("2026", "10", "03", "rollout-2026-10-03T17-06-36-"+agentID+".jsonl")
 	stale := filepath.Join(root, "sessions", name)
 	archived := filepath.Join(root, "archived_sessions", name)
-	require.NoError(t, os.MkdirAll(filepath.Dir(archived), 0o755))
-	require.NoError(t, os.WriteFile(archived, []byte(
-		`{"type":"session_meta","payload":{"id":"`+agentID+`"}}`+"\n"+
-			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"added count"}]}}`+"\n"), 0o600))
+	writeCodexRolloutFixture(t, archived, agentID)
 
 	state.SubagentInventory = []session.SubagentInventoryEntry{{AgentID: agentID, ObservedTurnIDs: []string{"turn-1"}, ResolvedTranscriptPath: stale}}
 	state.TaskRecords = []session.TaskRecord{{ToolUseID: agentID, AgentID: agentID, DeclaredTranscriptPath: stale, CompletedAt: time.Now()}}
@@ -1330,6 +1325,48 @@ func TestMaterializeTaskRecords_CodexRelocatedRolloutResolvesThroughInventory(t 
 	require.Len(t, payloads, 1)
 	require.Empty(t, payloads[0].TranscriptUnavailableReason)
 	require.Contains(t, string(payloads[0].Transcript.Bytes()), "added count")
+}
+
+// TestMaterializeTaskRecords_CodexUnreadableDeclaredPathResolvesThroughInventory
+// covers a declared path that exists but cannot be opened: an existence check
+// alone would keep it off the inventory resolver, and reading it then fails.
+// The declared file sits outside the rollout roots, because an unreadable file
+// inside them makes the Codex scan fail closed by design.
+func TestMaterializeTaskRecords_CodexUnreadableDeclaredPathResolvesThroughInventory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permission bits this test removes")
+	}
+	if runtime.GOOS == goosWindows {
+		t.Skip("unix permission bits")
+	}
+	const agentID = "01a1024d-83c0-78f2-9d06-1d122de7dab4"
+	_, state := setupCondensableSessionWithTranscript(t, "2026-10-03-codex-unreadable-declared")
+
+	root := t.TempDir()
+	declared := filepath.Join(root, "declared", "rollout.jsonl")
+	writeCodexRolloutFixture(t, declared, agentID)
+	require.NoError(t, os.Chmod(declared, 0o000))
+	sessions := filepath.Join(root, "sessions")
+	writeCodexRolloutFixture(t, filepath.Join(sessions, "2026", "10", "03", "rollout-"+agentID+".jsonl"), agentID)
+
+	state.SubagentInventory = []session.SubagentInventoryEntry{{AgentID: agentID, ObservedTurnIDs: []string{"turn-1"}, DeclaredTranscriptPath: declared}}
+	state.TaskRecords = []session.TaskRecord{{ToolUseID: agentID, AgentID: agentID, DeclaredTranscriptPath: declared, CompletedAt: time.Now()}}
+
+	ag := &codex.CodexAgent{RolloutRoots: []string{sessions}}
+	payloads, _ := (&ManualCommitStrategy{}).materializeTaskRecords(context.Background(), context.Background(), ag, state, nil)
+	require.Len(t, payloads, 1)
+	require.Empty(t, payloads[0].TranscriptUnavailableReason)
+	require.Contains(t, string(payloads[0].Transcript.Bytes()), "added count")
+}
+
+// writeCodexRolloutFixture writes a minimal Codex rollout whose session_meta.id
+// is id, with one assistant message reading "added count".
+func writeCodexRolloutFixture(t *testing.T, path, id string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(
+		`{"type":"session_meta","payload":{"id":"`+id+`"}}`+"\n"+
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"added count"}]}}`+"\n"), 0o600))
 }
 
 // TestCondenseSession_InFlightTaskRecord_TranscriptSoFarStoredRecordSurvives
