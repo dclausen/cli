@@ -3878,7 +3878,7 @@ func TestSaveStep_SkippedStepClearsSnapshottedPendingSubagentFiles(t *testing.T)
 
 	pendingPA := &PromptAttribution{CheckpointNumber: 2, UserLinesAdded: 1}
 	require.NoError(t, MutateSessionState(context.Background(), sessionID, func(state *SessionState) error {
-		state.PendingSubagentFiles = []string{"sub.md"}
+		state.PendingSubagentFiles = map[string]string{"sub.md": ""}
 		state.PendingPromptAttribution = pendingPA
 		return nil
 	}))

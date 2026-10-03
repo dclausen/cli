@@ -1453,7 +1453,9 @@ func calculateSessionAttributions(ctx context.Context, repo *git.Repository, sha
 		AttributionBaseCommit: attrBase,
 		HeadCommitHash:        o.headCommitHash,
 		AllAgentFiles:         o.allAgentFiles,
-		PendingSubagentFiles:  state.PendingSubagentFiles,
+		PendingSubagentFiles: pendingSubagentBaselineContents(ctx, repo, state.PendingSubagentFiles, func(path string) string {
+			return getFileContent(headTree, path)
+		}),
 	})
 
 	if attribution != nil {

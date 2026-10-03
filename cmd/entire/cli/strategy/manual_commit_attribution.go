@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -11,6 +12,9 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/gitops"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
@@ -117,6 +121,51 @@ func getFileContent(tree *object.Tree, path string) string {
 	return content
 }
 
+// pendingSubagentBaselineContents loads the observed content of each pending
+// subagent file (see session.State.PendingSubagentFiles). A file absent when
+// observed has empty content, as do binary files, matching getFileContent. When
+// a baseline blob cannot be read, fallback supplies the content: callers pass
+// the file's current content, crediting all of it to the subagent rather than
+// counting the subagent's lines as user work.
+func pendingSubagentBaselineContents(ctx context.Context, repo *git.Repository, pending map[string]string, fallback func(path string) string) map[string]string {
+	if len(pending) == 0 {
+		return nil
+	}
+	contents := make(map[string]string, len(pending))
+	for path, hash := range pending {
+		if hash == "" {
+			contents[path] = ""
+			continue
+		}
+		content, err := readTextBlob(repo, plumbing.NewHash(hash))
+		if err != nil {
+			logging.Debug(logging.WithComponent(ctx, "attribution"), "pending subagent baseline unreadable",
+				slog.String("path", path),
+				slog.String("error", err.Error()))
+			content = fallback(path)
+		}
+		contents[path] = content
+	}
+	return contents
+}
+
+// readTextBlob returns a blob's content, or "" for a binary blob.
+func readTextBlob(repo *git.Repository, hash plumbing.Hash) (string, error) {
+	blob, err := repo.BlobObject(hash)
+	if err != nil {
+		return "", fmt.Errorf("read blob %s: %w", hash, err)
+	}
+	file := object.NewFile("", filemode.Regular, blob)
+	if isBinary, binErr := file.IsBinary(); binErr != nil || isBinary {
+		return "", nil //nolint:nilerr // unreadable-as-text matches getFileContent's binary handling
+	}
+	content, err := file.Contents()
+	if err != nil {
+		return "", fmt.Errorf("read blob %s contents: %w", hash, err)
+	}
+	return content, nil
+}
+
 // diffLines compares two strings and returns line-level diff stats.
 // Returns (unchanged, added, removed) line counts.
 func diffLines(checkpointContent, committedContent string) (unchanged, added, removed int) {
@@ -181,7 +230,7 @@ type AttributionParams struct {
 	AttributionBaseCommit string              // Session base commit hash (fallback for non-agent file detection)
 	HeadCommitHash        string              // HEAD commit hash for git diff-tree
 	AllAgentFiles         map[string]struct{} // Files touched by ALL agent sessions (cross-session exclusion)
-	PendingSubagentFiles  []string            // Subagent-written files no shadow snapshot holds yet
+	PendingSubagentFiles  map[string]string   // Content of subagent-written files no shadow snapshot holds yet, as observed
 }
 
 // CalculateAttributionWithAccumulated computes final attribution using accumulated prompt data.
@@ -336,22 +385,18 @@ type agentFileDiffs struct {
 // user edits, so base→shadow = (agent work + accumulated user work to these files).
 //
 // A pending subagent file was written by a subagent after the last shadow
-// snapshot, so the snapshot is stale for it: its committed content stands in
-// for the snapshot, crediting base→head to the agent rather than counting
-// shadow→head as post-checkpoint user edits.
-func diffAgentTouchedFiles(baseTree, shadowTree, headTree *object.Tree, filesTouched, pendingSubagentFiles []string) agentFileDiffs {
+// snapshot, so the snapshot is stale for it: the content observed after the
+// subagent's edit stands in for it, so base→observed counts as agent work and
+// observed→head as post-checkpoint user edits.
+func diffAgentTouchedFiles(baseTree, shadowTree, headTree *object.Tree, filesTouched []string, pendingSubagentFiles map[string]string) agentFileDiffs {
 	result := agentFileDiffs{
 		postCheckpointUserRemovedPerFile: make(map[string]int),
-	}
-	pending := make(map[string]struct{}, len(pendingSubagentFiles))
-	for _, f := range pendingSubagentFiles {
-		pending[f] = struct{}{}
 	}
 	for _, filePath := range filesTouched {
 		baseContent := getFileContent(baseTree, filePath)
 		headContent := getFileContent(headTree, filePath)
-		shadowContent := headContent
-		if _, ok := pending[filePath]; !ok {
+		shadowContent, pending := pendingSubagentFiles[filePath]
+		if !pending {
 			shadowContent = getFileContent(shadowTree, filePath)
 		}
 
@@ -508,6 +553,8 @@ func estimateUserSelfModifications(
 //   - lastCheckpointTree: the tree from the previous checkpoint (nil if first checkpoint)
 //   - worktreeFiles: map of file path → current worktree content for files that changed
 //   - checkpointNumber: which checkpoint we're about to create (1-indexed)
+//   - references: per-file reference content that replaces the reference tree,
+//     for subagent-written files the last checkpoint does not hold yet
 //
 // Returns the attribution data to store in session state. For checkpoint 1 (when
 // lastCheckpointTree is nil), AgentLinesAdded/Removed will be 0 since there's no
@@ -520,6 +567,7 @@ func CalculatePromptAttribution(
 	lastCheckpointTree *object.Tree,
 	worktreeFiles map[string]string,
 	checkpointNumber int,
+	references map[string]string,
 ) PromptAttribution {
 	result := PromptAttribution{
 		CheckpointNumber:   checkpointNumber,
@@ -538,7 +586,10 @@ func CalculatePromptAttribution(
 	}
 
 	for filePath, worktreeContent := range worktreeFiles {
-		referenceContent := getFileContent(referenceTree, filePath)
+		referenceContent, ok := references[filePath]
+		if !ok {
+			referenceContent = getFileContent(referenceTree, filePath)
+		}
 		baseContent := getFileContent(baseTree, filePath)
 
 		// User changes: diff(reference, worktree)

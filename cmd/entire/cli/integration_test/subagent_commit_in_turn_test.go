@@ -553,3 +553,122 @@ func TestSubagentCheckpoints_JointCommitWithRunningSubagent_KeepsBothSessions(t 
 		t.Errorf("materialized subagent transcript does not reference %q", subagentFile)
 	}
 }
+
+// TestSubagentCheckpoints_UserEditToSubagentFile_StaysHuman pins that a user
+// edit to a background subagent's file keeps counting as user work. The
+// subagent's edit is credited to the agent from the content it left behind,
+// not from whatever the file holds at the next snapshot or commit, and an
+// edit already snapshotted is not picked up again from the subagent's
+// transcript while the subagent keeps running.
+func TestSubagentCheckpoints_UserEditToSubagentFile_StaysHuman(t *testing.T) {
+	t.Parallel()
+
+	const (
+		taskToolUseID = "toolu_01UserEditsSubagentFile"
+		subagentID    = "a6666777788889999"
+		editedFile    = "docs/background.md"
+		editedContent = "# Background\n\nWritten by a background subagent.\n"
+		userContent   = editedContent + "User line one.\nUser line two.\n"
+		parentFile    = "docs/parent.md"
+		// 3 subagent lines plus the parent's 1.
+		wantAgentLines = 4
+		wantHumanAdded = 2
+	)
+
+	for _, tt := range []struct {
+		name string
+		// subagentRunning keeps the subagent live: it wrote during the first
+		// turn, that turn's Stop snapshotted its file, and the user edits the
+		// file before the next prompt while the subagent is still running.
+		subagentRunning bool
+		// nextTurn runs a notification turn after the user edit; otherwise
+		// the user commits before any later turn.
+		nextTurn bool
+	}{
+		{name: "after completion, commit before the next turn"},
+		{name: "after completion, then the notification turn", nextTurn: true},
+		{name: "while the subagent is still running", subagentRunning: true, nextTurn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := NewFeatureBranchEnv(t)
+			sess := env.NewSession()
+			sess.CreateTranscript("delegate a background task", []FileChange{{Path: parentFile, Content: "# Parent\n"}})
+
+			if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+			}
+			env.WriteFile(parentFile, "# Parent\n")
+			if err := env.SimulatePreTask(sess.ID, sess.TranscriptPath, taskToolUseID); err != nil {
+				t.Fatalf("SimulatePreTask failed: %v", err)
+			}
+			if err := env.SimulatePostTask(PostTaskInput{
+				SessionID:      sess.ID,
+				TranscriptPath: sess.TranscriptPath,
+				ToolUseID:      taskToolUseID,
+				AgentID:        subagentID,
+				Background:     true,
+			}); err != nil {
+				t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
+			}
+
+			writeSubagentEdit := func() string {
+				t.Helper()
+				path := sess.CreateSubagentTranscript(subagentID, []FileChange{{Path: editedFile, Content: editedContent}})
+				env.WriteFile(editedFile, editedContent)
+				return path
+			}
+			if tt.subagentRunning {
+				writeSubagentEdit()
+			}
+			if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateStop failed: %v", err)
+			}
+			if !tt.subagentRunning {
+				subagentTranscript := writeSubagentEdit()
+				if err := env.SimulateSubagentStop(SubagentStopInput{
+					SessionID:           sess.ID,
+					TranscriptPath:      sess.TranscriptPath,
+					AgentID:             subagentID,
+					AgentTranscriptPath: subagentTranscript,
+				}); err != nil {
+					t.Fatalf("SimulateSubagentStop failed: %v", err)
+				}
+			}
+
+			env.WriteFile(editedFile, userContent)
+
+			if tt.nextTurn {
+				if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateUserPromptSubmit (next turn) failed: %v", err)
+				}
+				if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateStop (next turn) failed: %v", err)
+				}
+			}
+
+			env.GitCommitWithShadowHooksAsAgent("Add docs", editedFile, parentFile)
+
+			checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash())
+			if checkpointID == "" {
+				t.Fatalf("commit should carry an Entire-Checkpoint trailer")
+			}
+			content, ok := env.ReadFileFromBranch(paths.MetadataBranchName, SessionMetadataPath(checkpointID))
+			if !ok {
+				t.Fatalf("session metadata.json not found for checkpoint %s", checkpointID)
+			}
+			var metadata checkpoint.Metadata
+			if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+				t.Fatalf("parse session metadata: %v", err)
+			}
+			if metadata.Attribution == nil {
+				t.Fatal("session metadata has no attribution")
+			}
+			attr := metadata.Attribution
+			if attr.AgentLines != wantAgentLines || attr.HumanAdded != wantHumanAdded {
+				t.Errorf("attribution: agent_lines=%d human_added=%d, want agent_lines=%d human_added=%d",
+					attr.AgentLines, attr.HumanAdded, wantAgentLines, wantHumanAdded)
+			}
+		})
+	}
+}

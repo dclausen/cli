@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
 	"sort"
@@ -113,11 +114,9 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			// The tree already matches the last snapshot, so this step's
 			// pending subagent files are snapshotted. Clear them, and leave
 			// the prompt attribution for the next step that does write.
-			remaining := removeFiles(state.PendingSubagentFiles, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
-			if len(remaining) == len(state.PendingSubagentFiles) {
+			if !removePendingSubagentFiles(state, step.ModifiedFiles, step.NewFiles, step.DeletedFiles) {
 				return ErrMutationSkip
 			}
-			state.PendingSubagentFiles = remaining
 			state.PendingPromptAttribution = pendingPromptAttr
 			return nil
 		}
@@ -128,7 +127,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		state.StepCount++
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
 		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
-		state.PendingSubagentFiles = removeFiles(state.PendingSubagentFiles, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
+		removePendingSubagentFiles(state, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
 		if state.StepCount == 1 {
 			state.TranscriptIdentifierAtStart = step.StepTranscriptIdentifier
 		}
@@ -419,45 +418,106 @@ func applyTaskRecordCompletion(state *SessionState, rec session.TaskRecord) erro
 		live.AgentID = rec.AgentID
 	}
 	state.FilesTouched = mergeFilesTouched(state.FilesTouched, rec.Files)
-	// Completion writes no shadow snapshot. A background subagent finishes
-	// after the parent's turn ended, so until the next SaveStep its files are
-	// agent work that the next turn-start attribution would otherwise count
-	// as user edits.
-	state.PendingSubagentFiles = mergeFilesTouched(state.PendingSubagentFiles, rec.Files)
 	return nil
 }
 
-// RecordPendingSubagentFiles marks files as subagent work that no shadow
-// snapshot holds yet. See session.State.PendingSubagentFiles.
-func RecordPendingSubagentFiles(ctx context.Context, sessionID string, files []string) error {
+// SubagentEditCapture is what a scan of subagent transcripts observed: the
+// content baselines of files a subagent wrote since its last scan, and each
+// scanned task record's new scan position. See
+// session.State.PendingSubagentFiles and TaskRecord.ScannedTranscriptLines.
+type SubagentEditCapture struct {
+	// Baselines maps a repo-relative path to the blob hash of its content
+	// when the edit was observed ("" when the file was absent).
+	Baselines map[string]string
+	// ScannedLines maps a task record's tool use ID to how many lines of its
+	// subagent transcript the scan covered.
+	ScannedLines map[string]int
+}
+
+// apply records the capture in state. An existing baseline wins: it was
+// observed closer to the subagent's write, so changes since then are not the
+// subagent's.
+func (c SubagentEditCapture) apply(state *SessionState) {
+	for path, hash := range c.Baselines {
+		if _, ok := state.PendingSubagentFiles[path]; ok {
+			continue
+		}
+		if state.PendingSubagentFiles == nil {
+			state.PendingSubagentFiles = make(map[string]string)
+		}
+		state.PendingSubagentFiles[path] = hash
+	}
+	for toolUseID, lines := range c.ScannedLines {
+		if rec := state.FindTaskRecord(toolUseID); rec != nil && lines > rec.ScannedTranscriptLines {
+			rec.ScannedTranscriptLines = lines
+		}
+	}
+}
+
+// CaptureSubagentBaselines stores the current worktree content of files a
+// subagent wrote as git blobs and returns their hashes, keyed by path. A file
+// that no longer exists maps to "".
+func CaptureSubagentBaselines(ctx context.Context, files []string) (map[string]string, error) {
+	baselines := make(map[string]string, len(files))
 	if len(files) == 0 {
+		return baselines, nil
+	}
+	repo, err := OpenRepository(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open repository: %w", err)
+	}
+	defer repo.Close()
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree root: %w", err)
+	}
+	for _, file := range files {
+		content, readErr := readWorktreeFile(repoRoot, file)
+		if errors.Is(readErr, fs.ErrNotExist) {
+			baselines[file] = ""
+			continue
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+		hash, blobErr := checkpoint.CreateBlobFromContent(repo, content)
+		if blobErr != nil {
+			return nil, fmt.Errorf("store baseline of %s: %w", file, blobErr)
+		}
+		baselines[file] = hash.String()
+	}
+	return baselines, nil
+}
+
+// RecordSubagentEdits records a subagent transcript scan in session state.
+func RecordSubagentEdits(ctx context.Context, sessionID string, capture SubagentEditCapture) error {
+	if len(capture.Baselines) == 0 && len(capture.ScannedLines) == 0 {
 		return nil
 	}
 	err := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
-		state.PendingSubagentFiles = mergeFilesTouched(state.PendingSubagentFiles, files)
+		capture.apply(state)
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("record pending subagent files: %w", err)
+		return fmt.Errorf("record subagent edits: %w", err)
 	}
 	return nil
 }
 
-// removeFiles returns files without any entry in the remove lists.
-func removeFiles(files []string, remove ...[]string) []string {
-	drop := make(map[string]struct{})
-	for _, list := range remove {
+// removePendingSubagentFiles drops every listed file from the pending
+// subagent files and reports whether any was pending.
+func removePendingSubagentFiles(state *SessionState, lists ...[]string) bool {
+	removed := false
+	for _, list := range lists {
 		for _, f := range list {
-			drop[filepath.ToSlash(f)] = struct{}{}
+			path := filepath.ToSlash(f)
+			if _, ok := state.PendingSubagentFiles[path]; ok {
+				delete(state.PendingSubagentFiles, path)
+				removed = true
+			}
 		}
 	}
-	var kept []string
-	for _, f := range files {
-		if _, ok := drop[filepath.ToSlash(f)]; !ok {
-			kept = append(kept, f)
-		}
-	}
-	return kept
+	return removed
 }
 
 // CompleteTaskRecord marks the record for rec.ToolUseID completed exactly once
@@ -467,7 +527,12 @@ func removeFiles(files []string, remove ...[]string) []string {
 // tasks have no launch hook, so completion is the only event that can produce
 // their record. Returns false without error when a racing Final event already
 // completed the record, or when no session state exists.
-func CompleteTaskRecord(ctx context.Context, sessionID string, rec session.TaskRecord) (bool, error) {
+//
+// capture records, in the same mutation, the subagent's edits that no shadow
+// snapshot holds yet: completion writes no snapshot, so a background subagent
+// finishing after the parent's turn ended would otherwise have its lines
+// counted as user work by the next turn-start attribution.
+func CompleteTaskRecord(ctx context.Context, sessionID string, rec session.TaskRecord, capture SubagentEditCapture) (bool, error) {
 	completed := false
 	mutErr := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
 		if state.FindTaskRecord(rec.ToolUseID) == nil {
@@ -479,6 +544,7 @@ func CompleteTaskRecord(ctx context.Context, sessionID string, rec session.TaskR
 		if err := applyTaskRecordCompletion(state, rec); err != nil {
 			return err
 		}
+		capture.apply(state)
 		completed = true
 		return nil
 	})

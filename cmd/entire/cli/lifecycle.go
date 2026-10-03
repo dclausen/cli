@@ -992,9 +992,37 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	// A background subagent that finished after the previous turn ended left
 	// its edits in no snapshot, and this turn's transcript and pre-prompt
 	// baseline do not show them either. Snapshot them now so they count as
-	// agent work.
+	// agent work. Still-running subagents' edits since their last scan are
+	// snapshotted too, and their scans advance past them once the snapshot is
+	// saved, so a later turn start does not mark them pending again.
+	var subagentScans map[string]int
 	if sessionState != nil {
-		relModifiedFiles = mergeUnique(relModifiedFiles, sessionState.PendingSubagentFiles)
+		for path := range sessionState.PendingSubagentFiles {
+			relModifiedFiles = mergeUnique(relModifiedFiles, []string{path})
+		}
+		// Agent files this turn's prompt attribution counted user edits in
+		// must reach the snapshot too: commit-time attribution subtracts those
+		// lines from base→shadow, so a snapshot without them (an untracked
+		// file the turn did not touch is invisible to the checks above)
+		// counts the same lines again as post-checkpoint user edits. Other
+		// files stay out: snapshotting would make them agent files.
+		if pa := sessionState.PendingPromptAttribution; pa != nil {
+			for _, path := range sessionState.FilesTouched {
+				if pa.UserAddedPerFile[path] > 0 || pa.UserRemovedPerFile[path] > 0 {
+					relModifiedFiles = mergeUnique(relModifiedFiles, []string{path})
+				}
+			}
+		}
+		var runningFiles []string
+		runningFiles, subagentScans = scanRunningSubagents(ctx, ag, sessionState, transcriptRef, repoRoot)
+		relModifiedFiles = mergeUnique(relModifiedFiles, runningFiles)
+	}
+	recordSubagentScans := func() {
+		if err := strategy.RecordSubagentEdits(ctx, sessionID, strategy.SubagentEditCapture{ScannedLines: subagentScans}); err != nil {
+			logging.Warn(logCtx, "failed to record running subagents' scan positions",
+				slog.String("session_id", sessionID),
+				slog.String("error", err.Error()))
+		}
 	}
 	relModifiedFiles = filterToUncommittedFiles(ctx, relModifiedFiles, repoRoot)
 	normalizeSpan.End()
@@ -1016,6 +1044,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	totalChanges := len(relModifiedFiles) + len(relNewFiles) + len(relDeletedFiles)
 	if totalChanges == 0 {
 		logging.Info(logCtx, "no files modified during session, skipping checkpoint")
+		recordSubagentScans()
 		recordCaptureDegraded(ctx, sessionID, captureDegraded)
 		// SaveStep is skipped, but out-of-band token usage must still be
 		// recorded: an Antigravity turn that commits ALL its work mid-turn
@@ -1169,6 +1198,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 		}
 		return fmt.Errorf("failed to save step: %w", err)
 	}
+	recordSubagentScans()
 
 	finishTurn(captureDegraded)
 	return nil
@@ -1890,57 +1920,111 @@ func subagentTranscriptAndFiles(
 	return transcriptPath, mergeUnique(modifiedFiles, files), nil
 }
 
-// recordRunningSubagentFiles marks files that still-running subagents have
-// written as pending subagent work before turn-start attribution runs. Claude
-// Code's task-notification starts a turn in the same instant the background
-// subagent's SubagentStop fires, so the completion that would record these
-// files can land after turn-start attribution has already counted them as
-// user edits. The subagent's transcript is complete by then, so read it here.
+// scanSubagentEdits returns the files a subagent's transcript records as
+// written after line rec.ScannedTranscriptLines, as repo-relative paths, and
+// the line the scan reached. ok is false when the transcript cannot be
+// resolved or read. transcriptPath overrides the record's own path when set.
+func scanSubagentEdits(ctx context.Context, ag agent.Agent, sessionRef, sessionID string, rec session.TaskRecord, transcriptPath, repoRoot string) (files []string, lines int, ok bool) {
+	analyzer, isAnalyzer := agent.AsTranscriptAnalyzer(ag)
+	if !isAnalyzer || rec.TranscriptUnavailable {
+		return nil, 0, false
+	}
+	if transcriptPath == "" {
+		transcriptPath = rec.DeclaredTranscriptPath
+	}
+	if transcriptPath == "" && sessionRef != "" {
+		transcriptPath = ResolveAgentTranscriptPath(filepath.Dir(sessionRef), sessionID, rec.AgentID)
+	}
+	if transcriptPath == "" {
+		return nil, 0, false
+	}
+	modified, lines, err := analyzer.ExtractModifiedFilesFromOffset(ctx, transcriptPath, rec.ScannedTranscriptLines)
+	if err != nil {
+		logging.Warn(ctx, "failed to extract subagent's modified files",
+			slog.String("session_id", sessionID),
+			slog.String("tool_use_id", rec.ToolUseID),
+			slog.String("error", err.Error()))
+		return nil, 0, false
+	}
+	return FilterAndNormalizePaths(modified, repoRoot), lines, true
+}
+
+// scanRunningSubagents scans every still-running subagent's transcript from
+// where its last scan stopped.
+func scanRunningSubagents(ctx context.Context, ag agent.Agent, state *strategy.SessionState, sessionRef, repoRoot string) (files []string, scanned map[string]int) {
+	if state == nil {
+		return nil, nil
+	}
+	for _, rec := range state.LiveTaskRecords() {
+		recFiles, lines, ok := scanSubagentEdits(ctx, ag, sessionRef, state.SessionID, rec, "", repoRoot)
+		if !ok {
+			continue
+		}
+		files = mergeUnique(files, recFiles)
+		if scanned == nil {
+			scanned = make(map[string]int)
+		}
+		scanned[rec.ToolUseID] = lines
+	}
+	return files, scanned
+}
+
+// recordRunningSubagentFiles marks files that still-running subagents wrote
+// since their last scan as pending subagent work before turn-start
+// attribution runs. Claude Code's task-notification starts a turn in the same
+// instant the background subagent's SubagentStop fires, so the completion that
+// would record these files can land after turn-start attribution has already
+// counted them as user edits. The subagent's transcript is complete by then,
+// so read it here.
 func recordRunningSubagentFiles(ctx context.Context, ag agent.Agent, event *agent.Event) {
-	analyzer, ok := agent.AsTranscriptAnalyzer(ag)
-	if !ok || event.SessionRef == "" {
-		return
-	}
 	state, err := strategy.LoadSessionState(ctx, event.SessionID)
-	if err != nil || state == nil {
-		return
-	}
-	live := state.LiveTaskRecords()
-	if len(live) == 0 {
+	if err != nil || state == nil || len(state.LiveTaskRecords()) == 0 {
 		return
 	}
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return
 	}
-
-	var files []string
-	for _, rec := range live {
-		if rec.TranscriptUnavailable {
-			continue
-		}
-		transcriptPath := rec.DeclaredTranscriptPath
-		if transcriptPath == "" {
-			transcriptPath = ResolveAgentTranscriptPath(filepath.Dir(event.SessionRef), event.SessionID, rec.AgentID)
-		}
-		if transcriptPath == "" {
-			continue
-		}
-		modified, _, extractErr := analyzer.ExtractModifiedFilesFromOffset(ctx, transcriptPath, 0)
-		if extractErr != nil {
-			logging.Warn(ctx, "failed to extract running subagent's modified files",
-				slog.String("session_id", event.SessionID),
-				slog.String("tool_use_id", rec.ToolUseID),
-				slog.String("error", extractErr.Error()))
-			continue
-		}
-		files = mergeUnique(files, FilterAndNormalizePaths(modified, repoRoot))
+	files, scanned := scanRunningSubagents(ctx, ag, state, event.SessionRef, repoRoot)
+	baselines, err := strategy.CaptureSubagentBaselines(ctx, files)
+	if err != nil {
+		// Without baselines the files stay unscanned, and the next scan retries.
+		logging.Warn(ctx, "failed to capture running subagents' file baselines",
+			slog.String("session_id", event.SessionID),
+			slog.String("error", err.Error()))
+		return
 	}
-	if err := strategy.RecordPendingSubagentFiles(ctx, event.SessionID, files); err != nil {
+	capture := strategy.SubagentEditCapture{Baselines: baselines, ScannedLines: scanned}
+	if err := strategy.RecordSubagentEdits(ctx, event.SessionID, capture); err != nil {
 		logging.Warn(ctx, "failed to record running subagents' files",
 			slog.String("session_id", event.SessionID),
 			slog.String("error", err.Error()))
 	}
+}
+
+// completionEditCapture captures the edits a completing subagent made since
+// its last scan, for CompleteTaskRecord to record as pending subagent files.
+// Without a readable transcript every file the capture found counts.
+func completionEditCapture(ctx context.Context, ag agent.Agent, event *agent.Event, transcriptPath, repoRoot string, files []string) strategy.SubagentEditCapture {
+	var capture strategy.SubagentEditCapture
+	if state, err := strategy.LoadSessionState(ctx, event.SessionID); err == nil && state != nil {
+		if rec := state.FindTaskRecord(event.ToolUseID); rec != nil {
+			if recFiles, lines, ok := scanSubagentEdits(ctx, ag, event.SessionRef, event.SessionID, *rec, transcriptPath, repoRoot); ok {
+				files = recFiles
+				capture.ScannedLines = map[string]int{rec.ToolUseID: lines}
+			}
+		}
+	}
+	baselines, err := strategy.CaptureSubagentBaselines(ctx, filterToUncommittedFiles(ctx, files, repoRoot))
+	if err != nil {
+		logging.Warn(ctx, "failed to capture completed subagent's file baselines",
+			slog.String("session_id", event.SessionID),
+			slog.String("tool_use_id", event.ToolUseID),
+			slog.String("error", err.Error()))
+		return strategy.SubagentEditCapture{}
+	}
+	capture.Baselines = baselines
+	return capture
 }
 
 // completeSubagentTaskRecord detects a completed subagent invocation's changes
@@ -2082,7 +2166,8 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		_ = CleanupPreTaskState(logCtx, event.ToolUseID) //nolint:errcheck // best-effort cleanup
 		return nil
 	}
-	completed, err := strategy.CompleteTaskRecord(logCtx, event.SessionID, rec)
+	capture := completionEditCapture(logCtx, ag, event, subagentTranscriptPath, repoRoot, files)
+	completed, err := strategy.CompleteTaskRecord(logCtx, event.SessionID, rec, capture)
 	if err != nil {
 		return fmt.Errorf("failed to complete task record: %w", err)
 	}

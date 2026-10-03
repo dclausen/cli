@@ -1277,7 +1277,7 @@ func TestCalculatePromptAttribution_PopulatesPerFile(t *testing.T) {
 		"b.go": "line1\nagent1\nagent2\nuser1\n",       // +1 user line
 	}
 
-	result := CalculatePromptAttribution(baseTree, lastCheckpointTree, worktreeFiles, 2)
+	result := CalculatePromptAttribution(baseTree, lastCheckpointTree, worktreeFiles, 2, nil)
 
 	if result.UserLinesAdded != 4 {
 		t.Errorf("UserLinesAdded = %d, want 4 (3 + 1)", result.UserLinesAdded)

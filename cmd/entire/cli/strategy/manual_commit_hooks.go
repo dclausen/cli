@@ -1887,7 +1887,9 @@ func (s *ManualCommitStrategy) condenseAndUpdateState(
 	state.PromptAttributions = nil
 	state.PendingPromptAttribution = nil
 	state.FilesTouched = nil
-	state.PendingSubagentFiles = subtractFilesByName(ctx, state.PendingSubagentFiles, committedFiles)
+	for path := range committedFiles {
+		delete(state.PendingSubagentFiles, path)
+	}
 
 	// NOTE: filesystem prompt.txt is NOT cleared here. The caller (PostCommit handler)
 	// decides whether to clear it based on carry-forward: if remaining files exist,
@@ -3148,7 +3150,7 @@ func captureSessionOwner(state *SessionState) {
 // calculatePromptAttributionAtStart calculates attribution at prompt start (before agent runs).
 // This captures user changes since the last checkpoint. The only agent changes it
 // can see are subagent edits no snapshot holds yet (state.PendingSubagentFiles),
-// which it skips.
+// which it measures from their observed content instead of the snapshot.
 //
 // IMPORTANT: This reads from the worktree (not staging area) to match what WriteTemporary
 // captures in checkpoints. If we read staged content but checkpoints capture worktree content,
@@ -3230,20 +3232,10 @@ func (s *ManualCommitStrategy) calculatePromptAttributionAtStart(
 	// Build map of changed files with their worktree content
 	// IMPORTANT: We read from worktree (not staging area) to match what WriteTemporary
 	// captures in checkpoints. This ensures attribution is consistent.
-	pendingSubagentFiles := make(map[string]struct{}, len(state.PendingSubagentFiles))
-	for _, f := range state.PendingSubagentFiles {
-		pendingSubagentFiles[filepath.ToSlash(f)] = struct{}{}
-	}
-
 	changedFiles := make(map[string]string)
 	for filePath, fileStatus := range status {
 		// Skip unmodified files
 		if fileStatus.Worktree == git.Unmodified && fileStatus.Staging == git.Unmodified {
-			continue
-		}
-		// Skip files a subagent wrote since the last snapshot: they are agent
-		// work the next SaveStep snapshots, not user edits.
-		if _, pending := pendingSubagentFiles[filePath]; pending {
 			continue
 		}
 		// Skip .entire metadata directory (session data, not user code)
@@ -3271,7 +3263,13 @@ func (s *ManualCommitStrategy) calculatePromptAttributionAtStart(
 	}
 
 	// Use CalculatePromptAttribution from manual_commit_attribution.go
-	result = CalculatePromptAttribution(baseTree, lastCheckpointTree, changedFiles, nextCheckpointNum)
+	// A subagent wrote these files after the last snapshot; their content
+	// when the edit was observed is the reference, so only later changes
+	// count as user edits.
+	references := pendingSubagentBaselineContents(ctx, repo, state.PendingSubagentFiles, func(path string) string {
+		return changedFiles[path]
+	})
+	result = CalculatePromptAttribution(baseTree, lastCheckpointTree, changedFiles, nextCheckpointNum, references)
 
 	return result
 }
