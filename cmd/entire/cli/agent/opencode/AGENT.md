@@ -132,7 +132,7 @@ top-level session.
 | `session.created` / `session.updated` with `info.parentID` set, and any task-tool metadata naming a child | (suppressed plugin-side) | These populate `childSessions`. `session.idle` / `session.status` carry only `properties.sessionID` (no `info.parentID` to check) and are instead suppressed by membership in that same `childSessions` set; no `session-start`/`turn-start`/`turn-end` is ever fired for a child. |
 | `tool.execute.before` with `tool == "task"` | (plugin-side only) | Records `Date.now()` per `callID`, sent as `started_at` on both subagent hooks (see `task_id` resumption below). |
 | `message.part.updated`, task part `status: running` with `metadata.sessionId` | `SubagentStart` (`subagent-start` hook) | First moment the child ID is bound to the `callID`. `ToolUseID = callID`, `SessionID = top-level session` (the parent, or for a nested call the session the chain descends from), `SubagentID = metadata.sessionId`, `SubagentType`/`TaskDescription` from `args`. `DeferredCompletion: true`, since completion arrives separately from `subagent-stop`. |
-| `tool.execute.after` with `tool == "task"` | `SubagentEnd` (`subagent-stop` hook) | `SessionID = top-level session`, `ToolUseID = callID`, `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The child is exported via `opencode export` and declared via `SubagentTranscriptPath` (`.entire/tmp/<childID>.<callID>.json`, cut to this call's messages; `<childID>.json` when `started_at` is unknown); `ModifiedFiles` are extracted from that transcript at capture time rather than placed on the event, and token usage is computed from the same export. |
+| `tool.execute.after` with `tool == "task"` | `SubagentEnd` (`subagent-stop` hook) | `SessionID = top-level session`, `ToolUseID = callID`, `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The event declares no transcript. The capture, after its skip checks, exports the child via `opencode export` (`FetchSubagentTranscript`) and declares it (`.entire/tmp/<childID>.<callID>.json`, cut to this call's messages; `<childID>.json` when `started_at` is unknown); files and token usage come from that export. A failed export completes the record transcript-unavailable, and condensation exports again. |
 
 The suppression decision is made entirely on the plugin side, from the events
 and metadata it already observes — the Go side never sees a `session-start`,
@@ -184,7 +184,7 @@ lives in the child's.
 - **`task_id` resumption** reuses a child session across several `callID`s.
   Handled: each call keeps its own task record (`ToolUseID = callID`,
   `AgentID = child`), and the plugin sends the call's `tool.execute.before`
-  clock as `started_at`, so the stop hook declares only the child messages
+  clock as `started_at`, so the capture declares only the child messages
   created at or after it (`.entire/tmp/<child>.<callID>.json`) and the
   record's files and tokens are this call's alone. A call whose start the
   plugin never saw (a restart mid-task) declares the full export.

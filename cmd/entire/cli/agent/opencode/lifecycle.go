@@ -183,7 +183,9 @@ func (a *OpenCodeAgent) ParseHookEvent(ctx context.Context, hookName string, std
 			Final:                   true,
 			CompletionWithoutLaunch: true,
 		}
-		a.attachSubagentTranscript(ctx, event)
+		// No export here: the capture exports the child through
+		// FetchSubagentTranscript, after the checks that can still discard
+		// this event, so a stop pays for at most one export.
 		return event, nil
 
 	default:
@@ -227,39 +229,6 @@ func (a *OpenCodeAgent) parseSubagentPayload(ctx context.Context, stdin io.Reade
 		return nil, "", err
 	}
 	return raw, parentRef, nil
-}
-
-// attachSubagentTranscript exports the child session and declares it on the
-// event with its exact token usage. On failure the event is left marked
-// transcript-unavailable and the record completes without it; condensation
-// then re-exports the child through FetchSubagentTranscript, so the transcript
-// is not lost while it still exists in OpenCode's store.
-func (a *OpenCodeAgent) attachSubagentTranscript(ctx context.Context, event *agent.Event) {
-	logCtx := logging.WithComponent(ctx, "lifecycle")
-	path, err := a.exportSubagent(ctx, event.SubagentID, event.ToolUseID, event.SubagentStartedAt)
-	if err != nil {
-		logging.Warn(logCtx, "opencode: could not export subagent transcript; completing task without it",
-			slog.String("session_id", event.SessionID),
-			slog.String("tool_use_id", event.ToolUseID),
-			slog.String("subagent_id", event.SubagentID),
-			slog.String("error", err.Error()))
-		event.SubagentTranscriptUnavailable = true
-		return
-	}
-	event.SubagentTranscriptPath = path
-	data, err := a.ReadTranscript(path)
-	if err != nil {
-		logging.Warn(logCtx, "opencode: could not read exported subagent transcript for token usage",
-			slog.String("subagent_id", event.SubagentID), slog.String("error", err.Error()))
-		return
-	}
-	usage, err := a.CalculateTokenUsage(data, 0)
-	if err != nil {
-		logging.Warn(logCtx, "opencode: could not compute subagent token usage",
-			slog.String("subagent_id", event.SubagentID), slog.String("error", err.Error()))
-		return
-	}
-	event.TokenUsage = usage
 }
 
 // PrepareTranscript ensures the OpenCode transcript file is up-to-date by calling `opencode export`.

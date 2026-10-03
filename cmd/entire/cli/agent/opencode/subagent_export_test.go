@@ -86,7 +86,7 @@ func TestParseHookEvent_SubagentStart_CarriesCallStart(t *testing.T) {
 	assert.True(t, event.SubagentStartedAt.IsZero(), "an absent start stays unknown so the framework uses its own clock")
 }
 
-func TestParseHookEvent_SubagentStop_ResumedChildDeclaresOnlyThisCall(t *testing.T) {
+func TestFetchSubagentTranscript_ResumedChildDeclaresOnlyThisCall(t *testing.T) {
 	// Not parallel: t.Chdir and stubExport.
 	t.Chdir(t.TempDir())
 	paths.ClearWorktreeRootCache()
@@ -96,26 +96,26 @@ func TestParseHookEvent_SubagentStop_ResumedChildDeclaresOnlyThisCall(t *testing
 	})
 
 	ag := &OpenCodeAgent{}
-	input := `{"session_id":"ses_parent","tool_use_id":"call_blue","subagent_id":"ses_child","started_at":5000}`
-	event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(input))
+	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.UnixMilli(5000))
 	require.NoError(t, err)
 
-	assert.True(t, strings.HasSuffix(event.SubagentTranscriptPath, filepath.Join(paths.EntireTmpDir, "ses_child.call_blue.json")),
-		"each call declares its own file, so a later call cannot overwrite it: %s", event.SubagentTranscriptPath)
-	data, err := os.ReadFile(event.SubagentTranscriptPath)
+	assert.True(t, strings.HasSuffix(path, filepath.Join(paths.EntireTmpDir, "ses_child.call_blue.json")),
+		"each call declares its own file, so a later call cannot overwrite it: %s", path)
+	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"m3", "m4"}, messageIDs(t, data))
 
-	files, _, err := ag.ExtractModifiedFilesFromOffset(context.Background(), event.SubagentTranscriptPath, 0)
+	files, _, err := ag.ExtractModifiedFilesFromOffset(context.Background(), path, 0)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/repo/docs/blue.md"}, files, "the first call's red.md must not be attributed to this call")
 
-	require.NotNil(t, event.TokenUsage)
-	assert.Equal(t, 7, event.TokenUsage.InputTokens)
-	assert.Equal(t, 3, event.TokenUsage.OutputTokens)
+	usage, err := ag.CalculateTokenUsage(data, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 7, usage.InputTokens)
+	assert.Equal(t, 3, usage.OutputTokens)
 }
 
-func TestParseHookEvent_SubagentStop_UnknownStartDeclaresFullExport(t *testing.T) {
+func TestFetchSubagentTranscript_UnknownStartDeclaresFullExport(t *testing.T) {
 	// Not parallel: t.Chdir and stubExport.
 	t.Chdir(t.TempDir())
 	paths.ClearWorktreeRootCache()
@@ -124,12 +124,12 @@ func TestParseHookEvent_SubagentStop_UnknownStartDeclaresFullExport(t *testing.T
 		return root.WriteFile(outputName, []byte(resumedChildExportFixture), 0o600)
 	})
 
-	input := `{"session_id":"ses_parent","tool_use_id":"call_blue","subagent_id":"ses_child"}`
-	event, err := (&OpenCodeAgent{}).ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(input))
+	path, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.Time{})
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(event.SubagentTranscriptPath, filepath.Join(paths.EntireTmpDir, "ses_child.json")), event.SubagentTranscriptPath)
-	require.NotNil(t, event.TokenUsage)
-	assert.Equal(t, 107, event.TokenUsage.InputTokens)
+	assert.True(t, strings.HasSuffix(path, filepath.Join(paths.EntireTmpDir, "ses_child.json")), path)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"m1", "m2", "m3", "m4"}, messageIDs(t, data))
 }
 
 func TestFetchSubagentTranscript_ScopesLikeTheStopHook(t *testing.T) {

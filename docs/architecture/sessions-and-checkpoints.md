@@ -366,10 +366,11 @@ for task work; the payload is materialized at condensation (below).
   instead of claiming exactly-once.
 - **OpenCode task tool**: `subagent-start` (parent task part bound to the child
   session) records the in-flight marker via `DeferredCompletion`;
-  `subagent-stop` (`tool.execute.after`) exports the child session with
-  `opencode export`, declares it as the transcript, attaches exact tokens, and
-  completes the record through the Final path with `CompletionWithoutLaunch`,
-  so a start the plugin never saw still completes. Child sessions fire no
+  `subagent-stop` (`tool.execute.after`) completes the record through the
+  Final path with `CompletionWithoutLaunch`, so a start the plugin never saw
+  still completes. It declares no transcript: the capture exports the child
+  through `agent.SubagentTranscriptFetcher` (`opencode export`) after its skip
+  checks, declares it, and takes exact tokens from it — one export per stop. Child sessions fire no
   lifecycle hooks of their own. A child resumed through the task tool's
   `task_id` backs one record per call: the plugin's call start
   (`Event.SubagentStartedAt`, which becomes the record's `StartedAt`) cuts the
@@ -377,11 +378,10 @@ for task work; the payload is materialized at condensation (below).
   are not attributed twice. A background task (`background: true`) fires its
   `subagent-stop` from the child's own idle rather than from the tool hook,
   which returns at launch; nested calls (`subagent_depth > 1`) are recorded on
-  the top-level session. When a completion has no readable child transcript
-  (its export failed, or the SessionEnd sweep completes a task still in
-  flight), the capture re-exports the child through
-  `agent.SubagentTranscriptFetcher` before attributing files, so the record
-  keeps its files and tokens.
+  the top-level session. The SessionEnd sweep's capture of a task still in
+  flight fetches the same way, so that record keeps its files and tokens; a
+  failed fetch completes it transcript-unavailable and condensation tries
+  again.
 
 **Exactly-once completion.** Completion goes through
 `strategy.CompleteTaskRecord`: one `MutateSessionState` closure marks

@@ -1855,8 +1855,8 @@ type subagentCaptureOptions struct {
 
 // fetchSubagentTranscriptForCapture asks an agent whose subagents are
 // re-exportable sessions (SubagentTranscriptFetcher) for the child transcript
-// when nothing declared or resolved one: a stop hook whose own export failed,
-// or a record still in flight when SessionEnd completes it. Without it the
+// when nothing declared or resolved one: OpenCode's subagent-stop, which
+// declares no path, or a record still in flight when SessionEnd completes it. Without it the
 // record completes with no files, and condensation's later fetch restores the
 // transcript but not the attribution. On success the event is updated to
 // match — transcript declared, available, and token usage filled when the hook
@@ -1868,10 +1868,13 @@ func fetchSubagentTranscriptForCapture(logCtx context.Context, ag agent.Agent, e
 	}
 	path, err := fetcher.FetchSubagentTranscript(logCtx, event.SubagentID, event.ToolUseID, event.SubagentStartedAt)
 	if err != nil {
-		logging.Warn(logCtx, "could not fetch subagent transcript for capture",
+		logging.Warn(logCtx, "could not fetch subagent transcript for capture; completing the task without it",
 			slog.String("session_id", event.SessionID),
 			slog.String("tool_use_id", event.ToolUseID),
 			slog.String("error", err.Error()))
+		// The child's transcript lives only in the agent's store, so no
+		// generic layout path can stand in for it; condensation fetches again.
+		event.SubagentTranscriptUnavailable = true
 		return ""
 	}
 	event.SubagentTranscriptPath = path
