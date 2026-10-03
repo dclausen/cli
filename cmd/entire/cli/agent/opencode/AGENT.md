@@ -186,8 +186,10 @@ lives in the child's.
   `AgentID = child`), and the plugin sends the call's `tool.execute.before`
   clock as `started_at`, so the capture declares only the child messages
   created at or after it (`.entire/tmp/<child>.<callID>.json`) and the
-  record's files and tokens are this call's alone. A call whose start the
-  plugin never saw (a restart mid-task) declares the full export.
+  record's files and tokens are this call's alone. A re-export after the fact
+  (condensation) is also bounded by the record's completion, since the child
+  may have served a later call by then. A call whose start the plugin never
+  saw (a restart mid-task) declares the full export.
 - **Model-specific `callID` format**: opaque and not globally unique; the child
   session ID is the safe cross-process key.
 - **Nested subagents** are off by default (`subagent_depth: 1`); when enabled,

@@ -271,8 +271,8 @@ func (a *OpenCodeAgent) FetchTranscript(ctx context.Context, sessionID string) (
 // FetchSubagentTranscript exports a task record's child session, scoped to
 // that call like the stop hook's export. The record's AgentID is the child
 // session ID, which `opencode export` accepts directly.
-func (a *OpenCodeAgent) FetchSubagentTranscript(ctx context.Context, agentID, toolUseID string, startedAt time.Time) (string, error) {
-	return a.exportSubagent(ctx, agentID, toolUseID, startedAt)
+func (a *OpenCodeAgent) FetchSubagentTranscript(ctx context.Context, agentID, toolUseID string, startedAt, completedAt time.Time) (string, error) {
+	return a.exportSubagent(ctx, agentID, toolUseID, startedAt, completedAt)
 }
 
 // sessionTranscriptPath validates the session ID and returns the expected transcript path.

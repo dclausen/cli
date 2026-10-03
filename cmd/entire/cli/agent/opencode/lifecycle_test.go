@@ -340,7 +340,7 @@ func TestFetchSubagentTranscript_ExportsTheChild(t *testing.T) {
 	})
 
 	ag := &OpenCodeAgent{}
-	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_red", time.Time{})
+	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_red", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"ses_child"}, exported, "exactly the child is exported")
 	assert.True(t, strings.HasSuffix(path, filepath.Join(paths.EntireTmpDir, "ses_child.json")), path)
@@ -363,7 +363,7 @@ func TestFetchSubagentTranscript_ExportFailureIsReturned(t *testing.T) {
 		return errors.New("opencode not reachable")
 	})
 
-	_, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_red", time.UnixMilli(5000))
+	_, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_red", time.UnixMilli(5000), time.Time{})
 	require.Error(t, err, "the capture marks the record transcript-unavailable on this error")
 }
 

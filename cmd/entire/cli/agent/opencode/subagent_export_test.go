@@ -43,16 +43,19 @@ func TestScopeExportToCall(t *testing.T) {
 	tests := []struct {
 		name    string
 		since   time.Time
+		until   time.Time
 		wantIDs []string
 	}{
 		{name: "second call keeps only its messages", since: time.UnixMilli(5000), wantIDs: []string{"m3", "m4"}},
 		{name: "first call start keeps everything", since: time.UnixMilli(1), wantIDs: []string{"m1", "m2", "m3", "m4"}},
 		{name: "start after every message keeps nothing", since: time.UnixMilli(9000), wantIDs: []string{}},
+		{name: "first call's completion drops the later call", since: time.UnixMilli(1), until: time.UnixMilli(100), wantIDs: []string{"m1", "m2"}},
+		{name: "end alone still cuts later calls", until: time.UnixMilli(100), wantIDs: []string{"m1", "m2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			out, kept, err := scopeExportToCall([]byte(resumedChildExportFixture), tt.since)
+			out, kept, err := scopeExportToCall([]byte(resumedChildExportFixture), tt.since, tt.until)
 			require.NoError(t, err)
 			assert.Equal(t, len(tt.wantIDs), kept)
 			assert.Equal(t, tt.wantIDs, messageIDs(t, out))
@@ -69,7 +72,7 @@ func TestScopeExportToCall(t *testing.T) {
 
 func TestScopeExportToCall_RejectsInvalidExport(t *testing.T) {
 	t.Parallel()
-	_, _, err := scopeExportToCall([]byte(`{"messages":"nope"}`), time.UnixMilli(1))
+	_, _, err := scopeExportToCall([]byte(`{"messages":"nope"}`), time.UnixMilli(1), time.Time{})
 	require.Error(t, err)
 }
 
@@ -96,7 +99,7 @@ func TestFetchSubagentTranscript_ResumedChildDeclaresOnlyThisCall(t *testing.T) 
 	})
 
 	ag := &OpenCodeAgent{}
-	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.UnixMilli(5000))
+	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.UnixMilli(5000), time.Time{})
 	require.NoError(t, err)
 
 	assert.True(t, strings.HasSuffix(path, filepath.Join(paths.EntireTmpDir, "ses_child.call_blue.json")),
@@ -124,7 +127,7 @@ func TestFetchSubagentTranscript_UnknownStartDeclaresFullExport(t *testing.T) {
 		return root.WriteFile(outputName, []byte(resumedChildExportFixture), 0o600)
 	})
 
-	path, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.Time{})
+	path, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(path, filepath.Join(paths.EntireTmpDir, "ses_child.json")), path)
 	data, err := os.ReadFile(path)
@@ -141,9 +144,31 @@ func TestFetchSubagentTranscript_ScopesLikeTheStopHook(t *testing.T) {
 		return root.WriteFile(outputName, []byte(resumedChildExportFixture), 0o600)
 	})
 
-	path, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.UnixMilli(5000))
+	path, err := (&OpenCodeAgent{}).FetchSubagentTranscript(context.Background(), "ses_child", "call_blue", time.UnixMilli(5000), time.Time{})
 	require.NoError(t, err)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"m3", "m4"}, messageIDs(t, data))
+}
+
+func TestFetchSubagentTranscript_ReExportOfEarlierCallExcludesLaterCalls(t *testing.T) {
+	// Not parallel: t.Chdir and stubExport.
+	t.Chdir(t.TempDir())
+	paths.ClearWorktreeRootCache()
+	t.Cleanup(paths.ClearWorktreeRootCache)
+	stubExport(t, func(_ context.Context, root *os.Root, _, outputName string) error {
+		return root.WriteFile(outputName, []byte(resumedChildExportFixture), 0o600)
+	})
+
+	// Condensation re-exports the first call after the child has served the
+	// second: the first call's completion must bound the slice.
+	ag := &OpenCodeAgent{}
+	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_red", time.UnixMilli(1), time.UnixMilli(100))
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"m1", "m2"}, messageIDs(t, data))
+	files, _, err := ag.ExtractModifiedFilesFromOffset(context.Background(), path, 0)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/repo/docs/red.md"}, files, "the later call's blue.md must not be attributed to the first call")
 }

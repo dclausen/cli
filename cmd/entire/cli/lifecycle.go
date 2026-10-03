@@ -1866,7 +1866,7 @@ func fetchSubagentTranscriptForCapture(logCtx context.Context, ag agent.Agent, e
 	if !ok || event.SubagentID == "" {
 		return ""
 	}
-	path, err := fetcher.FetchSubagentTranscript(logCtx, event.SubagentID, event.ToolUseID, event.SubagentStartedAt)
+	path, err := fetcher.FetchSubagentTranscript(logCtx, event.SubagentID, event.ToolUseID, event.SubagentStartedAt, time.Time{})
 	if err != nil {
 		logging.Warn(logCtx, "could not fetch subagent transcript for capture; completing the task without it",
 			slog.String("session_id", event.SessionID),

@@ -28,7 +28,7 @@ type fetchingAgent struct {
 	fetched []string
 }
 
-func (f *fetchingAgent) FetchSubagentTranscript(_ context.Context, agentID, _ string, _ time.Time) (string, error) {
+func (f *fetchingAgent) FetchSubagentTranscript(_ context.Context, agentID, _ string, _, _ time.Time) (string, error) {
 	f.fetched = append(f.fetched, agentID)
 	if f.err != nil {
 		return "", f.err

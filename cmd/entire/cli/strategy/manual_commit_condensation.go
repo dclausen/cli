@@ -458,7 +458,7 @@ func readTaskTranscript(ctx, logCtx context.Context, ag agent.Agent, state *Sess
 	if !ok {
 		return nil, "", readErr
 	}
-	path, err := fetcher.FetchSubagentTranscript(ctx, record.AgentID, record.ToolUseID, record.StartedAt)
+	path, err := fetcher.FetchSubagentTranscript(ctx, record.AgentID, record.ToolUseID, record.StartedAt, record.CompletedAt)
 	if err != nil {
 		logging.Warn(logCtx, "failed to fetch subagent transcript from the agent",
 			slog.String("session_id", state.SessionID),
