@@ -487,6 +487,27 @@ func TestSanitizePortableTranscript_StripsAgentMessageEncryptedContent(t *testin
 	require.Equal(t, string(got), string(SanitizePortableTranscript(got)))
 }
 
+// TestSanitizePortableTranscript_StripsAgentMessageEncryptedContentInCompactedHistory
+// covers the same agent_message shape nested in a "compacted" line's
+// replacement_history, which sanitizeHistoryItems handles separately.
+func TestSanitizePortableTranscript_StripsAgentMessageEncryptedContentInCompactedHistory(t *testing.T) {
+	t.Parallel()
+
+	const ciphertext = "gAAAAABqwRn8bmVzdGVkLWNpcGhlcnRleHQtZm9yLXRlc3RzLW9ubHk"
+	input := []byte(`{"type":"session_meta","payload":{"id":"abc"}}` + "\n" +
+		`{"type":"compacted","payload":{"message":"","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"agent_message","id":"amsg_01","author":"/root","recipient":"/root/worker","content":[{"type":"input_text","text":"Message Type: NEW_TASK"},{"type":"encrypted_content","encrypted_content":"` + ciphertext + `"}]}]}}` + "\n")
+
+	got := SanitizePortableTranscript(input)
+
+	require.NotContains(t, string(got), ciphertext, "nested agent_message ciphertext survived sanitization")
+	require.NotContains(t, string(got), "encrypted_content")
+	require.Contains(t, string(got), `"text":"Message Type: NEW_TASK"`)
+	require.Contains(t, string(got), `"type":"agent_message"`)
+	require.Len(t, splitJSONL(got), len(splitJSONL(input)),
+		"sanitization must preserve the line count")
+	require.Equal(t, string(got), string(SanitizePortableTranscript(got)))
+}
+
 // TestSanitizePortableTranscript_UnchangedInputReturnsSameBytes pins the fast path
 // that makes the "call it from every storage path" contract affordable: a transcript
 // with nothing to strip must come back as the identical backing array, not a
