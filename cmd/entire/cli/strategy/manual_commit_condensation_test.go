@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/codex"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
@@ -1254,6 +1255,81 @@ func TestCondenseSession_TranscriptUnavailableDoesNotProbeGenericLayout(t *testi
 	taskJSON, found := checkpointTaskFile(t, repo, checkpointID, "tasks/"+toolUseID+"/task.json")
 	require.True(t, found)
 	require.Contains(t, taskJSON, taskTranscriptReasonUnresolvable)
+}
+
+// TestMaterializeTaskRecords_CodexRecordWithoutPathResolvesThroughInventory
+// covers a Codex parent that commits mid-turn, after its child finished but
+// before the parent's Stop refreshed the inventory: the task record has no
+// declared path, and the Claude-layout fallback cannot find a Codex rollout.
+// Condensation must resolve the rollout by session_meta.id through the
+// inventory instead of storing a reason-only task.json, and must still refuse
+// a rollout whose session_meta.id names a different agent.
+func TestMaterializeTaskRecords_CodexRecordWithoutPathResolvesThroughInventory(t *testing.T) {
+	const agentID = "01a1024d-83c0-78f2-9d06-1d122de7dab4"
+	tests := []struct {
+		name           string
+		rolloutID      string
+		wantTranscript bool
+	}{
+		{name: "matching session_meta id", rolloutID: agentID, wantTranscript: true},
+		{name: "mismatched session_meta id", rolloutID: "01a1024d-0000-0000-0000-000000000000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, state := setupCondensableSessionWithTranscript(t, "2026-10-03-codex-mid-turn-"+tt.rolloutID)
+
+			sessions := t.TempDir()
+			rollout := filepath.Join(sessions, "2026", "10", "03", "rollout-2026-10-03T17-06-36-"+tt.rolloutID+".jsonl")
+			require.NoError(t, os.MkdirAll(filepath.Dir(rollout), 0o755))
+			require.NoError(t, os.WriteFile(rollout, []byte(
+				`{"type":"session_meta","payload":{"id":"`+tt.rolloutID+`"}}`+"\n"+
+					`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"added count"}]}}`+"\n"), 0o600))
+
+			// The shape RecordSubagentStop leaves behind before any refresh:
+			// an inventory entry and an in-flight record, neither with a path.
+			state.SubagentInventory = []session.SubagentInventoryEntry{{AgentID: agentID, ObservedTurnIDs: []string{"turn-1"}}}
+			state.TaskRecords = []session.TaskRecord{{ToolUseID: agentID, AgentID: agentID}}
+
+			ag := &codex.CodexAgent{RolloutRoots: []string{sessions}}
+			payloads, _ := (&ManualCommitStrategy{}).materializeTaskRecords(context.Background(), context.Background(), ag, state, nil)
+			require.Len(t, payloads, 1)
+			if !tt.wantTranscript {
+				require.Equal(t, taskTranscriptReasonUnresolvable, payloads[0].TranscriptUnavailableReason)
+				require.Empty(t, payloads[0].Transcript.Bytes())
+				return
+			}
+			require.Empty(t, payloads[0].TranscriptUnavailableReason)
+			require.Contains(t, string(payloads[0].Transcript.Bytes()), "added count")
+		})
+	}
+}
+
+// TestMaterializeTaskRecords_CodexRelocatedRolloutResolvesThroughInventory
+// covers a declared path that went stale: Codex archived the rollout after the
+// turn-end refresh recorded its path on the task record. The declared path no
+// longer exists and the Claude-layout fallback cannot find a Codex rollout, so
+// condensation must re-resolve it by session_meta.id through the inventory.
+func TestMaterializeTaskRecords_CodexRelocatedRolloutResolvesThroughInventory(t *testing.T) {
+	const agentID = "01a1024d-83c0-78f2-9d06-1d122de7dab4"
+	_, state := setupCondensableSessionWithTranscript(t, "2026-10-03-codex-relocated-rollout")
+
+	root := t.TempDir()
+	name := filepath.Join("2026", "10", "03", "rollout-2026-10-03T17-06-36-"+agentID+".jsonl")
+	stale := filepath.Join(root, "sessions", name)
+	archived := filepath.Join(root, "archived_sessions", name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(archived), 0o755))
+	require.NoError(t, os.WriteFile(archived, []byte(
+		`{"type":"session_meta","payload":{"id":"`+agentID+`"}}`+"\n"+
+			`{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"added count"}]}}`+"\n"), 0o600))
+
+	state.SubagentInventory = []session.SubagentInventoryEntry{{AgentID: agentID, ObservedTurnIDs: []string{"turn-1"}, ResolvedTranscriptPath: stale}}
+	state.TaskRecords = []session.TaskRecord{{ToolUseID: agentID, AgentID: agentID, DeclaredTranscriptPath: stale, CompletedAt: time.Now()}}
+
+	ag := &codex.CodexAgent{RolloutRoots: []string{filepath.Join(root, "sessions"), filepath.Join(root, "archived_sessions")}}
+	payloads, _ := (&ManualCommitStrategy{}).materializeTaskRecords(context.Background(), context.Background(), ag, state, nil)
+	require.Len(t, payloads, 1)
+	require.Empty(t, payloads[0].TranscriptUnavailableReason)
+	require.Contains(t, string(payloads[0].Transcript.Bytes()), "added count")
 }
 
 // TestCondenseSession_InFlightTaskRecord_TranscriptSoFarStoredRecordSurvives
