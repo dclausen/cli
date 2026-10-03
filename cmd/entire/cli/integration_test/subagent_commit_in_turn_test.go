@@ -329,6 +329,144 @@ func TestSubagentCheckpoints_CommitAfterBackgroundTaskCompletes_LinksViaFiles(t 
 	}
 }
 
+// TestSubagentCheckpoints_BackgroundSubagentEdit_AttributedToAgent pins that a
+// background subagent's lines count as agent lines. The subagent writes after
+// the parent's turn ended, so the edit is in no shadow snapshot when Claude
+// Code's task-notification starts the next turn. Turn-start prompt attribution
+// must not count that edit as human work. The notification's UserPromptSubmit
+// and SubagentStop arrive in the same instant, so both orders are covered.
+func TestSubagentCheckpoints_BackgroundSubagentEdit_AttributedToAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name                 string
+		turnStartBeforeStop  bool
+		parentEdits          bool
+		commitBeforeNextTurn bool
+	}{
+		{name: "subagent stop first", turnStartBeforeStop: false},
+		{name: "notification turn first", turnStartBeforeStop: true},
+		{name: "subagent stop first after parent checkpoint", turnStartBeforeStop: false, parentEdits: true},
+		{name: "notification turn first after parent checkpoint", turnStartBeforeStop: true, parentEdits: true},
+		{name: "commit before the next turn", commitBeforeNextTurn: true},
+		{name: "commit before the next turn after parent checkpoint", commitBeforeNextTurn: true, parentEdits: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := NewFeatureBranchEnv(t)
+			sess := env.NewSession()
+
+			// With a parent edit, the first turn's Stop writes a shadow
+			// snapshot, so the next turn's prompt attribution is no longer the
+			// pre-session baseline and any misattributed line shows as human.
+			var parentChanges []FileChange
+			if tt.parentEdits {
+				parentChanges = []FileChange{{Path: "docs/parent.md", Content: "# Parent\n"}}
+			}
+			sess.CreateTranscript("delegate a background task", parentChanges)
+
+			const (
+				taskToolUseID = "toolu_01BackgroundAttribution"
+				subagentID    = "f5555666677778888"
+				editedFile    = "docs/background.md"
+				editedContent = "# Background\n\nWritten by a background subagent.\n"
+				editedLines   = 3
+			)
+
+			if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+			}
+			if tt.parentEdits {
+				env.WriteFile("docs/parent.md", "# Parent\n")
+			}
+			if err := env.SimulatePreTask(sess.ID, sess.TranscriptPath, taskToolUseID); err != nil {
+				t.Fatalf("SimulatePreTask failed: %v", err)
+			}
+			if err := env.SimulatePostTask(PostTaskInput{
+				SessionID:      sess.ID,
+				TranscriptPath: sess.TranscriptPath,
+				ToolUseID:      taskToolUseID,
+				AgentID:        subagentID,
+				Background:     true,
+			}); err != nil {
+				t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
+			}
+			if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateStop failed: %v", err)
+			}
+
+			subagentTranscript := sess.CreateSubagentTranscript(subagentID, []FileChange{
+				{Path: editedFile, Content: editedContent},
+			})
+			env.WriteFile(editedFile, editedContent)
+
+			subagentStop := func() {
+				t.Helper()
+				if err := env.SimulateSubagentStop(SubagentStopInput{
+					SessionID:           sess.ID,
+					TranscriptPath:      sess.TranscriptPath,
+					AgentID:             subagentID,
+					AgentTranscriptPath: subagentTranscript,
+				}); err != nil {
+					t.Fatalf("SimulateSubagentStop failed: %v", err)
+				}
+			}
+			notificationTurn := func() {
+				t.Helper()
+				if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateUserPromptSubmit (task notification) failed: %v", err)
+				}
+			}
+			switch {
+			case tt.commitBeforeNextTurn:
+				subagentStop()
+			case tt.turnStartBeforeStop:
+				notificationTurn()
+				subagentStop()
+			default:
+				subagentStop()
+				notificationTurn()
+			}
+			if !tt.commitBeforeNextTurn {
+				if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateStop (notification turn) failed: %v", err)
+				}
+			}
+
+			committed := []string{editedFile}
+			if tt.parentEdits {
+				committed = append(committed, "docs/parent.md")
+			}
+			env.GitCommitWithShadowHooksAsAgent("Add background doc", committed...)
+
+			checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash())
+			if checkpointID == "" {
+				t.Fatalf("commit of a background subagent's file should carry an Entire-Checkpoint trailer")
+			}
+			content, ok := env.ReadFileFromBranch(paths.MetadataBranchName, SessionMetadataPath(checkpointID))
+			if !ok {
+				t.Fatalf("session metadata.json not found for checkpoint %s", checkpointID)
+			}
+			var metadata checkpoint.Metadata
+			if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+				t.Fatalf("parse session metadata: %v", err)
+			}
+			if metadata.Attribution == nil {
+				t.Fatal("session metadata has no attribution")
+			}
+			attr := metadata.Attribution
+			wantAgent := editedLines
+			if tt.parentEdits {
+				wantAgent++
+			}
+			if attr.AgentLines != wantAgent || attr.HumanAdded != 0 {
+				t.Errorf("attribution: agent_lines=%d human_added=%d, want agent_lines=%d human_added=0",
+					attr.AgentLines, attr.HumanAdded, wantAgent)
+			}
+		})
+	}
+}
+
 // TestSubagentCheckpoints_JointCommitWithRunningSubagent_KeepsBothSessions pins
 // that the read-only gate does not drop a co-author. A background subagent is
 // still running under an IDLE parent, so its edit is not in the parent's

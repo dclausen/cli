@@ -42,6 +42,8 @@ Before each agent run, we capture what the user changed since the last checkpoin
 
 This happens *before* the agent runs, so we can cleanly separate "user edits between prompts" from "agent work during prompt".
 
+The exception is a background subagent. It can finish after the parent's turn ended, and its completion writes no shadow snapshot, so its edits sit in the worktree when the next turn starts. Claude Code's task notification even starts that turn in the same instant the subagent stops. Files a subagent wrote since the last snapshot are kept in the session's `PendingSubagentFiles`: completion adds them, turn start adds files from still-running subagents' transcripts, and prompt-start attribution skips them. The next turn end snapshots them and clears them. If the user commits first, commit-time attribution treats their committed content as already snapshotted, so the lines count as agent work.
+
 **2. At commit time** (`CalculateAttributionWithAccumulated`)
 
 When the user commits, we calculate final attribution by:

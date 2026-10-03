@@ -181,6 +181,7 @@ type AttributionParams struct {
 	AttributionBaseCommit string              // Session base commit hash (fallback for non-agent file detection)
 	HeadCommitHash        string              // HEAD commit hash for git diff-tree
 	AllAgentFiles         map[string]struct{} // Files touched by ALL agent sessions (cross-session exclusion)
+	PendingSubagentFiles  []string            // Subagent-written files no shadow snapshot holds yet
 }
 
 // CalculateAttributionWithAccumulated computes final attribution using accumulated prompt data.
@@ -212,7 +213,7 @@ func CalculateAttributionWithAccumulated(ctx context.Context, p AttributionParam
 	accum := accumulatePromptEdits(p.PromptAttributions)
 
 	// Phase 2: Diff agent-touched files (base→shadow and shadow→head)
-	agentDiffs := diffAgentTouchedFiles(p.BaseTree, p.ShadowTree, p.HeadTree, p.FilesTouched)
+	agentDiffs := diffAgentTouchedFiles(p.BaseTree, p.ShadowTree, p.HeadTree, p.FilesTouched, p.PendingSubagentFiles)
 
 	// Phase 3: Enumerate and diff non-agent files
 	nonAgent, err := diffNonAgentFiles(ctx, p)
@@ -333,14 +334,26 @@ type agentFileDiffs struct {
 // diffAgentTouchedFiles computes base→shadow and shadow→head diffs for agent files.
 // shadowTree is a snapshot at checkpoint time containing both agent work AND accumulated
 // user edits, so base→shadow = (agent work + accumulated user work to these files).
-func diffAgentTouchedFiles(baseTree, shadowTree, headTree *object.Tree, filesTouched []string) agentFileDiffs {
+//
+// A pending subagent file was written by a subagent after the last shadow
+// snapshot, so the snapshot is stale for it: its committed content stands in
+// for the snapshot, crediting base→head to the agent rather than counting
+// shadow→head as post-checkpoint user edits.
+func diffAgentTouchedFiles(baseTree, shadowTree, headTree *object.Tree, filesTouched, pendingSubagentFiles []string) agentFileDiffs {
 	result := agentFileDiffs{
 		postCheckpointUserRemovedPerFile: make(map[string]int),
 	}
+	pending := make(map[string]struct{}, len(pendingSubagentFiles))
+	for _, f := range pendingSubagentFiles {
+		pending[f] = struct{}{}
+	}
 	for _, filePath := range filesTouched {
 		baseContent := getFileContent(baseTree, filePath)
-		shadowContent := getFileContent(shadowTree, filePath)
 		headContent := getFileContent(headTree, filePath)
+		shadowContent := headContent
+		if _, ok := pending[filePath]; !ok {
+			shadowContent = getFileContent(shadowTree, filePath)
+		}
 
 		_, workAdded, _ := diffLines(baseContent, shadowContent)
 		result.totalAgentAndUserWorkAdded += workAdded

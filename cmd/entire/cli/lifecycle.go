@@ -650,6 +650,8 @@ func handleLifecycleTurnStart(ctx context.Context, ag agent.Agent, event *agent.
 		}
 	}
 
+	recordRunningSubagentFiles(logCtx, ag, event)
+
 	// Initialize session (setup already ran above, before the first status read)
 	_, initSpan := perf.Start(ctx, "init_session")
 	strat := GetStrategy(ctx)
@@ -987,6 +989,13 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	// filtering them against HEAD would wrongly drop deletions of files
 	// created-then-deleted within the session (absent from HEAD) and make
 	// checkpoint rewind resurrect them.
+	// A background subagent that finished after the previous turn ended left
+	// its edits in no snapshot, and this turn's transcript and pre-prompt
+	// baseline do not show them either. Snapshot them now so they count as
+	// agent work.
+	if sessionState != nil {
+		relModifiedFiles = mergeUnique(relModifiedFiles, sessionState.PendingSubagentFiles)
+	}
 	relModifiedFiles = filterToUncommittedFiles(ctx, relModifiedFiles, repoRoot)
 	normalizeSpan.End()
 
@@ -1879,6 +1888,59 @@ func subagentTranscriptAndFiles(
 		return transcriptPath, modifiedFiles, nil
 	}
 	return transcriptPath, mergeUnique(modifiedFiles, files), nil
+}
+
+// recordRunningSubagentFiles marks files that still-running subagents have
+// written as pending subagent work before turn-start attribution runs. Claude
+// Code's task-notification starts a turn in the same instant the background
+// subagent's SubagentStop fires, so the completion that would record these
+// files can land after turn-start attribution has already counted them as
+// user edits. The subagent's transcript is complete by then, so read it here.
+func recordRunningSubagentFiles(ctx context.Context, ag agent.Agent, event *agent.Event) {
+	analyzer, ok := agent.AsTranscriptAnalyzer(ag)
+	if !ok || event.SessionRef == "" {
+		return
+	}
+	state, err := strategy.LoadSessionState(ctx, event.SessionID)
+	if err != nil || state == nil {
+		return
+	}
+	live := state.LiveTaskRecords()
+	if len(live) == 0 {
+		return
+	}
+	repoRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return
+	}
+
+	var files []string
+	for _, rec := range live {
+		if rec.TranscriptUnavailable {
+			continue
+		}
+		transcriptPath := rec.DeclaredTranscriptPath
+		if transcriptPath == "" {
+			transcriptPath = ResolveAgentTranscriptPath(filepath.Dir(event.SessionRef), event.SessionID, rec.AgentID)
+		}
+		if transcriptPath == "" {
+			continue
+		}
+		modified, _, extractErr := analyzer.ExtractModifiedFilesFromOffset(ctx, transcriptPath, 0)
+		if extractErr != nil {
+			logging.Warn(ctx, "failed to extract running subagent's modified files",
+				slog.String("session_id", event.SessionID),
+				slog.String("tool_use_id", rec.ToolUseID),
+				slog.String("error", extractErr.Error()))
+			continue
+		}
+		files = mergeUnique(files, FilterAndNormalizePaths(modified, repoRoot))
+	}
+	if err := strategy.RecordPendingSubagentFiles(ctx, event.SessionID, files); err != nil {
+		logging.Warn(ctx, "failed to record running subagents' files",
+			slog.String("session_id", event.SessionID),
+			slog.String("error", err.Error()))
+	}
 }
 
 // completeSubagentTaskRecord detects a completed subagent invocation's changes

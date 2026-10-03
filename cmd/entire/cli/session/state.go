@@ -437,6 +437,14 @@ type State struct {
 	// pointer ledger for subagent work. See TaskRecord.
 	TaskRecords []TaskRecord `json:"task_records,omitempty"`
 
+	// PendingSubagentFiles lists files a subagent wrote that no shadow
+	// snapshot holds yet. A background subagent can finish after the parent's
+	// turn ended, and its completion writes no snapshot, so without this the
+	// next turn-start prompt attribution would count its lines as user work.
+	// Turn-start attribution skips these files, the next SaveStep snapshots
+	// them and removes them, and condensation drops the ones it committed.
+	PendingSubagentFiles []string `json:"pending_subagent_files,omitempty"`
+
 	// SubagentInventory retains Codex child identities independently of task
 	// records so follow-up turns remain discoverable after materialization.
 	SubagentInventory []SubagentInventoryEntry `json:"subagent_inventory,omitempty"`

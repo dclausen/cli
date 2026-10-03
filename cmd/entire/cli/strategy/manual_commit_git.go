@@ -63,6 +63,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		shadowBranchName := checkpoint.ShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID)
 		branchExisted := store.ShadowBranchExists(state.BaseCommit, state.WorktreeID)
 
+		pendingPromptAttr := state.PendingPromptAttribution
 		var promptAttr PromptAttribution
 		if state.PendingPromptAttribution != nil {
 			promptAttr = *state.PendingPromptAttribution
@@ -109,7 +110,16 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 				slog.Int("checkpoint_count", state.StepCount),
 				slog.String("shadow_branch", shadowBranchName),
 			)
-			return ErrMutationSkip
+			// The tree already matches the last snapshot, so this step's
+			// pending subagent files are snapshotted. Clear them, and leave
+			// the prompt attribution for the next step that does write.
+			remaining := removeFiles(state.PendingSubagentFiles, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
+			if len(remaining) == len(state.PendingSubagentFiles) {
+				return ErrMutationSkip
+			}
+			state.PendingSubagentFiles = remaining
+			state.PendingPromptAttribution = pendingPromptAttr
+			return nil
 		}
 
 		// LastCheckpointID is intentionally NOT cleared here. It is set during
@@ -118,6 +128,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		state.StepCount++
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
 		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
+		state.PendingSubagentFiles = removeFiles(state.PendingSubagentFiles, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
 		if state.StepCount == 1 {
 			state.TranscriptIdentifierAtStart = step.StepTranscriptIdentifier
 		}
@@ -408,7 +419,45 @@ func applyTaskRecordCompletion(state *SessionState, rec session.TaskRecord) erro
 		live.AgentID = rec.AgentID
 	}
 	state.FilesTouched = mergeFilesTouched(state.FilesTouched, rec.Files)
+	// Completion writes no shadow snapshot. A background subagent finishes
+	// after the parent's turn ended, so until the next SaveStep its files are
+	// agent work that the next turn-start attribution would otherwise count
+	// as user edits.
+	state.PendingSubagentFiles = mergeFilesTouched(state.PendingSubagentFiles, rec.Files)
 	return nil
+}
+
+// RecordPendingSubagentFiles marks files as subagent work that no shadow
+// snapshot holds yet. See session.State.PendingSubagentFiles.
+func RecordPendingSubagentFiles(ctx context.Context, sessionID string, files []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	err := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
+		state.PendingSubagentFiles = mergeFilesTouched(state.PendingSubagentFiles, files)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("record pending subagent files: %w", err)
+	}
+	return nil
+}
+
+// removeFiles returns files without any entry in the remove lists.
+func removeFiles(files []string, remove ...[]string) []string {
+	drop := make(map[string]struct{})
+	for _, list := range remove {
+		for _, f := range list {
+			drop[filepath.ToSlash(f)] = struct{}{}
+		}
+	}
+	var kept []string
+	for _, f := range files {
+		if _, ok := drop[filepath.ToSlash(f)]; !ok {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 // CompleteTaskRecord marks the record for rec.ToolUseID completed exactly once
