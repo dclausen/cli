@@ -15,35 +15,37 @@ import (
 // write, so no checkpoint was created.
 var ErrNothingToCheckpoint = errors.New("session has nothing to checkpoint")
 
+// ErrPendingFileChanges reports that a session has uncommitted file changes.
+// Its work is checkpointed by the next commit, so a snapshot is refused.
+var ErrPendingFileChanges = errors.New("session has uncommitted file changes")
+
 // CreateSnapshotCheckpoint writes a checkpoint from a session's current
-// transcript and returns its ID. The checkpoint is written exactly as a
-// condensation writes one — same extraction, redaction, and store write, so it
-// is enqueued for push like any other — but it is not linked to a commit, and
-// so carries no code attribution (see condenseOpts.noCommitAttribution). A
-// redaction failure is an error here rather than a dropped transcript (see
-// condenseOpts.failOnRedactionError).
+// transcript and returns its ID. It exists for sessions that change no files —
+// research, planning, review — which otherwise never get a checkpoint: turn end
+// skips SaveStep when nothing changed, so session end finds no steps and writes
+// nothing. A session with pending file changes is refused with
+// ErrPendingFileChanges; the next commit checkpoints that work, with
+// attribution, and a snapshot would only duplicate it.
 //
-// It is a snapshot: the session state is loaded fresh, condensed from that
-// in-memory copy, and never saved back. The session's checkpoint window
-// (StepCount, CheckpointTranscriptStart, FilesTouched, any pending
-// condensation reservation) is untouched, so the next commit condenses the
-// same range again and the two checkpoints overlap. That is deliberate: the
-// caller is typically the agent itself mid-turn, and mutating a live session's
-// bookkeeping from outside its hooks would race them. It also means the
-// crash-recovery reservation machinery does not apply — an interrupted write
-// leaves at most an orphaned checkpoint, never a stuck session.
+// The checkpoint is written exactly as a condensation writes one — same
+// extraction, redaction, and store write, so it is enqueued for push like any
+// other — but it is not linked to a commit, and so carries no code attribution
+// (see condenseOpts.noCommitAttribution). A redaction failure is an error here
+// rather than a dropped transcript (see condenseOpts.failOnRedactionError).
+//
+// It runs under the session's state lock, like every other condensation: the
+// per-session redaction prefix cache is written in two steps, and an unlocked
+// writer racing a commit's condensation can leave its entry pointing at the
+// other writer's payload, corrupting every later checkpoint of the session.
+// It is still a snapshot: the locked state is condensed in memory and never
+// saved back (ErrMutationSkip), so the session's checkpoint window is
+// untouched and repeated snapshots each cover the session from the same start.
+// The crash-recovery reservation machinery therefore does not apply either — an
+// interrupted write leaves at most an orphaned checkpoint, never a stuck session.
 //
 // Callers must configure redaction first (EnsureRedactionConfigured).
 func (s *ManualCommitStrategy) CreateSnapshotCheckpoint(ctx context.Context, sessionID string) (id.CheckpointID, error) {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
-
-	state, err := s.loadSessionState(ctx, sessionID)
-	if err != nil {
-		return id.EmptyCheckpointID, err
-	}
-	if state == nil {
-		return id.EmptyCheckpointID, fmt.Errorf("session not found: %s", sessionID)
-	}
 
 	repo, err := OpenRepository(ctx)
 	if err != nil {
@@ -56,16 +58,29 @@ func (s *ManualCommitStrategy) CreateSnapshotCheckpoint(ctx context.Context, ses
 		return id.EmptyCheckpointID, fmt.Errorf("generate checkpoint ID: %w", err)
 	}
 
-	result, err := s.CondenseSession(ctx, repo, checkpointID, state, nil, condenseOpts{noCommitAttribution: true, failOnRedactionError: true})
-	if err != nil {
-		return id.EmptyCheckpointID, fmt.Errorf("failed to create checkpoint: %w", err)
+	var result *CondenseResult
+	mutErr := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
+		if len(state.FilesTouched) > 0 {
+			return ErrPendingFileChanges
+		}
+		var condErr error
+		result, condErr = s.CondenseSession(ctx, repo, checkpointID, state, nil, condenseOpts{noCommitAttribution: true, failOnRedactionError: true})
+		if condErr != nil {
+			return fmt.Errorf("failed to create checkpoint: %w", condErr)
+		}
+		return ErrMutationSkip // a snapshot never saves the session back
+	})
+	if errors.Is(mutErr, ErrStateNotFound) {
+		return id.EmptyCheckpointID, fmt.Errorf("session not found: %s", sessionID)
+	}
+	if mutErr != nil {
+		return id.EmptyCheckpointID, mutErr
 	}
 	if result.Skipped {
 		return id.EmptyCheckpointID, ErrNothingToCheckpoint
 	}
-	// No skill telemetry: the events are not marked persisted (state is never
-	// saved), so the next commit's condensation emits them — emitting here too
-	// would count each one twice.
+	// No skill telemetry: the events are never marked persisted (state is not
+	// saved), so emitting here would count them again on every snapshot.
 
 	logging.Info(logCtx, "snapshot checkpoint created",
 		slog.String("session_id", sessionID),

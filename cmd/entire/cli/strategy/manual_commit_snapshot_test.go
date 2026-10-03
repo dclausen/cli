@@ -6,42 +6,69 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/redact"
+	"github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// A snapshot checkpoint is written — redacted, with the live transcript's
-// latest turn — while the session's own checkpoint window is left exactly as
-// it was, so the next commit condenses the same range.
-func TestCreateSnapshotCheckpoint_WritesRedactedCheckpointWithoutTouchingState(t *testing.T) {
-	sessionID := "2026-09-25-snapshot-checkpoint"
-	repo, state := setupCondensableSessionWithTranscript(t, sessionID)
+// setupNoFileChangesSession records the session a snapshot is for: one that
+// changed no files, so turn end never ran SaveStep — no steps, no shadow
+// branch, no FilesTouched, only a live transcript. transcript is its content.
+func setupNoFileChangesSession(t *testing.T, sessionID, transcript string) *git.Repository {
+	t.Helper()
+	dir := setupGitRepo(t)
+	t.Chdir(dir)
 
-	// Mid-turn: the agent's live transcript has moved past the last SaveStep,
-	// and the new turn carries a secret.
-	liveTranscript := filepath.Join(t.TempDir(), "live.jsonl")
-	require.NoError(t, os.WriteFile(liveTranscript, []byte(`{"type":"human","message":{"content":"dispatch a subagent"}}
-{"type":"assistant","message":{"content":"On it."}}
-{"type":"human","message":{"content":"use key `+taskTranscriptSecret+`"}}
-`), 0o644))
-	state.TranscriptPath = liveTranscript
-	state.Phase = session.PhaseActive
-	require.NoError(t, SaveSessionState(context.Background(), state))
+	repo, err := gitrepo.OpenPath(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { repo.Close() })
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	transcriptPath := filepath.Join(t.TempDir(), "live.jsonl")
+	require.NoError(t, os.WriteFile(transcriptPath, []byte(transcript), 0o644))
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, SaveSessionState(context.Background(), &SessionState{
+		SessionID:           sessionID,
+		BaseCommit:          head.Hash().String(),
+		WorktreePath:        dir,
+		AgentType:           agent.AgentTypeClaudeCode,
+		TranscriptPath:      transcriptPath,
+		Phase:               session.PhaseActive,
+		StartedAt:           now,
+		LastInteractionTime: &now,
+	}))
+	return repo
+}
+
+const researchTranscript = `{"type":"human","message":{"content":"research the retry design"}}
+{"type":"assistant","message":{"content":"Reading the code."}}
+{"type":"human","message":{"content":"use key ` + taskTranscriptSecret + `"}}
+`
+
+// A session that changed no files gets a checkpoint of its transcript —
+// redacted, including the turn still in progress — while its state is left
+// exactly as it was.
+func TestCreateSnapshotCheckpoint_WritesRedactedCheckpointWithoutTouchingState(t *testing.T) {
+	sessionID := "2026-10-03-snapshot-research"
+	repo := setupNoFileChangesSession(t, sessionID, researchTranscript)
 
 	before, err := LoadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 
-	s := &ManualCommitStrategy{}
-	checkpointID, err := s.CreateSnapshotCheckpoint(context.Background(), sessionID)
+	checkpointID, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
 	require.NoError(t, err)
 	require.False(t, checkpointID.IsEmpty())
 
-	store := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs())
-	content, err := store.ReadSessionContent(context.Background(), checkpointID, 0)
+	content, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).ReadSessionContent(context.Background(), checkpointID, 0)
 	require.NoError(t, err)
 	transcript := string(content.Transcript)
 	assert.Contains(t, transcript, "use key", "snapshot must include the live transcript's newest turn")
@@ -51,6 +78,21 @@ func TestCreateSnapshotCheckpoint_WritesRedactedCheckpointWithoutTouchingState(t
 	after, err := LoadSessionState(context.Background(), sessionID)
 	require.NoError(t, err)
 	assert.Equal(t, before, after, "a snapshot must not save anything back to session state")
+}
+
+// Pending file changes belong to the next commit's checkpoint, which carries
+// their attribution; a snapshot would only duplicate it.
+func TestCreateSnapshotCheckpoint_RefusesPendingFileChanges(t *testing.T) {
+	sessionID := "2026-10-03-snapshot-pending-files"
+	// The fixture's SaveStep records test.txt in FilesTouched.
+	repo, _ := setupCondensableSessionWithTranscript(t, sessionID)
+
+	_, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
+	require.ErrorIs(t, err, ErrPendingFileChanges)
+
+	checkpoints, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).List(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, checkpoints)
 }
 
 func TestCreateSnapshotCheckpoint_UnknownSession(t *testing.T) {
@@ -90,20 +132,34 @@ func TestCreateSnapshotCheckpoint_NothingToCheckpoint(t *testing.T) {
 	require.ErrorIs(t, err, ErrNothingToCheckpoint)
 }
 
-// A snapshot has no commit, so HEAD still predates the agent's uncommitted
-// work. Commit attribution compares the shadow tree with HEAD and would count
-// that work as human removals; the snapshot must record no attribution at all.
-func TestCreateSnapshotCheckpoint_RecordsNoCommitAttribution(t *testing.T) {
+// A snapshot has no commit, so HEAD still predates any work in the shadow tree.
+// Commit attribution compares the shadow tree with HEAD and would count that
+// work as human edits, so the snapshot passes noCommitAttribution. With pending
+// files refused, a snapshot rarely has anything to attribute, so the option is
+// tested directly on a session that does: the control write records
+// attribution, the opted-out one must not.
+func TestCondenseSession_NoCommitAttributionOmitsAttribution(t *testing.T) {
 	sessionID := "2026-09-25-snapshot-attribution"
-	// The fixture's shadow tree holds an uncommitted agent edit to test.txt.
+	// The fixture's shadow tree holds an agent edit to test.txt that HEAD lacks.
 	repo, _ := setupCondensableSessionWithTranscript(t, sessionID)
+	s := &ManualCommitStrategy{}
+	store := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs())
 
-	checkpointID, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
-	require.NoError(t, err)
+	attribution := func(cpID id.CheckpointID, opts condenseOpts) *checkpoint.Attribution {
+		t.Helper()
+		state, err := s.loadSessionState(context.Background(), sessionID)
+		require.NoError(t, err)
+		_, err = s.CondenseSession(context.Background(), repo, cpID, state, nil, opts)
+		require.NoError(t, err)
+		content, err := store.ReadSessionContent(context.Background(), cpID, 0)
+		require.NoError(t, err)
+		return content.Metadata.Attribution
+	}
 
-	content, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).ReadSessionContent(context.Background(), checkpointID, 0)
-	require.NoError(t, err)
-	assert.Nil(t, content.Metadata.Attribution, "a commitless snapshot must not carry commit attribution")
+	require.NotNil(t, attribution(id.MustCheckpointID("a1a1a1a1a1a1"), condenseOpts{}),
+		"control: without the option this fixture records attribution, or the assertion below proves nothing")
+	assert.Nil(t, attribution(id.MustCheckpointID("b2b2b2b2b2b2"), condenseOpts{noCommitAttribution: true}),
+		"a commitless write must not carry commit attribution")
 }
 
 // Hook-path condensation drops the transcript when runtime redaction fails, so
@@ -119,8 +175,7 @@ func TestCreateSnapshotCheckpoint_RedactionFailureIsAnError(t *testing.T) {
 	t.Cleanup(func() { redactSessionJSONLBytes = originalRedact })
 
 	sessionID := "2026-09-30-snapshot-redaction-failure"
-	// The fixture has FilesTouched, so a dropped transcript would still write.
-	repo, _ := setupCondensableSessionWithTranscript(t, sessionID)
+	repo := setupNoFileChangesSession(t, sessionID, researchTranscript)
 
 	_, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
 	require.ErrorContains(t, err, "forced redaction failure")
@@ -129,4 +184,42 @@ func TestCreateSnapshotCheckpoint_RedactionFailureIsAnError(t *testing.T) {
 	checkpoints, err := checkpoint.NewGitStore(repo, checkpoint.DefaultV1Refs()).List(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, checkpoints, "no checkpoint may be written when the transcript could not be redacted")
+}
+
+// The per-session redaction prefix cache is written in two steps, so a snapshot
+// must condense under the session's state lock, like a commit's condensation or
+// a turn-end finalize. Probed from inside redaction: another writer trying to
+// take the lock then must time out. (Racing two writers instead would pass by
+// luck whenever the snapshot happened to be slow.)
+func TestCreateSnapshotCheckpoint_RedactsUnderTheSessionLock(t *testing.T) {
+	// No t.Parallel: swaps the package-level redaction seam and uses t.Chdir.
+	sessionID := "2026-10-03-snapshot-lock"
+	setupNoFileChangesSession(t, sessionID, researchTranscript)
+
+	originalRedact := redactSessionJSONLBytes
+	t.Cleanup(func() { redactSessionJSONLBytes = originalRedact })
+	var probed, otherWriterGotLock bool
+	var probeErr error
+	redactSessionJSONLBytes = func(ctx context.Context, b []byte) (redact.RedactedBytes, error) {
+		if !probed {
+			probed = true
+			// A separate goroutine: the gate is reentrant per goroutine.
+			done := make(chan error, 1)
+			go func() {
+				probeCtx := WithSessionLockWait(context.Background(), 200*time.Millisecond)
+				done <- MutateSessionState(probeCtx, sessionID, func(*SessionState) error {
+					otherWriterGotLock = true
+					return ErrMutationSkip
+				})
+			}()
+			probeErr = <-done
+		}
+		return originalRedact(ctx, b)
+	}
+
+	_, err := (&ManualCommitStrategy{}).CreateSnapshotCheckpoint(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.True(t, probed, "redaction never ran, so the probe proves nothing")
+	assert.False(t, otherWriterGotLock, "another writer took the session lock while the snapshot was redacting")
+	assert.ErrorContains(t, probeErr, "acquire state lock")
 }

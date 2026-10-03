@@ -28,15 +28,20 @@ func newCheckpointCreateCmd() *cobra.Command {
 		Hidden: true,
 		Long: `Create a checkpoint from a session's current transcript and print its ID.
 
+For sessions that change no files, such as research, planning or review: they
+are otherwise never checkpointed, because checkpoints are made when changed
+files are committed. A session with uncommitted file changes is refused; its
+next commit checkpoints that work.
+
 With no argument, checkpoints the agent session running this command. That
 requires the session to be identified from the agent's environment or process
-ancestry; a most-recent-session guess is refused, so pass a session ID
-explicitly when running this outside an agent.
+ancestry; a most-recent-session guess is refused, so pass the session's ID
+explicitly when running this outside the agent.
 
 The checkpoint is written, redacted, and queued for push exactly as a commit's
 checkpoint is, but it is not linked to any commit. It is a snapshot: the
-session's own checkpoint window is left alone, so the next commit's checkpoint
-covers the same work again.
+session's own state is left alone, so repeated snapshots each cover the session
+from the same point.
 
 Examples:
   entire checkpoint create
@@ -44,10 +49,13 @@ Examples:
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if checkDisabledGuard(ctx, cmd.OutOrStdout()) {
-				return nil
-			}
 			cmd.SilenceUsage = true
+			// Stdout carries only the checkpoint ID (or JSON), which callers
+			// capture, so the disabled notice goes to stderr with a failing exit
+			// instead of being read back as an ID.
+			if checkDisabledGuard(ctx, cmd.ErrOrStderr()) {
+				return NewSilentError(errors.New("entire is disabled in this repository"))
+			}
 
 			sessionID, resolution, err := resolveCheckpointCreateSession(cmd, args)
 			if err != nil {
@@ -64,11 +72,13 @@ Examples:
 			external.DiscoverAndRegister(ctx)
 
 			checkpointID, err := GetStrategy(ctx).CreateSnapshotCheckpoint(ctx, sessionID)
-			if errors.Is(err, strategy.ErrNothingToCheckpoint) {
+			switch {
+			case errors.Is(err, strategy.ErrNothingToCheckpoint):
 				return fmt.Errorf("session %s has no transcript or files to checkpoint yet", sessionID)
-			}
-			if err != nil {
-				return err //nolint:wrapcheck // strategy errors already name the session and step
+			case errors.Is(err, strategy.ErrPendingFileChanges):
+				return fmt.Errorf("session %s has uncommitted file changes; its work is checkpointed when you commit", sessionID)
+			case err != nil:
+				return err //nolint:wrapcheck // strategy errors already say which step failed
 			}
 
 			out := cmd.OutOrStdout()
@@ -111,9 +121,12 @@ func resolveCheckpointCreateSession(cmd *cobra.Command, args []string) (string, 
 	case !resolved.Found():
 		return "", resolved.Resolution, errors.New("no agent session is running this command; pass a session ID")
 	case !resolved.Resolution.IsCaller():
+		// Deliberately does not print resolved.SessionID: it is a most-recent
+		// guess, and naming it invites passing it straight back as an explicit
+		// ID, which would act on a session that may not be the caller's.
 		return "", resolved.Resolution, fmt.Errorf(
-			"could not identify the agent session running this command (resolution %q, candidate %s); pass a session ID",
-			resolved.Resolution, resolved.SessionID)
+			"could not identify the agent session running this command (resolution %q); pass your session's ID explicitly",
+			resolved.Resolution)
 	case !resolved.Tracked:
 		return "", resolved.Resolution, fmt.Errorf(
 			"this command is running inside %s session %s, but Entire has no session state for it yet",

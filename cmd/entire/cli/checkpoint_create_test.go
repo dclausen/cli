@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,22 +64,9 @@ func TestCheckpointCreate_CallerSessionJSON(t *testing.T) {
 	clearCallerSessionEnv(t)
 
 	sessionID := "2026-09-25-create-caller"
-	metadataDir := paths.SessionMetadataDirFromSessionID(sessionID)
-	testutil.WriteFile(t, dir, filepath.Join(metadataDir, paths.TranscriptFileName),
+	saveNoFileChangesSession(t, dir, sessionID,
 		`{"type":"human","message":{"content":"make a checkpoint"}}`+"\n"+
 			`{"type":"assistant","message":{"content":"done"}}`+"\n")
-	testutil.WriteFile(t, dir, "test.txt", "agent content")
-	if err := GetStrategy(context.Background()).SaveStep(context.Background(), strategy.StepContext{
-		SessionID:     sessionID,
-		ModifiedFiles: []string{"test.txt"},
-		MetadataDir:   metadataDir,
-		CommitMessage: "Checkpoint 1",
-		AuthorName:    "Test",
-		AuthorEmail:   "test@test.com",
-		AgentType:     agent.AgentTypeClaudeCode,
-	}); err != nil {
-		t.Fatalf("SaveStep: %v", err)
-	}
 	t.Setenv("CLAUDE_CODE_SESSION_ID", sessionID)
 
 	stdout, err := runCheckpointCreate(t, "--json")
@@ -129,8 +117,12 @@ func TestCheckpointCreate_RefusesUnidentifiedCaller(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a worktree-tier guess, got nil")
 	}
-	if !strings.Contains(err.Error(), "pass a session ID") || !strings.Contains(err.Error(), string(strategy.ResolutionWorktree)) {
+	if !strings.Contains(err.Error(), "session's ID") || !strings.Contains(err.Error(), string(strategy.ResolutionWorktree)) {
 		t.Errorf("error = %q, want it to name the %q resolution and ask for a session ID", err, strategy.ResolutionWorktree)
+	}
+	// The guess must not be handed out: an agent would pass it straight back.
+	if strings.Contains(err.Error(), "most-recent-here") {
+		t.Errorf("error = %q names the guessed session", err)
 	}
 }
 
@@ -177,5 +169,95 @@ func TestCheckpointCreate_ExplicitSessionErrors(t *testing.T) {
 				t.Errorf("error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// saveNoFileChangesSession records a session that changed no files: no steps,
+// no shadow branch, only a live transcript — the session this command is for.
+func saveNoFileChangesSession(t *testing.T, dir, sessionID, transcript string) {
+	t.Helper()
+	repo, err := gitrepo.OpenPath(dir)
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+	defer repo.Close()
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	transcriptPath := filepath.Join(t.TempDir(), "live.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := strategy.SaveSessionState(context.Background(), &strategy.SessionState{
+		SessionID:           sessionID,
+		BaseCommit:          head.Hash().String(),
+		WorktreePath:        dir,
+		AgentType:           agent.AgentTypeClaudeCode,
+		TranscriptPath:      transcriptPath,
+		Phase:               session.PhaseActive,
+		StartedAt:           now,
+		LastInteractionTime: &now,
+	}); err != nil {
+		t.Fatalf("SaveSessionState: %v", err)
+	}
+}
+
+// A session with uncommitted file changes is refused with a message that says
+// where its work goes, so an agent does not retry with another session's ID.
+func TestCheckpointCreate_RefusesPendingFileChanges(t *testing.T) {
+	// t.Chdir cannot coexist with t.Parallel; this test mutates process CWD.
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "test.txt", "initial")
+	testutil.GitAdd(t, dir, "test.txt")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+	clearCallerSessionEnv(t)
+
+	sessionID := "2026-10-03-create-pending-files"
+	metadataDir := paths.SessionMetadataDirFromSessionID(sessionID)
+	testutil.WriteFile(t, dir, filepath.Join(metadataDir, paths.TranscriptFileName),
+		`{"type":"human","message":{"content":"edit test.txt"}}`+"\n")
+	testutil.WriteFile(t, dir, "test.txt", "agent content")
+	if err := GetStrategy(context.Background()).SaveStep(context.Background(), strategy.StepContext{
+		SessionID:     sessionID,
+		ModifiedFiles: []string{"test.txt"},
+		MetadataDir:   metadataDir,
+		CommitMessage: "Checkpoint 1",
+		AuthorName:    "Test",
+		AuthorEmail:   "test@test.com",
+		AgentType:     agent.AgentTypeClaudeCode,
+	}); err != nil {
+		t.Fatalf("SaveStep: %v", err)
+	}
+
+	stdout, err := runCheckpointCreate(t, sessionID)
+	if err == nil || !strings.Contains(err.Error(), "checkpointed when you commit") {
+		t.Errorf("error = %v, want the uncommitted-file-changes refusal", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+}
+
+// Stdout is the checkpoint ID that callers capture, so a disabled repository
+// must fail with nothing on stdout rather than print a notice and exit 0.
+func TestCheckpointCreate_DisabledRepoFailsWithEmptyStdout(t *testing.T) {
+	// t.Chdir cannot coexist with t.Parallel; this test mutates process CWD.
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	t.Chdir(dir)
+	clearCallerSessionEnv(t)
+	testutil.WriteFile(t, dir, EntireSettingsFile, `{"enabled": false}`)
+
+	stdout, err := runCheckpointCreate(t, "--json")
+	var silent *SilentError
+	if !errors.As(err, &silent) {
+		t.Errorf("err = %v (%T), want a SilentError so the command fails", err, err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty: a caller would read the notice as an ID", stdout)
 	}
 }
