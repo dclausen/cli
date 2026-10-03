@@ -32,6 +32,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
+	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 	"github.com/entireio/cli/perf"
 )
@@ -1321,7 +1322,20 @@ func finalizeCodexObservedAtSessionEnd(ctx context.Context, sessionID string) {
 // turn end or session end reads the child rollouts; a parent that waits for a
 // child and commits before its own turn ends would store the child's record
 // as still in flight, without its files or tokens.
+//
+// Only a commit carrying an Entire-Checkpoint trailer condenses, and the
+// session store is shared across worktrees, so the refresh is limited to
+// trailered commits and to sessions that live in this worktree (or whose
+// worktree is unknown): an unresolved child rollout can cost a bounded
+// fallback scan, which unrelated sessions must not add to every commit.
 func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
+	if !headHasCheckpointTrailer(ctx) {
+		return
+	}
+	worktreeRoot, err := paths.WorktreeRoot(ctx)
+	if err != nil {
+		return
+	}
 	states, err := strategy.ListSessionStates(ctx)
 	if err != nil {
 		logging.Debug(ctx, "codex inventory refresh skipped: cannot list sessions",
@@ -1331,6 +1345,9 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 	var ag agent.Agent
 	for _, state := range states {
 		if state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
+			continue
+		}
+		if state.WorktreePath != "" && filepath.Clean(state.WorktreePath) != filepath.Clean(worktreeRoot) {
 			continue
 		}
 		if ag == nil {
@@ -1353,6 +1370,26 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 		}
 		refreshCodexInventory(ctx, ag, state.SessionID, parent, 0)
 	}
+}
+
+// headHasCheckpointTrailer reports whether HEAD's message carries an
+// Entire-Checkpoint trailer. Any failure to read HEAD reports false.
+func headHasCheckpointTrailer(ctx context.Context) bool {
+	repo, err := gitrepo.OpenCurrent(ctx)
+	if err != nil {
+		return false
+	}
+	defer repo.Close()
+	head, err := repo.Head()
+	if err != nil {
+		return false
+	}
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return false
+	}
+	_, ok := trailers.ParseCheckpoint(commit.Message)
+	return ok
 }
 
 func refreshCodexInventory(ctx context.Context, ag agent.Agent, sessionID string, parent []byte, fromOffset int) (*agent.TokenUsage, *uint64) {

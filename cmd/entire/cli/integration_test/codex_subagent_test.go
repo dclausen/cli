@@ -140,7 +140,9 @@ func newCodexSubagentScenario(t *testing.T) codexSubagentScenario {
 
 // TestCodexSubagent_CommitBeforeParentTurnEnds_CompletesTaskRecord pins that a
 // child whose rollout already shows its turn complete is stored as completed,
-// with its files and tokens, when the parent commits mid-turn. Codex's
+// with its files, when the parent commits mid-turn. (This fixture's child is a
+// fork whose counters are not exact child usage, so its token_usage stays
+// unset by design; see TestCodexSubagent_StoresDeclaredSubagentTranscript.) Codex's
 // subagent-stop is provisional and only the parent's turn end reconciled the
 // rollout, so a parent that waited for the child and committed before its own
 // turn ended stored the record as still in flight.
