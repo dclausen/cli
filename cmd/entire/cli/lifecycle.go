@@ -1347,6 +1347,10 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 		if state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
 			continue
 		}
+		// Session end already ran this refresh.
+		if state.Phase == session.PhaseEnded || state.EndedAt != nil {
+			continue
+		}
 		if state.WorktreePath != "" && filepath.Clean(state.WorktreePath) != filepath.Clean(worktreeRoot) {
 			continue
 		}
