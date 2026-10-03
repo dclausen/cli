@@ -1315,6 +1315,44 @@ func finalizeCodexObservedAtSessionEnd(ctx context.Context, sessionID string) {
 // potentially slow filesystem analysis outside its lock, then applies only
 // path enrichment and terminal evidence if no new child observation raced it.
 // It never manufactures an exact-empty result for an unknown/legacy ledger.
+// refreshCodexInventoriesBeforeCommit reconciles every Codex session that
+// still has in-flight task records before post-commit condensation stores
+// them. Codex's subagent-stop is provisional, and otherwise only the parent's
+// turn end or session end reads the child rollouts; a parent that waits for a
+// child and commits before its own turn ends would store the child's record
+// as still in flight, without its files or tokens.
+func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
+	states, err := strategy.ListSessionStates(ctx)
+	if err != nil {
+		logging.Debug(ctx, "codex inventory refresh skipped: cannot list sessions",
+			slog.String("error", err.Error()))
+		return
+	}
+	var ag agent.Agent
+	for _, state := range states {
+		if state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
+			continue
+		}
+		if ag == nil {
+			if ag, err = agent.GetByAgentType(agent.AgentTypeCodex); err != nil {
+				return
+			}
+		}
+		// The refresh only stores child evidence and subagent counters, so the
+		// parent's offset does not matter; the extractor still needs its body.
+		var parent []byte
+		if state.TranscriptPath != "" {
+			if parent, err = ag.ReadTranscript(state.TranscriptPath); err != nil {
+				logging.Debug(ctx, "codex inventory refresh: parent transcript unreadable",
+					slog.String("session_id", state.SessionID),
+					slog.String("error", err.Error()))
+				continue
+			}
+		}
+		refreshCodexInventory(ctx, ag, state.SessionID, parent, 0)
+	}
+}
+
 func refreshCodexInventory(ctx context.Context, ag agent.Agent, sessionID string, parent []byte, fromOffset int) (*agent.TokenUsage, *uint64) {
 	state, err := strategy.LoadSessionState(ctx, sessionID)
 	if err != nil || state == nil || state.SubagentInventoryComplete == nil {
@@ -1881,6 +1919,24 @@ func subagentTranscriptAndFiles(
 	return transcriptPath, mergeUnique(modifiedFiles, files), nil
 }
 
+// subagentTokenUsage computes a subagent's own token usage from its
+// transcript, for agents whose stop payload carries none (Claude Code). nil
+// when there is no transcript or the agent cannot compute usage from one.
+func subagentTokenUsage(ctx context.Context, ag agent.Agent, event *agent.Event, transcriptPath string) *agent.TokenUsage {
+	if transcriptPath == "" {
+		return nil
+	}
+	data, err := ag.ReadTranscript(transcriptPath)
+	if err != nil {
+		logging.Warn(ctx, "failed to read subagent transcript for token usage",
+			slog.String("session_id", event.SessionID),
+			slog.String("tool_use_id", event.ToolUseID),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	return agent.CalculateTokenUsage(ctx, ag, data, 0, "")
+}
+
 // completeSubagentTaskRecord detects a completed subagent invocation's changes
 // and completes its durable task record (#2058): files, labels, tokens, and the
 // declared transcript path land on the record; condensation later materializes
@@ -1997,6 +2053,10 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 	}
 
 	files := mergeUnique(mergeUnique(relModifiedFiles, relNewFiles), relDeletedFiles)
+	tokenUsage := event.TokenUsage
+	if tokenUsage == nil {
+		tokenUsage = subagentTokenUsage(logCtx, ag, event, subagentTranscriptPath)
+	}
 	rec := session.TaskRecord{
 		ToolUseID:              event.ToolUseID,
 		AgentID:                event.SubagentID,
@@ -2006,7 +2066,7 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		DeclaredTranscriptPath: subagentTranscriptPath,
 		TranscriptUnavailable:  event.SubagentTranscriptUnavailable,
 		Files:                  files,
-		TokenUsage:             event.TokenUsage,
+		TokenUsage:             tokenUsage,
 	}
 	// Exactly-once needs an identity to be "once" about. Copilot CLI's
 	// SubagentEnd carries no correlation ID at all, so every one of its
