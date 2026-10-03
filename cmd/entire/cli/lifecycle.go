@@ -1358,6 +1358,8 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 		}
 		if ag == nil {
 			if ag, err = agent.GetByAgentType(agent.AgentTypeCodex); err != nil {
+				logging.Debug(ctx, "codex inventory refresh skipped: codex agent unavailable",
+					slog.String("error", err.Error()))
 				return
 			}
 		}
