@@ -1334,6 +1334,8 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 	}
 	worktreeRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
+		logging.Debug(ctx, "codex inventory refresh skipped: cannot resolve worktree",
+			slog.String("error", err.Error()))
 		return
 	}
 	states, err := strategy.ListSessionStates(ctx)
