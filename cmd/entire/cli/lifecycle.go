@@ -2035,6 +2035,19 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		_ = CleanupPreTaskState(logCtx, event.ToolUseID) //nolint:errcheck // best-effort cleanup
 		return nil
 	}
+	if opts.analyzerFilesOnly {
+		// A background subagent can finish after its parent's turn ended: no
+		// turn end will snapshot what it wrote, so this stop does. Before the
+		// record completes: while it is live the worktree counts as busy, so
+		// a prompt racing this stop (Claude Code's task notification) cannot
+		// take the unsnapshotted edits for the user's.
+		if snapErr := snapshotAgentStop(logCtx, ag, event.SessionID, "Subagent finished"); snapErr != nil {
+			logging.Warn(logCtx, "failed to snapshot worktree at subagent stop",
+				slog.String("session_id", event.SessionID),
+				slog.String("tool_use_id", event.ToolUseID),
+				slog.String("error", snapErr.Error()))
+		}
+	}
 	completed, err := strategy.CompleteTaskRecord(logCtx, event.SessionID, rec)
 	if err != nil {
 		return fmt.Errorf("failed to complete task record: %w", err)
@@ -2045,16 +2058,6 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		logging.Debug(logCtx, "task record not completed by this capture (raced or state gone)",
 			slog.String("session_id", event.SessionID),
 			slog.String("tool_use_id", event.ToolUseID))
-	}
-	if completed && opts.analyzerFilesOnly {
-		// A background subagent can finish after its parent's turn ended: no
-		// turn end will snapshot what it wrote, so this stop does.
-		if snapErr := snapshotAgentStop(logCtx, ag, event.SessionID, "Subagent finished"); snapErr != nil {
-			logging.Warn(logCtx, "failed to snapshot worktree at subagent stop",
-				slog.String("session_id", event.SessionID),
-				slog.String("tool_use_id", event.ToolUseID),
-				slog.String("error", snapErr.Error()))
-		}
 	}
 
 	_ = CleanupPreTaskState(logCtx, event.ToolUseID) //nolint:errcheck // best-effort cleanup

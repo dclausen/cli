@@ -3885,6 +3885,9 @@ func TestWorktreeBusy(t *testing.T) {
 		{name: "own live subagent, owner gone", self: &SessionState{SessionID: "self", WorktreePath: dir, Phase: session.PhaseIdle, Owner: &dead, TaskRecords: live}, want: false},
 		{name: "other session's live subagent", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseIdle, Owner: &alive, TaskRecords: live}, want: true},
 		{name: "ended session's live subagent", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseEnded, Owner: &alive, TaskRecords: live}, want: false},
+		{name: "live subagent, unknown owner, recent interaction", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseIdle, LastInteractionTime: &recent, TaskRecords: live}, want: true},
+		{name: "live subagent, unknown owner, stale interaction", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseIdle, LastInteractionTime: &stale, TaskRecords: live}, want: false},
+		{name: "session without a worktree path", other: &SessionState{SessionID: "other", Phase: session.PhaseActive, LastInteractionTime: &recent, Owner: &alive}, want: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &ManualCommitStrategy{}
@@ -3897,7 +3900,9 @@ func TestWorktreeBusy(t *testing.T) {
 			if tt.other != nil {
 				require.NoError(t, s.saveSessionState(context.Background(), tt.other))
 			}
-			assert.Equal(t, tt.want, worktreeBusy(context.Background(), current))
+			busy, err := worktreeBusy(context.Background(), current)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, busy)
 		})
 	}
 }
@@ -3933,4 +3938,44 @@ func TestRefreshSessionOwner(t *testing.T) {
 	assert.NotEqual(t, gone, *state.Owner, "the owner must be re-resolved from the current process tree")
 
 	require.NoError(t, RefreshSessionOwner(context.Background(), "missing"))
+}
+
+// TestSaveStep_SnapshotLeavesOtherSessionsFilesAlone pins that a snapshot of a
+// worktree shared by two sessions does not add the other session's files to
+// this session's FilesTouched: commit linking would then treat that agent's
+// work as this session's.
+func TestSaveStep_SnapshotLeavesOtherSessionsFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+	head := testutil.GetHeadHash(t, dir)
+
+	s := &ManualCommitStrategy{}
+	require.NoError(t, s.saveSessionState(context.Background(), &SessionState{
+		SessionID: "other", BaseCommit: head, WorktreePath: dir, StartedAt: time.Now(),
+		Phase: session.PhaseIdle, FilesTouched: []string{"other.txt"},
+	}))
+	require.NoError(t, s.saveSessionState(context.Background(), &SessionState{
+		SessionID: "self", BaseCommit: head, WorktreePath: dir, StartedAt: time.Now(),
+		Phase: session.PhaseActive, PendingPromptAttribution: &PromptAttribution{CheckpointNumber: 1},
+	}))
+	testutil.WriteFile(t, dir, "other.txt", "written by the other session\n")
+	testutil.WriteFile(t, dir, "mine.txt", "written by this session\n")
+	metadataDir := ".entire/metadata/self"
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, metadataDir), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, metadataDir, paths.TranscriptFileName), []byte(`{"type":"human","message":{"content":"go"}}`+"\n"), 0o644))
+
+	require.NoError(t, s.SaveStep(context.Background(), StepContext{
+		SessionID:     "self",
+		MetadataDir:   metadataDir,
+		CommitMessage: "Checkpoint",
+		AuthorName:    "Test",
+		AuthorEmail:   "test@test.com",
+	}))
+	state, err := s.loadSessionState(context.Background(), "self")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mine.txt"}, state.FilesTouched)
 }

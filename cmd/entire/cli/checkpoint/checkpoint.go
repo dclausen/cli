@@ -85,13 +85,15 @@ type WriteEphemeralOptions struct {
 	// Used to create worktree-specific shadow branch names
 	WorktreeID string
 
-	// ModifiedFiles are files that have been modified (relative paths)
+	// ModifiedFiles and NewFiles are the files the caller detected as
+	// modified or created (relative paths). They do not decide what a snapshot
+	// holds: every snapshot captures the whole dirty worktree from git status,
+	// so files no transcript names (a shell command's writes) are included.
 	ModifiedFiles []string
+	NewFiles      []string
 
-	// NewFiles are files that have been created (relative paths)
-	NewFiles []string
-
-	// DeletedFiles are files that have been deleted (relative paths)
+	// DeletedFiles are files the caller detected as deleted (relative paths),
+	// removed from the snapshot in addition to the deletions git status reports.
 	DeletedFiles []string
 
 	// MetadataDir is the repo-relative path to the metadata directory
@@ -110,8 +112,9 @@ type WriteEphemeralOptions struct {
 	// AuthorEmail is the email to use for commits
 	AuthorEmail string
 
-	// IsFirstCheckpoint indicates if this is the first checkpoint of the session
-	// When true, all working directory files are captured (not just modified)
+	// IsFirstCheckpoint indicates the session's first checkpoint. It no longer
+	// changes what is captured: every snapshot captures the whole dirty
+	// worktree.
 	IsFirstCheckpoint bool
 
 	// SkipWhenUnchanged skips the write when no worktree file changed since

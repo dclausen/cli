@@ -125,7 +125,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
 		var snapshotAgentFiles []string
 		if !humanDiffUnknown {
-			snapshotAgentFiles = agentChangedFiles(result.ChangedFiles, promptAttr)
+			snapshotAgentFiles = agentChangedFiles(result.ChangedFiles, promptAttr, otherSessionsFiles(ctx, state))
 		}
 		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles, snapshotAgentFiles)
 		// The first step that knows its transcript position anchors it. A
@@ -341,19 +341,52 @@ func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepCo
 	return mutErr
 }
 
+// otherSessionsFiles returns the files other live sessions in self's worktree
+// have touched. Read-only: this runs inside self's state mutation. A listing
+// failure returns nothing, which can only over-claim files for self.
+func otherSessionsFiles(ctx context.Context, self *SessionState) map[string]struct{} {
+	store, err := session.NewStateStore(ctx)
+	if err != nil {
+		return nil
+	}
+	states, err := store.ListReadOnly(ctx)
+	if err != nil {
+		return nil
+	}
+	files := make(map[string]struct{})
+	home := filepath.Clean(self.WorktreePath)
+	for _, st := range states {
+		if st == nil || st.SessionID == self.SessionID || st.WorktreePath == "" || filepath.Clean(st.WorktreePath) != home {
+			continue
+		}
+		if st.Phase == session.PhaseEnded || st.EndedAt != nil {
+			continue
+		}
+		for _, f := range st.FilesTouched {
+			files[filepath.ToSlash(f)] = struct{}{}
+		}
+	}
+	return files
+}
+
 // agentChangedFiles returns the snapshot's changed files that agent work
 // changed: every file whose content changed since the previous snapshot,
 // except the ones this window's human diff counted user edits in. Those
 // changed while no agent was busy; a file both the human and an agent changed
-// in one window is left to the transcript-derived lists. A window whose human
-// diff is incomplete contributes nothing: it cannot tell the two apart.
-func agentChangedFiles(changed []string, human PromptAttribution) []string {
+// in one window is left to the transcript-derived lists. Files another session
+// in the worktree already claims stay that session's: the snapshot is of the
+// shared worktree. A window whose human diff is incomplete contributes
+// nothing: it cannot tell the two apart.
+func agentChangedFiles(changed []string, human PromptAttribution, others map[string]struct{}) []string {
 	if human.Incomplete {
 		return nil
 	}
 	var files []string
 	for _, f := range changed {
 		if human.UserAddedPerFile[f] > 0 || human.UserRemovedPerFile[f] > 0 {
+			continue
+		}
+		if _, theirs := others[f]; theirs {
 			continue
 		}
 		files = append(files, f)
