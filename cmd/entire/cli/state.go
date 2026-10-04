@@ -95,8 +95,11 @@ func (s *PrePromptState) UntrackedModifiedDuringTurn(repoRoot string) []string {
 		if nameErr != nil {
 			continue
 		}
+		// Lstat: a symlink's own mtime changes when it is re-pointed, and
+		// snapshots store it as its target text. Other special files are
+		// never snapshotted.
 		info, statErr := osroot.LstatNoSymlinks(root, name)
-		if statErr != nil || !info.Mode().IsRegular() {
+		if statErr != nil || (!info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0) {
 			continue
 		}
 		// Strictly after: a write in the same instant as the capture

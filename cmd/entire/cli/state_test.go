@@ -1050,12 +1050,20 @@ func TestPrePromptState_UntrackedModifiedDuringTurn(t *testing.T) {
 	write("during.md", captured.Add(30*time.Second))
 	write("new.md", captured.Add(30*time.Second))
 
+	// A symlink the agent re-pointed during the turn (ln -sfn): snapshots
+	// store a link as its target text, so it belongs in the snapshot too.
+	// Creating a symlink can need privileges on Windows; skip that case there.
+	want := []string{"during.md"}
+	if os.Symlink("during.md", filepath.Join(repoRoot, "current")) == nil {
+		want = append(want, "current")
+	}
+
 	state := &PrePromptState{
 		Timestamp:      captured.Format(time.RFC3339),
-		UntrackedFiles: []string{"before.md", "during.md", "gone.md"},
+		UntrackedFiles: []string{"before.md", "during.md", "gone.md", "current"},
 	}
-	assert.Equal(t, []string{"during.md"}, state.UntrackedModifiedDuringTurn(repoRoot),
-		"only pre-existing untracked files modified since the capture; new.md is reported as new elsewhere")
+	assert.Equal(t, want, state.UntrackedModifiedDuringTurn(repoRoot),
+		"only pre-existing untracked files and links modified since the capture; new.md is reported as new elsewhere")
 
 	state.UntrackedScanSkipped = true
 	assert.Empty(t, state.UntrackedModifiedDuringTurn(repoRoot), "a skipped scan has no trustworthy list")
