@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent/claudecode"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1032,4 +1034,32 @@ func TestFilterToUncommittedFiles_TypechangeToSymlinkIsKept(t *testing.T) {
 	if got := filterToUncommittedFiles(context.Background(), []string{relPath}, tmpDir); len(got) != 1 || got[0] != relPath {
 		t.Errorf("filterToUncommittedFiles() = %v, want [%s] — a typechange is an uncommitted change", got, relPath)
 	}
+}
+
+func TestPrePromptState_UntrackedModifiedDuringTurn(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	captured := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	write := func(name string, mtime time.Time) {
+		t.Helper()
+		path := filepath.Join(repoRoot, name)
+		require.NoError(t, os.WriteFile(path, []byte("x\n"), 0o600))
+		require.NoError(t, os.Chtimes(path, mtime, mtime))
+	}
+	write("before.md", captured.Add(-time.Hour))
+	write("during.md", captured.Add(30*time.Second))
+	write("new.md", captured.Add(30*time.Second))
+
+	state := &PrePromptState{
+		Timestamp:      captured.Format(time.RFC3339),
+		UntrackedFiles: []string{"before.md", "during.md", "gone.md"},
+	}
+	assert.Equal(t, []string{"during.md"}, state.UntrackedModifiedDuringTurn(repoRoot),
+		"only pre-existing untracked files modified since the capture; new.md is reported as new elsewhere")
+
+	state.UntrackedScanSkipped = true
+	assert.Empty(t, state.UntrackedModifiedDuringTurn(repoRoot), "a skipped scan has no trustworthy list")
+
+	var nilState *PrePromptState
+	assert.Empty(t, nilState.UntrackedModifiedDuringTurn(repoRoot))
 }

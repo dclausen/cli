@@ -71,6 +71,45 @@ type PrePromptState struct {
 	TokenBaseline json.RawMessage `json:"token_baseline,omitempty"`
 }
 
+// UntrackedModifiedDuringTurn returns the files that were already untracked
+// when the prompt arrived and were modified since. Turn-end detection reports
+// untracked files only when they are new to the turn, and the transcript names
+// no file for a shell command, so without this an agent's shell edit to such a
+// file never reaches the turn's snapshot and the next prompt counts it as user
+// work. Paths are repo-relative, as captured.
+func (s *PrePromptState) UntrackedModifiedDuringTurn(repoRoot string) []string {
+	if s == nil || s.UntrackedScanSkipped || len(s.UntrackedFiles) == 0 {
+		return nil
+	}
+	since, err := time.Parse(time.RFC3339, s.Timestamp)
+	if err != nil {
+		return nil
+	}
+	root, err := worktreedir.OpenAt(repoRoot)
+	if err != nil {
+		return nil
+	}
+	var modified []string
+	for _, file := range s.UntrackedFiles {
+		name, nameErr := worktreedir.Name(repoRoot, file)
+		if nameErr != nil {
+			continue
+		}
+		info, statErr := osroot.LstatNoSymlinks(root, name)
+		if statErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		// Strictly after: a write in the same instant as the capture
+		// belongs to the previous turn, whose snapshot already holds it.
+		// A capture from before nanosecond precision rounds down to its
+		// second, which can only widen the turn.
+		if info.ModTime().After(since) {
+			modified = append(modified, file)
+		}
+	}
+	return modified
+}
+
 // PreUntrackedFiles returns the untracked files list, or nil if the receiver is nil.
 // This nil-vs-empty distinction lets DetectFileChanges know whether to skip new-file detection.
 // When the receiver is non-nil but UntrackedFiles is nil (e.g., old state files deserialized with
@@ -153,7 +192,7 @@ func CapturePrePromptState(ctx context.Context, ag agent.Agent, sessionID, sessi
 	// Create state file using os.Root for traversal-resistant write
 	state := PrePromptState{
 		SessionID:            sessionID,
-		Timestamp:            time.Now().UTC().Format(time.RFC3339),
+		Timestamp:            time.Now().UTC().Format(time.RFC3339Nano),
 		UntrackedFiles:       untrackedFiles,
 		UntrackedScanSkipped: scanSkipped,
 		TranscriptOffset:     transcriptOffset,

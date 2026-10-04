@@ -972,6 +972,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 		// files if the agent uses an unrecognized tool or the transcript format changes.
 		// Git status catches any tracked file with working-tree changes.
 		relModifiedFiles = mergeUnique(relModifiedFiles, FilterAndNormalizePaths(changes.Modified, repoRoot))
+		relModifiedFiles = mergeUnique(relModifiedFiles, FilterAndNormalizePaths(preState.UntrackedModifiedDuringTurn(repoRoot), repoRoot))
 	}
 
 	// Filter detected changes to exclude state already committed to HEAD.
