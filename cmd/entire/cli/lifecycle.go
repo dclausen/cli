@@ -2023,6 +2023,20 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		Files:                  files,
 		TokenUsage:             event.TokenUsage,
 	}
+	if opts.analyzerFilesOnly {
+		// A background subagent can finish after its parent's turn ended: no
+		// turn end will snapshot what it wrote, so this stop does. Before the
+		// record completes: while it is live the worktree counts as busy, so
+		// a prompt racing this stop (Claude Code's task notification) cannot
+		// take the unsnapshotted edits for the user's. Both completion paths
+		// below (correlated and uncorrelated) rely on it.
+		if snapErr := snapshotAgentStop(logCtx, ag, event.SessionID, "Subagent finished"); snapErr != nil {
+			logging.Warn(logCtx, "failed to snapshot worktree at subagent stop",
+				slog.String("session_id", event.SessionID),
+				slog.String("tool_use_id", event.ToolUseID),
+				slog.String("error", snapErr.Error()))
+		}
+	}
 	// Exactly-once needs an identity to be "once" about. Copilot CLI's
 	// SubagentEnd carries no correlation ID at all, so every one of its
 	// subagents keys on "" — the claim would match the first one's completed
@@ -2034,19 +2048,6 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		}
 		_ = CleanupPreTaskState(logCtx, event.ToolUseID) //nolint:errcheck // best-effort cleanup
 		return nil
-	}
-	if opts.analyzerFilesOnly {
-		// A background subagent can finish after its parent's turn ended: no
-		// turn end will snapshot what it wrote, so this stop does. Before the
-		// record completes: while it is live the worktree counts as busy, so
-		// a prompt racing this stop (Claude Code's task notification) cannot
-		// take the unsnapshotted edits for the user's.
-		if snapErr := snapshotAgentStop(logCtx, ag, event.SessionID, "Subagent finished"); snapErr != nil {
-			logging.Warn(logCtx, "failed to snapshot worktree at subagent stop",
-				slog.String("session_id", event.SessionID),
-				slog.String("tool_use_id", event.ToolUseID),
-				slog.String("error", snapErr.Error()))
-		}
 	}
 	completed, err := strategy.CompleteTaskRecord(logCtx, event.SessionID, rec)
 	if err != nil {
