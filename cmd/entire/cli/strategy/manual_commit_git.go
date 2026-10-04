@@ -441,13 +441,15 @@ type SubagentEditCapture struct {
 	ScannedLines map[string]int
 }
 
-// apply records the capture in state and reports whether it changed it. An
-// existing baseline wins: it was observed closer to the subagent's write, so
-// changes since then are not the subagent's.
+// apply records the capture in state and reports whether it changed it. A
+// later observation replaces an earlier baseline: a scan reports a file only
+// on new subagent evidence, so seeing it again means the subagent wrote it
+// again. (A user edit made between two of the subagent's writes to the same
+// file therefore counts as the subagent's.)
 func (c SubagentEditCapture) apply(state *SessionState) bool {
 	changed := false
 	for path, hash := range c.Baselines {
-		if _, ok := state.PendingSubagentFiles[path]; ok {
+		if existing, ok := state.PendingSubagentFiles[path]; ok && existing == hash {
 			continue
 		}
 		if state.PendingSubagentFiles == nil {

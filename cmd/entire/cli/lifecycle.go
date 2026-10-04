@@ -1954,8 +1954,8 @@ func scanSubagentEdits(ctx context.Context, ag agent.Agent, state *strategy.Sess
 	matched, ambiguous, openFrom := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, rec.ScannedTranscriptLines, files)
 	if openFrom > 0 && openFrom-1 < lines {
 		// Re-read from the still-running shell call next time. Its edit calls
-		// after that line are re-read too; their files keep the baseline
-		// already recorded for them.
+		// after that line are re-read too, so their files are re-baselined
+		// from their content at that scan.
 		lines = openFrom - 1
 	}
 	return mergeUnique(files, mergeUnique(matched, ambiguous)), lines, true

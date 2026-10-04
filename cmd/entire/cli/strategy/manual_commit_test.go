@@ -3988,3 +3988,19 @@ func TestSaveStep_AdvancesSubagentScansWithTheSnapshot(t *testing.T) {
 	require.NoError(t, s.SaveStep(context.Background(), step))
 	assert.Equal(t, 12, scanned(), "a skipped step must still advance the scan")
 }
+
+// TestSubagentEditCapture_LaterObservationWins pins that a later scan's
+// baseline replaces an earlier one. A scan reports a file only on new
+// subagent evidence (an edit call or a matching shell write after its scan
+// position), so a later observation means the subagent wrote it again; the
+// earlier baseline would count those lines as user work.
+func TestSubagentEditCapture_LaterObservationWins(t *testing.T) {
+	t.Parallel()
+	state := &SessionState{PendingSubagentFiles: map[string]string{"build.log": "first"}}
+	changed := SubagentEditCapture{Baselines: map[string]string{"build.log": "second", "new.md": "x"}}.apply(state)
+	assert.True(t, changed)
+	assert.Equal(t, map[string]string{"build.log": "second", "new.md": "x"}, state.PendingSubagentFiles)
+
+	assert.False(t, SubagentEditCapture{Baselines: map[string]string{"build.log": "second"}}.apply(state),
+		"an identical observation changes nothing")
+}
