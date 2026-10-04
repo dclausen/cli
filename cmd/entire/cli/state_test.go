@@ -1071,3 +1071,26 @@ func TestPrePromptState_UntrackedModifiedDuringTurn(t *testing.T) {
 	var nilState *PrePromptState
 	assert.Empty(t, nilState.UntrackedModifiedDuringTurn(repoRoot))
 }
+
+// TestPrePromptState_UntrackedModifiedDuringTurn_NanosecondCapture pins that a
+// capture written with sub-second precision (as CapturePrePromptState writes
+// it) is read back at that precision: a write half a second before the prompt
+// belongs to the previous turn, one half a second after to this one.
+func TestPrePromptState_UntrackedModifiedDuringTurn_NanosecondCapture(t *testing.T) {
+	t.Parallel()
+	repoRoot := t.TempDir()
+	captured := time.Now().Add(-time.Minute).UTC().Truncate(time.Second).Add(400 * time.Millisecond)
+	for name, mtime := range map[string]time.Time{
+		"previous-turn.md": captured.Add(-300 * time.Millisecond),
+		"this-turn.md":     captured.Add(300 * time.Millisecond),
+	} {
+		path := filepath.Join(repoRoot, name)
+		require.NoError(t, os.WriteFile(path, []byte("x\n"), 0o600))
+		require.NoError(t, os.Chtimes(path, mtime, mtime))
+	}
+	state := &PrePromptState{
+		Timestamp:      captured.Format(time.RFC3339Nano),
+		UntrackedFiles: []string{"previous-turn.md", "this-turn.md"},
+	}
+	assert.Equal(t, []string{"this-turn.md"}, state.UntrackedModifiedDuringTurn(repoRoot))
+}
