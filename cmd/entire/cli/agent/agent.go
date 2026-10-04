@@ -660,6 +660,30 @@ type SubagentSessionResolver interface {
 	ResolveSubagentSession(sessionRef string) (SubagentSessionLink, bool)
 }
 
+// ToolCallWindow is one shell or file-edit tool call in a transcript: when the
+// call was issued and when its result was recorded. End is zero while the call
+// has no result yet.
+type ToolCallWindow struct {
+	Start time.Time
+	End   time.Time
+	// Command is the shell command, for a shell call.
+	Command string
+	// FilePath is the edited file as the transcript names it, for a file-edit call.
+	FilePath string
+}
+
+// ToolCallWindowExtractor reports when a transcript's shell and file-edit tool
+// calls ran. It lets a worktree change the transcript does not name (a shell
+// command's write) be matched to the agent whose call was running when the
+// file was modified. Built-in agents only.
+type ToolCallWindowExtractor interface {
+	Agent
+
+	// ExtractToolCallWindows returns the shell and file-edit calls issued
+	// after line startOffset of the transcript at path.
+	ExtractToolCallWindows(ctx context.Context, path string, startOffset int) ([]ToolCallWindow, error)
+}
+
 // SubagentAwareExtractor provides methods for extracting files and tokens including subagents.
 // Agents that support spawning subagents (like Claude Code's Task tool) should implement this
 // to ensure subagent contributions are included in checkpoints.

@@ -4,8 +4,12 @@ package integration
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
@@ -670,5 +674,190 @@ func TestSubagentCheckpoints_UserEditToSubagentFile_StaysHuman(t *testing.T) {
 					attr.AgentLines, attr.HumanAdded, wantAgentLines, wantHumanAdded)
 			}
 		})
+	}
+}
+
+// writeShellSubagentTranscript writes a Claude Code subagent transcript whose
+// only file change is a Bash command, in Claude Code's real line shape
+// (millisecond timestamps), with the call issued at start and its result
+// recorded at end.
+func writeShellSubagentTranscript(t *testing.T, sess *Session, agentID, command string, start, end time.Time) string {
+	t.Helper()
+	dir := paths.SubagentsDir(filepath.Dir(sess.TranscriptPath), sess.ID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("create subagents dir: %v", err)
+	}
+	stamp := func(at time.Time) string { return at.UTC().Format("2006-01-02T15:04:05.000Z") }
+	lines := []map[string]any{
+		{"type": "user", "uuid": "u1", "timestamp": stamp(start.Add(-time.Second)), "message": map[string]any{"role": "user", "content": "write the result file"}},
+		{"type": "assistant", "uuid": "a1", "timestamp": stamp(start), "message": map[string]any{"role": "assistant", "content": []map[string]any{
+			{"type": "tool_use", "id": "toolu_01ShellWriteCall0000000001", "name": "Bash", "input": map[string]any{"command": command}},
+		}}},
+		{"type": "user", "uuid": "u2", "timestamp": stamp(end), "message": map[string]any{"role": "user", "content": []map[string]any{
+			{"type": "tool_result", "tool_use_id": "toolu_01ShellWriteCall0000000001", "content": ""},
+		}}},
+		{"type": "assistant", "uuid": "a2", "timestamp": stamp(end.Add(time.Second)), "message": map[string]any{"role": "assistant", "content": "Done."}},
+	}
+	var b strings.Builder
+	for _, l := range lines {
+		data, err := json.Marshal(l)
+		if err != nil {
+			t.Fatalf("marshal transcript line: %v", err)
+		}
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	path := filepath.Join(dir, paths.AgentTranscriptFileName(agentID))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write subagent transcript: %v", err)
+	}
+	return path
+}
+
+// TestSubagentCheckpoints_BackgroundSubagentShellEdit_AttributedToAgent pins
+// that a background subagent's shell-written file counts as agent work and is
+// listed on its task record. The transcript analyzer only sees Edit/Write
+// calls, so the file is matched to the subagent by its modification time
+// falling inside the subagent's Bash call. A file the user writes while the
+// subagent runs, outside any agent tool call, stays user work.
+func TestSubagentCheckpoints_BackgroundSubagentShellEdit_AttributedToAgent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		taskToolUseID = "toolu_01BackgroundShellWrite"
+		subagentID    = "b7777888899990000"
+		shellFile     = "docs/shell.md"
+		shellContent  = "# Shell\n\nWritten by a background subagent's shell command.\n"
+		humanFile     = "docs/human.md"
+		humanContent  = "Human line one, written while the subagent ran.\nHuman line two.\n"
+		parentFile    = "docs/parent.md"
+		// 3 shell lines plus the parent's 1.
+		wantAgentLines = 4
+		wantHumanAdded = 2
+	)
+
+	for _, tt := range []struct {
+		name                 string
+		turnStartBeforeStop  bool
+		commitBeforeNextTurn bool
+	}{
+		{name: "subagent stop first"},
+		{name: "notification turn first", turnStartBeforeStop: true},
+		{name: "commit before the next turn", commitBeforeNextTurn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := NewFeatureBranchEnv(t)
+			sess := env.NewSession()
+			sess.CreateTranscript("delegate a background task", []FileChange{{Path: parentFile, Content: "# Parent\n"}})
+
+			if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+			}
+			env.WriteFile(parentFile, "# Parent\n")
+			if err := env.SimulatePreTask(sess.ID, sess.TranscriptPath, taskToolUseID); err != nil {
+				t.Fatalf("SimulatePreTask failed: %v", err)
+			}
+			if err := env.SimulatePostTask(PostTaskInput{
+				SessionID:      sess.ID,
+				TranscriptPath: sess.TranscriptPath,
+				ToolUseID:      taskToolUseID,
+				AgentID:        subagentID,
+				Background:     true,
+			}); err != nil {
+				t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
+			}
+			if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateStop failed: %v", err)
+			}
+
+			// The subagent's Bash call runs from callStart to callEnd and writes
+			// the file inside it; the user writes their file well after it.
+			callStart := time.Now().Add(-30 * time.Second)
+			callEnd := callStart.Add(2 * time.Second)
+			subagentTranscript := writeShellSubagentTranscript(t, sess, subagentID,
+				"printf '# Shell\\n\\nWritten by a background subagent'\"'\"'s shell command.\\n' > "+shellFile, callStart, callEnd)
+			env.WriteFile(shellFile, shellContent)
+			setModTime(t, filepath.Join(env.RepoDir, shellFile), callStart.Add(time.Second))
+			env.WriteFile(humanFile, humanContent)
+			setModTime(t, filepath.Join(env.RepoDir, humanFile), callEnd.Add(15*time.Second))
+
+			subagentStop := func() {
+				t.Helper()
+				if err := env.SimulateSubagentStop(SubagentStopInput{
+					SessionID:           sess.ID,
+					TranscriptPath:      sess.TranscriptPath,
+					AgentID:             subagentID,
+					AgentTranscriptPath: subagentTranscript,
+				}); err != nil {
+					t.Fatalf("SimulateSubagentStop failed: %v", err)
+				}
+			}
+			notificationTurn := func() {
+				t.Helper()
+				if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateUserPromptSubmit (task notification) failed: %v", err)
+				}
+			}
+			switch {
+			case tt.commitBeforeNextTurn:
+				subagentStop()
+			case tt.turnStartBeforeStop:
+				notificationTurn()
+				subagentStop()
+			default:
+				subagentStop()
+				notificationTurn()
+			}
+			if !tt.commitBeforeNextTurn {
+				if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateStop (notification turn) failed: %v", err)
+				}
+			}
+
+			env.GitCommitWithShadowHooksAsAgent("Add docs", shellFile, humanFile, parentFile)
+
+			checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash())
+			if checkpointID == "" {
+				t.Fatalf("commit should carry an Entire-Checkpoint trailer")
+			}
+			content, ok := env.ReadFileFromBranch(paths.MetadataBranchName, SessionMetadataPath(checkpointID))
+			if !ok {
+				t.Fatalf("session metadata.json not found for checkpoint %s", checkpointID)
+			}
+			var metadata checkpoint.Metadata
+			if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+				t.Fatalf("parse session metadata: %v", err)
+			}
+			if metadata.Attribution == nil {
+				t.Fatal("session metadata has no attribution")
+			}
+			attr := metadata.Attribution
+			if attr.AgentLines != wantAgentLines || attr.HumanAdded != wantHumanAdded {
+				t.Errorf("attribution: agent_lines=%d human_added=%d, want agent_lines=%d human_added=%d",
+					attr.AgentLines, attr.HumanAdded, wantAgentLines, wantHumanAdded)
+			}
+
+			raw, ok := env.ReadFileFromBranch(paths.MetadataBranchName, CheckpointTaskFilePath(checkpointID, taskToolUseID, "task.json"))
+			if !ok {
+				t.Fatalf("task.json not materialized for %s", taskToolUseID)
+			}
+			var task struct {
+				Files []string `json:"files"`
+			}
+			if err := json.Unmarshal([]byte(raw), &task); err != nil {
+				t.Fatalf("parse task.json: %v", err)
+			}
+			if !slices.Equal(task.Files, []string{shellFile}) {
+				t.Errorf("task.json files = %v, want [%s]", task.Files, shellFile)
+			}
+		})
+	}
+}
+
+func setModTime(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatalf("set mtime of %s: %v", path, err)
 	}
 }

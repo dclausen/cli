@@ -1920,11 +1920,15 @@ func subagentTranscriptAndFiles(
 	return transcriptPath, mergeUnique(modifiedFiles, files), nil
 }
 
-// scanSubagentEdits returns the files a subagent's transcript records as
-// written after line rec.ScannedTranscriptLines, as repo-relative paths, and
-// the line the scan reached. ok is false when the transcript cannot be
-// resolved or read. transcriptPath overrides the record's own path when set.
-func scanSubagentEdits(ctx context.Context, ag agent.Agent, sessionRef, sessionID string, rec session.TaskRecord, transcriptPath, repoRoot string) (files []string, lines int, ok bool) {
+// scanSubagentEdits returns the files a subagent wrote after line
+// rec.ScannedTranscriptLines of its transcript, as repo-relative paths, and
+// the line the scan reached: the files its edit calls name, plus changed files
+// its shell calls wrote (see shellWrittenSubagentFiles). A shell-written file
+// another agent may have written too still counts: it is agent work either
+// way. ok is false when the transcript cannot be resolved or read.
+// transcriptPath overrides the record's own path when set.
+func scanSubagentEdits(ctx context.Context, ag agent.Agent, state *strategy.SessionState, sessionRef string, rec session.TaskRecord, transcriptPath, repoRoot string) (files []string, lines int, ok bool) {
+	sessionID := state.SessionID
 	analyzer, isAnalyzer := agent.AsTranscriptAnalyzer(ag)
 	if !isAnalyzer || rec.TranscriptUnavailable {
 		return nil, 0, false
@@ -1946,7 +1950,9 @@ func scanSubagentEdits(ctx context.Context, ag agent.Agent, sessionRef, sessionI
 			slog.String("error", err.Error()))
 		return nil, 0, false
 	}
-	return FilterAndNormalizePaths(modified, repoRoot), lines, true
+	files = FilterAndNormalizePaths(modified, repoRoot)
+	matched, ambiguous := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, rec.ScannedTranscriptLines, files)
+	return mergeUnique(files, mergeUnique(matched, ambiguous)), lines, true
 }
 
 // scanRunningSubagents scans every still-running subagent's transcript from
@@ -1956,7 +1962,7 @@ func scanRunningSubagents(ctx context.Context, ag agent.Agent, state *strategy.S
 		return nil, nil
 	}
 	for _, rec := range state.LiveTaskRecords() {
-		recFiles, lines, ok := scanSubagentEdits(ctx, ag, sessionRef, state.SessionID, rec, "", repoRoot)
+		recFiles, lines, ok := scanSubagentEdits(ctx, ag, state, sessionRef, rec, "", repoRoot)
 		if !ok {
 			continue
 		}
@@ -2009,7 +2015,7 @@ func completionEditCapture(ctx context.Context, ag agent.Agent, event *agent.Eve
 	var capture strategy.SubagentEditCapture
 	if state, err := strategy.LoadSessionState(ctx, event.SessionID); err == nil && state != nil {
 		if rec := state.FindTaskRecord(event.ToolUseID); rec != nil {
-			if recFiles, lines, ok := scanSubagentEdits(ctx, ag, event.SessionRef, event.SessionID, *rec, transcriptPath, repoRoot); ok {
+			if recFiles, lines, ok := scanSubagentEdits(ctx, ag, state, event.SessionRef, *rec, transcriptPath, repoRoot); ok {
 				files = recFiles
 				capture.ScannedLines = map[string]int{rec.ToolUseID: lines}
 			}
@@ -2025,6 +2031,21 @@ func completionEditCapture(ctx context.Context, ag agent.Agent, event *agent.Eve
 	}
 	capture.Baselines = baselines
 	return capture
+}
+
+// shellWrittenTaskFiles returns the changed files a completing subagent's
+// shell calls provably wrote, over its whole transcript.
+func shellWrittenTaskFiles(ctx context.Context, ag agent.Agent, event *agent.Event, transcriptPath, repoRoot string, known []string) []string {
+	state, err := strategy.LoadSessionState(ctx, event.SessionID)
+	if err != nil || state == nil {
+		return nil
+	}
+	rec := session.TaskRecord{ToolUseID: event.ToolUseID, AgentID: event.SubagentID}
+	if live := state.FindTaskRecord(event.ToolUseID); live != nil {
+		rec = *live
+	}
+	matched, _ := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, 0, known)
+	return matched
 }
 
 // completeSubagentTaskRecord detects a completed subagent invocation's changes
@@ -2114,6 +2135,12 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 	// for this exact reason; it fails open, so a git error keeps the list as-is
 	// rather than silently dropping a real checkpoint.
 	relModifiedFiles := filterToUncommittedFiles(logCtx, FilterAndNormalizePaths(modifiedFiles, repoRoot), repoRoot)
+	if opts.analyzerFilesOnly {
+		// Without the worktree scan, the analyzer sees only edit calls. Add the
+		// changed files its shell calls provably wrote; ambiguous ones are
+		// agent work (pending files) but not provably this task's.
+		relModifiedFiles = mergeUnique(relModifiedFiles, shellWrittenTaskFiles(logCtx, ag, event, subagentTranscriptPath, repoRoot, relModifiedFiles))
+	}
 	var relNewFiles, relDeletedFiles []string
 	if changes != nil {
 		// changes come from git status, so they are uncommitted by construction.

@@ -249,6 +249,13 @@ func AsSubagentAwareExtractor(ag Agent) (SubagentAwareExtractor, bool) {
 	return declaredCapability[SubagentAwareExtractor](ag, func(c DeclaredCaps) bool { return c.SubagentAwareExtractor })
 }
 
+// AsToolCallWindowExtractor returns the agent as ToolCallWindowExtractor if it
+// implements the interface. Built-in only: the external protocol has no way
+// to express it.
+func AsToolCallWindowExtractor(ag Agent) (ToolCallWindowExtractor, bool) {
+	return builtinCapability[ToolCallWindowExtractor](ag)
+}
+
 // AsSubagentSessionResolver returns the agent as SubagentSessionResolver if it
 // implements the interface. No capability declaration is needed: whether an
 // agent's subagents run as sessions of their own is a property of the agent's
