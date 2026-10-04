@@ -7,7 +7,6 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
-	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
 
@@ -20,13 +19,6 @@ import (
 // skipped when nothing changed since the previous snapshot, and nothing is
 // written for a session whose state is gone or ended (no resurrection).
 func snapshotAgentStop(ctx context.Context, ag agent.Agent, sessionID, commitMessage string) error {
-	state, err := strategy.LoadSessionState(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("load session state: %w", err)
-	}
-	if state == nil || state.Phase == session.PhaseEnded || state.EndedAt != nil {
-		return nil
-	}
 	author, err := GetGitAuthor(ctx)
 	if err != nil {
 		return fmt.Errorf("get git author: %w", err)
@@ -38,10 +30,13 @@ func snapshotAgentStop(ctx context.Context, ag agent.Agent, sessionID, commitMes
 		AuthorName:    author.Name,
 		AuthorEmail:   author.Email,
 		AgentType:     ag.Type(),
-		// A stop with nothing changed since the last snapshot writes nothing.
-		SkipWhenUnchanged: true,
+		// A stop with nothing changed since the last snapshot writes nothing,
+		// and a swept or ended session is left alone (judged under the
+		// save's lock, so it cannot race session cleanup).
+		SkipWhenUnchanged:   true,
+		ExistingSessionOnly: true,
 	})
-	if errors.Is(err, strategy.ErrStateNotFound) {
+	if errors.Is(err, strategy.ErrStateNotFound) || errors.Is(err, strategy.ErrNothingToSnapshot) {
 		return nil
 	}
 	if err != nil {

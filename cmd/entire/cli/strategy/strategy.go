@@ -170,6 +170,11 @@ type StepContext struct {
 	// SkipWhenUnchanged skips the snapshot when no worktree file changed since
 	// the previous one. See checkpoint.WriteEphemeralOptions.SkipWhenUnchanged.
 	SkipWhenUnchanged bool
+
+	// ExistingSessionOnly writes only for a session whose state exists and is
+	// not ended, judged under the save's state lock: a snapshot taken when an
+	// agent stops must never recreate a swept session or touch an ended one.
+	ExistingSessionOnly bool
 }
 
 // TaskStepContext contains all information needed for saving a task step checkpoint.

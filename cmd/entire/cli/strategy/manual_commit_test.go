@@ -3979,3 +3979,44 @@ func TestSaveStep_SnapshotLeavesOtherSessionsFilesAlone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"mine.txt"}, state.FilesTouched)
 }
+
+// TestSaveStep_ExistingSessionOnly pins that a snapshot taken for an agent
+// stop never recreates a session whose state is gone and never writes to an
+// ended one, judged under the save's own state lock.
+func TestSaveStep_ExistingSessionOnly(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+	testutil.WriteFile(t, dir, "sub.md", "written by a subagent\n")
+
+	s := &ManualCommitStrategy{}
+	step := func(sessionID string) StepContext {
+		return StepContext{
+			SessionID:           sessionID,
+			MetadataDir:         ".entire/metadata/" + sessionID,
+			CommitMessage:       "Subagent finished",
+			AuthorName:          "Test",
+			AuthorEmail:         "test@test.com",
+			SkipWhenUnchanged:   true,
+			ExistingSessionOnly: true,
+		}
+	}
+
+	require.ErrorIs(t, s.SaveStep(context.Background(), step("gone")), ErrStateNotFound)
+	gone, err := s.loadSessionState(context.Background(), "gone")
+	require.NoError(t, err)
+	assert.Nil(t, gone, "a missing session must not be recreated")
+
+	ended := time.Now()
+	require.NoError(t, s.saveSessionState(context.Background(), &SessionState{
+		SessionID: "ended", BaseCommit: testutil.GetHeadHash(t, dir), WorktreePath: dir,
+		StartedAt: time.Now(), Phase: session.PhaseEnded, EndedAt: &ended,
+	}))
+	require.NoError(t, s.SaveStep(context.Background(), step("ended")))
+	state, err := s.loadSessionState(context.Background(), "ended")
+	require.NoError(t, err)
+	assert.Zero(t, state.StepCount, "an ended session must not get a snapshot")
+}

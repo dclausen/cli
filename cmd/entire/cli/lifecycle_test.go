@@ -4487,3 +4487,44 @@ func TestCodexSessionEndPersistsEndedBeforeInventoryRead(t *testing.T) {
 	ag.agentType = agent.AgentTypeCodex
 	require.NoError(t, handleLifecycleSessionEnd(ctx, ag, &agent.Event{SessionID: id}))
 }
+
+// TestHandleLifecycleTurnEnd_UndetectedChangeKeepsTurnTokens pins that a turn
+// whose change detection found nothing, but whose snapshot does capture a
+// change (a shell command editing a pre-existing untracked file), keeps its
+// token usage like any other checkpointed turn.
+func TestHandleLifecycleTurnEnd_UndetectedChangeKeepsTurnTokens(t *testing.T) {
+	tmpDir := t.TempDir()
+	testutil.InitRepo(t, tmpDir)
+	testutil.WriteFile(t, tmpDir, "init.txt", "init")
+	testutil.GitAdd(t, tmpDir, "init.txt")
+	testutil.GitCommit(t, tmpDir, "init")
+	testutil.WriteFile(t, tmpDir, "notes.md", "untracked before the prompt\n")
+	t.Chdir(tmpDir)
+	paths.ClearWorktreeRootCache()
+
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	require.NoError(t, os.WriteFile(transcriptPath, []byte(`{"type":"user","message":"test"}`+"\n"), 0o600))
+	sessionID := "test-undetected-change-tokens"
+	ag := newMockAgent()
+	ag.transcriptData = []byte(`{"type":"user","message":"test"}` + "\n")
+
+	require.NoError(t, handleLifecycleTurnStart(context.Background(), ag, &agent.Event{
+		Type: agent.TurnStart, SessionID: sessionID, SessionRef: transcriptPath, Prompt: "append to the notes", Timestamp: time.Now(),
+	}))
+	// A shell command appends to the untracked file: no transcript names it,
+	// and it is neither new to the turn nor tracked.
+	testutil.WriteFile(t, tmpDir, "notes.md", "untracked before the prompt\nappended by a shell command\n")
+
+	require.NoError(t, handleLifecycleTurnEnd(context.Background(), ag, &agent.Event{
+		Type: agent.TurnEnd, SessionID: sessionID, SessionRef: transcriptPath, Timestamp: time.Now(),
+		TokenUsage: &agent.TokenUsage{InputTokens: 200, OutputTokens: 50, APICallCount: 1},
+	}))
+
+	state, err := strategy.LoadSessionState(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.Equal(t, 1, state.StepCount, "the snapshot must capture the shell edit")
+	require.NotNil(t, state.TokenUsage, "the checkpointed turn must keep its tokens")
+	require.Equal(t, 200, state.TokenUsage.InputTokens)
+	require.Equal(t, 50, state.TokenUsage.OutputTokens)
+}

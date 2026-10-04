@@ -1010,18 +1010,9 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 		codexInventoryUsage, codexLedgerVersion = refreshCodexInventory(ctx, ag, sessionID, transcriptData, inventoryOffset)
 	}
 
-	// Check if there are any changes
-	totalChanges := len(relModifiedFiles) + len(relNewFiles) + len(relDeletedFiles)
-	if totalChanges == 0 {
-		logging.Info(logCtx, "no files modified during session, skipping checkpoint")
-		// Detection only sees what the transcript names and new or tracked
-		// changes; a shell command can still have written files. Snapshot
-		// the worktree anyway (nothing is written if it is unchanged).
-		if snapErr := snapshotAgentStop(ctx, ag, sessionID, commitMessage); snapErr != nil {
-			logging.Warn(logCtx, "failed to snapshot worktree at turn end",
-				slog.String("session_id", sessionID),
-				slog.String("error", snapErr.Error()))
-		}
+	// finishWithoutCheckpoint is the turn-end tail for a turn that wrote no
+	// checkpoint: nothing changed in the worktree since the last snapshot.
+	finishWithoutCheckpoint := func() error {
 		recordCaptureDegraded(ctx, sessionID, captureDegraded)
 		// SaveStep is skipped, but out-of-band token usage must still be
 		// recorded: an Antigravity turn that commits ALL its work mid-turn
@@ -1055,6 +1046,21 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 				slog.String("error", cleanupErr.Error()))
 		}
 		return nil
+	}
+
+	// Change detection only sees files the transcript names and new or
+	// tracked changes; a shell command can still have changed others (an
+	// untracked file that existed before the prompt). A turn with nothing
+	// detected still goes through the normal path, so a snapshot that does
+	// capture a change carries the turn's tokens like any other; SaveStep
+	// writes nothing when the worktree is unchanged.
+	totalChanges := len(relModifiedFiles) + len(relNewFiles) + len(relDeletedFiles)
+	noDetectedChanges := totalChanges == 0
+	if noDetectedChanges {
+		logging.Info(logCtx, "no files modified detected this turn; snapshotting only if the worktree changed")
+		if _, isSubagent := resolveSubagentSessionLink(ctx, ag, transcriptRef); isSubagent {
+			return finishWithoutCheckpoint()
+		}
 	}
 
 	// Log file changes
@@ -1120,6 +1126,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 
 	// Build fully-populated step context and delegate to strategy
 	stepCtx := strategy.StepContext{
+		SkipWhenUnchanged:        noDetectedChanges,
 		SessionID:                sessionID,
 		ModifiedFiles:            relModifiedFiles,
 		NewFiles:                 relNewFiles,
@@ -1164,6 +1171,9 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	}
 
 	if err := strat.SaveStep(ctx, stepCtx); err != nil {
+		if errors.Is(err, strategy.ErrNothingToSnapshot) {
+			return finishWithoutCheckpoint()
+		}
 		if errors.Is(err, gitrepo.ErrStatusBudgetExceeded) {
 			// The first-checkpoint status read inside the save breached its
 			// budget. Hooks must never fail on status cost — skip this turn's

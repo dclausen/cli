@@ -41,11 +41,17 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 	// MutateSessionState because the helper bails with ErrStateNotFound on
 	// missing state — initialization establishes the file the helper will
 	// then mutate under lock.
-	if err := s.ensureSessionInitialized(ctx, repo, sessionID, step.AgentType); err != nil {
-		return err
+	if !step.ExistingSessionOnly {
+		if err := s.ensureSessionInitialized(ctx, repo, sessionID, step.AgentType); err != nil {
+			return err
+		}
 	}
 
+	nothingChanged := false
 	mutErr := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
+		if step.ExistingSessionOnly && (state.Phase == session.PhaseEnded || state.EndedAt != nil) {
+			return ErrMutationSkip
+		}
 		invalidateStaleSubagentSnapshot(&step, state)
 		_, migrateSpan := perf.Start(ctx, "migrate_shadow_branch")
 		if _, _, err := s.migrateShadowBranchIfNeeded(ctx, repo, state); err != nil {
@@ -115,6 +121,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 				slog.Int("checkpoint_count", state.StepCount),
 				slog.String("shadow_branch", shadowBranchName),
 			)
+			nothingChanged = true
 			return ErrMutationSkip
 		}
 
@@ -202,10 +209,21 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		return nil
 	})
 	if errors.Is(mutErr, ErrStateNotFound) {
+		if step.ExistingSessionOnly {
+			return ErrStateNotFound
+		}
 		return nil
+	}
+	if mutErr == nil && nothingChanged && step.SkipWhenUnchanged {
+		return ErrNothingToSnapshot
 	}
 	return mutErr
 }
+
+// ErrNothingToSnapshot is returned by SaveStep for a step with
+// SkipWhenUnchanged when no worktree file changed since the previous
+// snapshot, so the caller can account for a turn that wrote no checkpoint.
+var ErrNothingToSnapshot = errors.New("no worktree change since the previous snapshot")
 
 func invalidateStaleSubagentSnapshot(step *StepContext, state *SessionState) {
 	if step.SubagentLedgerVersion == nil || step.TokenUsage == nil ||
