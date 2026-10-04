@@ -4015,7 +4015,7 @@ func TestSaveStep_ExistingSessionOnly(t *testing.T) {
 		SessionID: "ended", BaseCommit: testutil.GetHeadHash(t, dir), WorktreePath: dir,
 		StartedAt: time.Now(), Phase: session.PhaseEnded, EndedAt: &ended,
 	}))
-	require.NoError(t, s.SaveStep(context.Background(), step("ended")))
+	require.ErrorIs(t, s.SaveStep(context.Background(), step("ended")), ErrNothingToSnapshot)
 	state, err := s.loadSessionState(context.Background(), "ended")
 	require.NoError(t, err)
 	assert.Zero(t, state.StepCount, "an ended session must not get a snapshot")

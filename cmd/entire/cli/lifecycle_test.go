@@ -4528,3 +4528,44 @@ func TestHandleLifecycleTurnEnd_UndetectedChangeKeepsTurnTokens(t *testing.T) {
 	require.Equal(t, 200, state.TokenUsage.InputTokens)
 	require.Equal(t, 50, state.TokenUsage.OutputTokens)
 }
+
+// TestHandleLifecycleTurnEnd_LateStopLeavesEndedSessionAlone pins that a Stop
+// arriving after the session ended writes no checkpoint, even when the
+// worktree changed in a way change detection does not see (a shell edit to a
+// pre-existing untracked file).
+func TestHandleLifecycleTurnEnd_LateStopLeavesEndedSessionAlone(t *testing.T) {
+	tmpDir := t.TempDir()
+	testutil.InitRepo(t, tmpDir)
+	testutil.WriteFile(t, tmpDir, "init.txt", "init")
+	testutil.GitAdd(t, tmpDir, "init.txt")
+	testutil.GitCommit(t, tmpDir, "init")
+	testutil.WriteFile(t, tmpDir, "notes.md", "untracked before the prompt\n")
+	t.Chdir(tmpDir)
+	paths.ClearWorktreeRootCache()
+
+	transcriptPath := filepath.Join(t.TempDir(), "transcript.jsonl")
+	require.NoError(t, os.WriteFile(transcriptPath, []byte(`{"type":"user","message":"test"}`+"\n"), 0o600))
+	sessionID := "test-late-stop-ended"
+	ag := newMockAgent()
+	ag.transcriptData = []byte(`{"type":"user","message":"test"}` + "\n")
+
+	require.NoError(t, handleLifecycleTurnStart(context.Background(), ag, &agent.Event{
+		Type: agent.TurnStart, SessionID: sessionID, SessionRef: transcriptPath, Prompt: "append to the notes", Timestamp: time.Now(),
+	}))
+	ended := time.Now()
+	require.NoError(t, strategy.MutateSessionState(context.Background(), sessionID, func(state *strategy.SessionState) error {
+		state.Phase = session.PhaseEnded
+		state.EndedAt = &ended
+		return nil
+	}))
+	testutil.WriteFile(t, tmpDir, "notes.md", "untracked before the prompt\nappended by a shell command\n")
+
+	require.NoError(t, handleLifecycleTurnEnd(context.Background(), ag, &agent.Event{
+		Type: agent.TurnEnd, SessionID: sessionID, SessionRef: transcriptPath, Timestamp: time.Now(),
+	}))
+
+	state, err := strategy.LoadSessionState(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.Zero(t, state.StepCount, "an ended session must not get a checkpoint from a late Stop")
+}

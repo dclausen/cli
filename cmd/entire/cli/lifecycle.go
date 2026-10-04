@@ -1127,6 +1127,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	// Build fully-populated step context and delegate to strategy
 	stepCtx := strategy.StepContext{
 		SkipWhenUnchanged:        noDetectedChanges,
+		ExistingSessionOnly:      noDetectedChanges,
 		SessionID:                sessionID,
 		ModifiedFiles:            relModifiedFiles,
 		NewFiles:                 relNewFiles,
@@ -1171,7 +1172,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	}
 
 	if err := strat.SaveStep(ctx, stepCtx); err != nil {
-		if errors.Is(err, strategy.ErrNothingToSnapshot) {
+		if errors.Is(err, strategy.ErrNothingToSnapshot) || errors.Is(err, strategy.ErrStateNotFound) {
 			return finishWithoutCheckpoint()
 		}
 		if errors.Is(err, gitrepo.ErrStatusBudgetExceeded) {

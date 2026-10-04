@@ -50,6 +50,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 	nothingChanged := false
 	mutErr := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
 		if step.ExistingSessionOnly && (state.Phase == session.PhaseEnded || state.EndedAt != nil) {
+			nothingChanged = true
 			return ErrMutationSkip
 		}
 		invalidateStaleSubagentSnapshot(&step, state)
@@ -214,15 +215,16 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		}
 		return nil
 	}
-	if mutErr == nil && nothingChanged && step.SkipWhenUnchanged {
+	if mutErr == nil && nothingChanged && (step.SkipWhenUnchanged || step.ExistingSessionOnly) {
 		return ErrNothingToSnapshot
 	}
 	return mutErr
 }
 
-// ErrNothingToSnapshot is returned by SaveStep for a step with
-// SkipWhenUnchanged when no worktree file changed since the previous
-// snapshot, so the caller can account for a turn that wrote no checkpoint.
+// ErrNothingToSnapshot is returned by SaveStep when it wrote nothing: for a
+// step with SkipWhenUnchanged when no worktree file changed since the
+// previous snapshot, and for a step with ExistingSessionOnly when the session
+// has ended. The caller can then account for a turn that wrote no checkpoint.
 var ErrNothingToSnapshot = errors.New("no worktree change since the previous snapshot")
 
 func invalidateStaleSubagentSnapshot(step *StepContext, state *SessionState) {
