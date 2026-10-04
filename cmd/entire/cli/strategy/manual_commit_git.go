@@ -142,50 +142,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			state.TranscriptIdentifierAtStart = step.StepTranscriptIdentifier
 		}
 		if step.TokenUsage != nil {
-			state.TokenUsage = accumulateTokenUsage(state.TokenUsage, step.TokenUsage)
-			state.CheckpointTokenUsage = accumulateTokenUsage(state.CheckpointTokenUsage, step.TokenUsage)
-			// step.TokenUsage.SubagentTokens is a cumulative-since-session-start
-			// snapshot (agent IDs are discovered from the full transcript and each
-			// subagent's own transcript is re-read from its start on every call —
-			// see CalculateTotalTokenUsage in the claudecode/factoryaidroid
-			// packages), not a per-step delta like the rest of TokenUsage.
-			// accumulateTokenUsage already replaces (rather than adds) the
-			// SubagentTokens field for that reason, so state.TokenUsage ends up
-			// correctly holding the latest cumulative total. CheckpointTokenUsage
-			// additionally needs rescoping to "since last condensation" by
-			// subtracting the baseline captured at the last reset, otherwise the
-			// full cumulative subagent total would be reported again at every
-			// checkpoint instead of just this checkpoint's share.
-			//
-			// Derive the checkpoint delta FRESH each call from the session-wide
-			// cumulative (state.TokenUsage.SubagentTokens) minus the baseline —
-			// do NOT mutate CheckpointTokenUsage.SubagentTokens in place. A later
-			// step in the same window can carry step.TokenUsage != nil but
-			// SubagentTokens == nil (the subagent transcript was cleaned up, so
-			// CalculateTotalTokenUsage returned APICallCount==0 and left it nil);
-			// accumulateTokenUsage then leaves CheckpointTokenUsage.SubagentTokens
-			// at its already-rescoped value, and re-subtracting the baseline from
-			// that would double-subtract and (via clampSubtract) shrink or zero a
-			// real subagent total. Recomputing from the session-wide cumulative
-			// is idempotent regardless of whether this step carried a snapshot.
-			if state.CheckpointTokenUsage != nil && state.TokenUsage != nil {
-				complete := state.TokenUsage.SubagentTokensComplete
-				switch {
-				case complete != nil && !*complete:
-					state.CheckpointTokenUsage = types.WithClearedSubagentTokens(state.CheckpointTokenUsage, false)
-				case state.SubagentTokensBaselineComplete != nil && !*state.SubagentTokensBaselineComplete:
-					// A known-incomplete baseline cannot yield an exact delta, even
-					// when the current inventory has become complete again.
-					state.CheckpointTokenUsage = types.WithClearedSubagentTokens(state.CheckpointTokenUsage, false)
-				default:
-					state.CheckpointTokenUsage.SubagentTokens = types.SubtractTokenUsage(
-						state.TokenUsage.SubagentTokens, state.SubagentTokensBaseline)
-					if complete != nil {
-						value := *complete
-						state.CheckpointTokenUsage.SubagentTokensComplete = &value
-					}
-				}
-			}
+			accumulateStepTokenUsage(state, step.TokenUsage)
 		}
 
 		if !branchExisted {
@@ -387,6 +344,55 @@ func otherSessionsFiles(ctx context.Context, self *SessionState) map[string]stru
 		}
 	}
 	return files
+}
+
+// accumulateStepTokenUsage adds a step's token usage to the session totals
+// and rescopes the checkpoint's subagent share (see the comments inside).
+func accumulateStepTokenUsage(state *SessionState, usage *agent.TokenUsage) {
+	state.TokenUsage = accumulateTokenUsage(state.TokenUsage, usage)
+	state.CheckpointTokenUsage = accumulateTokenUsage(state.CheckpointTokenUsage, usage)
+	// usage.SubagentTokens is a cumulative-since-session-start
+	// snapshot (agent IDs are discovered from the full transcript and each
+	// subagent's own transcript is re-read from its start on every call —
+	// see CalculateTotalTokenUsage in the claudecode/factoryaidroid
+	// packages), not a per-step delta like the rest of TokenUsage.
+	// accumulateTokenUsage already replaces (rather than adds) the
+	// SubagentTokens field for that reason, so state.TokenUsage ends up
+	// correctly holding the latest cumulative total. CheckpointTokenUsage
+	// additionally needs rescoping to "since last condensation" by
+	// subtracting the baseline captured at the last reset, otherwise the
+	// full cumulative subagent total would be reported again at every
+	// checkpoint instead of just this checkpoint's share.
+	//
+	// Derive the checkpoint delta FRESH each call from the session-wide
+	// cumulative (state.TokenUsage.SubagentTokens) minus the baseline —
+	// do NOT mutate CheckpointTokenUsage.SubagentTokens in place. A later
+	// step in the same window can carry usage != nil but
+	// SubagentTokens == nil (the subagent transcript was cleaned up, so
+	// CalculateTotalTokenUsage returned APICallCount==0 and left it nil);
+	// accumulateTokenUsage then leaves CheckpointTokenUsage.SubagentTokens
+	// at its already-rescoped value, and re-subtracting the baseline from
+	// that would double-subtract and (via clampSubtract) shrink or zero a
+	// real subagent total. Recomputing from the session-wide cumulative
+	// is idempotent regardless of whether this step carried a snapshot.
+	if state.CheckpointTokenUsage != nil && state.TokenUsage != nil {
+		complete := state.TokenUsage.SubagentTokensComplete
+		switch {
+		case complete != nil && !*complete:
+			state.CheckpointTokenUsage = types.WithClearedSubagentTokens(state.CheckpointTokenUsage, false)
+		case state.SubagentTokensBaselineComplete != nil && !*state.SubagentTokensBaselineComplete:
+			// A known-incomplete baseline cannot yield an exact delta, even
+			// when the current inventory has become complete again.
+			state.CheckpointTokenUsage = types.WithClearedSubagentTokens(state.CheckpointTokenUsage, false)
+		default:
+			state.CheckpointTokenUsage.SubagentTokens = types.SubtractTokenUsage(
+				state.TokenUsage.SubagentTokens, state.SubagentTokensBaseline)
+			if complete != nil {
+				value := *complete
+				state.CheckpointTokenUsage.SubagentTokensComplete = &value
+			}
+		}
+	}
 }
 
 // agentChangedFiles returns the snapshot's changed files that agent work
