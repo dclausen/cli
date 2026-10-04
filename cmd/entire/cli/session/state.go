@@ -795,6 +795,12 @@ type PromptAttribution struct {
 	// Without this, global user removals would be subtracted from agent-file-only removals,
 	// incorrectly reducing agent deletion credit when users delete lines in non-agent files.
 	UserRemovedPerFile map[string]int `json:"user_removed_per_file,omitempty"`
+
+	// Incomplete marks a prompt whose user diff could not be computed (the
+	// worktree status failed or breached its budget). Nothing then tells
+	// which of the files the next snapshot changed were the user's, so the
+	// snapshot's changes are not added to FilesTouched for that window.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // NormalizeAfterLoad applies backward-compatible migrations to state loaded from disk.

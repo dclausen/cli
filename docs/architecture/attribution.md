@@ -42,6 +42,10 @@ Before each agent run, we capture what the user changed since the last checkpoin
 
 This happens *before* the agent runs, so we can cleanly separate "user edits between prompts" from "agent work during prompt".
 
+The boundary is a worktree that is idle: no session in the worktree mid-turn and no background subagent of any session still alive. A prompt that arrives while the worktree is busy (a subagent's task notification, or a prompt in a second session while the first one works) records no user diff, because whatever changed since the last snapshot is agent work. A subagent stops counting when it finishes, or when its session's recorded owner process is gone; the latter pauses rather than ends it, and the owner is re-recorded at every session start, so a session resumed by a new process (a restarted Codex daemon) counts again.
+
+Every shadow snapshot captures the whole dirty worktree (`git status`), not a list of files a transcript named, so a shell command's writes are captured too. A snapshot is also taken when a background subagent stops and when a turn's change detection found nothing, skipped when nothing changed since the previous snapshot. Files a snapshot changed join the session's files touched, except those the window's user diff counted.
+
 **2. At commit time** (`CalculateAttributionWithAccumulated`)
 
 When the user commits, we calculate final attribution by:

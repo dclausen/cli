@@ -3124,6 +3124,65 @@ func captureSessionBranch(repo *git.Repository, state *SessionState) {
 	}
 }
 
+// RefreshSessionOwner records the current owning agent process for an existing
+// session, as a turn start does. A session hook can arrive from a different
+// owner than the last prompt did (Codex's daemon restarts and resumes the
+// thread), and liveness checks must follow it. Missing state is not an error.
+func RefreshSessionOwner(ctx context.Context, sessionID string) error {
+	err := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
+		captureSessionOwner(state)
+		return nil
+	})
+	if errors.Is(err, ErrStateNotFound) {
+		return nil
+	}
+	return err
+}
+
+// worktreeBusy reports whether an agent was working in self's worktree when
+// self's prompt arrived: another session mid-turn, or a background subagent of
+// any session (self included) still alive. Changes made while an agent was
+// busy are agent work, so a prompt arriving then records no human diff. A
+// session whose owner process is gone counts as idle without being ended: a
+// resumed session (a restarted Codex daemon) refreshes its owner and counts
+// as busy again.
+func worktreeBusy(ctx context.Context, self *SessionState) bool {
+	// Read-only: this runs inside self's state mutation, so it must not take
+	// part in stale-state cleanup.
+	store, err := session.NewStateStore(ctx)
+	var states []*SessionState
+	if err == nil {
+		states, err = store.ListReadOnly(ctx)
+	}
+	if err != nil {
+		logging.Debug(logging.WithComponent(ctx, "attribution"), "busy check skipped: cannot list sessions",
+			slog.String("error", err.Error()))
+		return false
+	}
+	home := filepath.Clean(self.WorktreePath)
+	for _, st := range states {
+		if st == nil {
+			continue
+		}
+		if st.SessionID == self.SessionID {
+			st = self
+		}
+		if st.WorktreePath != "" && self.WorktreePath != "" && filepath.Clean(st.WorktreePath) != home {
+			continue
+		}
+		if st.Phase == session.PhaseEnded || st.EndedAt != nil || st.OwnerLiveness() == proclive.LivenessDead {
+			continue
+		}
+		if st.SessionID != self.SessionID && st.Phase.IsActive() && !st.IsStuckActive() {
+			return true
+		}
+		if len(st.LiveTaskRecords()) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // captureSessionOwner records the owning agent process (PID + start-time
 // fingerprint) into the session state so liveness checks can later detect an
 // ACTIVE session whose agent exited without firing a SessionStop hook. The hook
@@ -3160,6 +3219,15 @@ func (s *ManualCommitStrategy) calculatePromptAttributionAtStart(
 	logCtx := logging.WithComponent(ctx, "attribution")
 	nextCheckpointNum := state.StepCount + 1
 	result := PromptAttribution{CheckpointNumber: nextCheckpointNum}
+
+	// A prompt that arrives while an agent is still busy (a background
+	// subagent's task notification, or another session mid-turn) is not a
+	// human boundary: what changed since the last snapshot is agent work.
+	if worktreeBusy(ctx, state) {
+		logging.Debug(logCtx, "prompt attribution skipped: an agent is busy in this worktree",
+			slog.String("session_id", state.SessionID))
+		return result
+	}
 
 	// Get last checkpoint tree from shadow branch (if it exists).
 	// For a new session (StepCount == 0), always use baseTree as the reference.
@@ -3208,6 +3276,7 @@ func (s *ManualCommitStrategy) calculatePromptAttributionAtStart(
 	if err != nil {
 		logging.Debug(logCtx, "prompt attribution skipped: failed to get worktree",
 			slog.String("error", err.Error()))
+		result.Incomplete = true
 		return result
 	}
 
@@ -3220,6 +3289,7 @@ func (s *ManualCommitStrategy) calculatePromptAttributionAtStart(
 	if err != nil {
 		logging.Debug(logCtx, "prompt attribution skipped: failed to get worktree status",
 			slog.String("error", err.Error()))
+		result.Incomplete = true
 		return result
 	}
 

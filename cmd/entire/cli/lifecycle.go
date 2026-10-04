@@ -150,6 +150,13 @@ const retiredDenyRuleWarning = "\n  A retired Entire permission rule in this rep
 // fires state machine transition.
 func handleLifecycleSessionStart(ctx context.Context, ag agent.Agent, event *agent.Event) error {
 	logCtx := logging.WithAgent(logging.WithComponent(ctx, "lifecycle"), ag.Name())
+	// A resumed session (Codex's daemon resuming a thread after a restart)
+	// may now be owned by a new process; record it before its next prompt.
+	if err := strategy.RefreshSessionOwner(ctx, event.SessionID); err != nil {
+		logging.Debug(logCtx, "failed to refresh session owner",
+			slog.String("session_id", event.SessionID),
+			slog.String("error", err.Error()))
+	}
 	logging.Info(logCtx, "session-start",
 		slog.String("event", event.Type.String()),
 		slog.String("session_id", event.SessionID),
@@ -1007,6 +1014,14 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 	totalChanges := len(relModifiedFiles) + len(relNewFiles) + len(relDeletedFiles)
 	if totalChanges == 0 {
 		logging.Info(logCtx, "no files modified during session, skipping checkpoint")
+		// Detection only sees what the transcript names and new or tracked
+		// changes; a shell command can still have written files. Snapshot
+		// the worktree anyway (nothing is written if it is unchanged).
+		if snapErr := snapshotAgentStop(ctx, ag, sessionID, commitMessage); snapErr != nil {
+			logging.Warn(logCtx, "failed to snapshot worktree at turn end",
+				slog.String("session_id", sessionID),
+				slog.String("error", snapErr.Error()))
+		}
 		recordCaptureDegraded(ctx, sessionID, captureDegraded)
 		// SaveStep is skipped, but out-of-band token usage must still be
 		// recorded: an Antigravity turn that commits ALL its work mid-turn
@@ -2030,6 +2045,16 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		logging.Debug(logCtx, "task record not completed by this capture (raced or state gone)",
 			slog.String("session_id", event.SessionID),
 			slog.String("tool_use_id", event.ToolUseID))
+	}
+	if completed && opts.analyzerFilesOnly {
+		// A background subagent can finish after its parent's turn ended: no
+		// turn end will snapshot what it wrote, so this stop does.
+		if snapErr := snapshotAgentStop(logCtx, ag, event.SessionID, "Subagent finished"); snapErr != nil {
+			logging.Warn(logCtx, "failed to snapshot worktree at subagent stop",
+				slog.String("session_id", event.SessionID),
+				slog.String("tool_use_id", event.ToolUseID),
+				slog.String("error", snapErr.Error()))
+		}
 	}
 
 	_ = CleanupPreTaskState(logCtx, event.ToolUseID) //nolint:errcheck // best-effort cleanup

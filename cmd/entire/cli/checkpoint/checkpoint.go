@@ -66,6 +66,11 @@ type WriteEphemeralResult struct {
 	// Skipped is true if the checkpoint was skipped due to no changes
 	// (tree hash matched the previous checkpoint)
 	Skipped bool
+
+	// ChangedFiles are the worktree files whose content differs from the
+	// previous snapshot on the shadow branch (from the base tree when there
+	// was none), as repo-relative paths. Session metadata is excluded.
+	ChangedFiles []string
 }
 
 // WriteEphemeralOptions contains options for writing a temporary checkpoint.
@@ -108,6 +113,12 @@ type WriteEphemeralOptions struct {
 	// IsFirstCheckpoint indicates if this is the first checkpoint of the session
 	// When true, all working directory files are captured (not just modified)
 	IsFirstCheckpoint bool
+
+	// SkipWhenUnchanged skips the write when no worktree file changed since
+	// the previous snapshot (or since the base commit, when there is none).
+	// Snapshots taken when an agent stops without a detected change set it so
+	// that turns which changed nothing write nothing.
+	SkipWhenUnchanged bool
 }
 
 // ReadEphemeralResult contains the result of reading a temporary checkpoint.

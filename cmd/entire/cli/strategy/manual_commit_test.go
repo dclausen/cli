@@ -3846,3 +3846,91 @@ func TestMarshalPromptAttributionsIncludingPending(t *testing.T) {
 		})
 	}
 }
+
+// TestWorktreeBusy pins which sessions make a worktree busy when a prompt
+// arrives: another session mid-turn, or a live background subagent of any
+// session, unless its owner process is gone (a pause, not an end: the record
+// stays live), the session ended, the turn is stuck, or it lives in another
+// worktree.
+func TestWorktreeBusy(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+
+	alive, ok := proclive.IdentityOf(os.Getpid())
+	if !ok {
+		t.Skip("process liveness is not supported on this platform")
+	}
+	dead := alive
+	dead.Start = alive.Start + "-reused"
+	live := []session.TaskRecord{{ToolUseID: "toolu_live", AgentID: "a1", StartedAt: time.Now()}}
+	recent := time.Now()
+	stale := time.Now().Add(-2 * session.StuckActiveThreshold)
+
+	self := &SessionState{SessionID: "self", WorktreePath: dir, Phase: session.PhaseIdle, Owner: &alive}
+	for _, tt := range []struct {
+		name  string
+		other *SessionState
+		self  *SessionState
+		want  bool
+	}{
+		{name: "nothing else running", want: false},
+		{name: "another session mid-turn", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseActive, LastInteractionTime: &recent, Owner: &alive}, want: true},
+		{name: "another session stuck mid-turn", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseActive, LastInteractionTime: &stale, Owner: &alive}, want: false},
+		{name: "another worktree mid-turn", other: &SessionState{SessionID: "other", WorktreePath: filepath.Join(dir, "elsewhere"), Phase: session.PhaseActive, LastInteractionTime: &recent, Owner: &alive}, want: false},
+		{name: "own live subagent", self: &SessionState{SessionID: "self", WorktreePath: dir, Phase: session.PhaseIdle, Owner: &alive, TaskRecords: live}, want: true},
+		{name: "own live subagent, owner gone", self: &SessionState{SessionID: "self", WorktreePath: dir, Phase: session.PhaseIdle, Owner: &dead, TaskRecords: live}, want: false},
+		{name: "other session's live subagent", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseIdle, Owner: &alive, TaskRecords: live}, want: true},
+		{name: "ended session's live subagent", other: &SessionState{SessionID: "other", WorktreePath: dir, Phase: session.PhaseEnded, Owner: &alive, TaskRecords: live}, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &ManualCommitStrategy{}
+			current := self
+			if tt.self != nil {
+				current = tt.self
+			}
+			require.NoError(t, s.saveSessionState(context.Background(), current))
+			_ = s.clearSessionState(context.Background(), "other") //nolint:errcheck // absent is fine
+			if tt.other != nil {
+				require.NoError(t, s.saveSessionState(context.Background(), tt.other))
+			}
+			assert.Equal(t, tt.want, worktreeBusy(context.Background(), current))
+		})
+	}
+}
+
+// TestRefreshSessionOwner pins that a session hook records the current owner
+// process for an existing session (a resumed Codex thread is owned by a new
+// daemon), and is a no-op for a session with no state.
+func TestRefreshSessionOwner(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+	if _, ok := proclive.ResolveOwner(); !ok {
+		t.Skip("process liveness is not supported on this platform")
+	}
+
+	s := &ManualCommitStrategy{}
+	gone := proclive.Identity{PID: 1, Start: "gone"}
+	require.NoError(t, s.saveSessionState(context.Background(), &SessionState{
+		SessionID:  "resumed",
+		BaseCommit: testutil.GetHeadHash(t, dir),
+		StartedAt:  time.Now(),
+		Phase:      session.PhaseIdle,
+		Owner:      &gone,
+	}))
+	require.NoError(t, RefreshSessionOwner(context.Background(), "resumed"))
+	state, err := s.loadSessionState(context.Background(), "resumed")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	require.NotNil(t, state.Owner)
+	assert.NotEqual(t, gone, *state.Owner, "the owner must be re-resolved from the current process tree")
+
+	require.NoError(t, RefreshSessionOwner(context.Background(), "missing"))
+}

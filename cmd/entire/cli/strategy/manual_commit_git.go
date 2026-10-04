@@ -64,11 +64,16 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		branchExisted := store.ShadowBranchExists(state.BaseCommit, state.WorktreeID)
 
 		var promptAttr PromptAttribution
+		// humanDiffUnknown: a session's first step with no prompt recorded
+		// has no human diff for its window. (A later step with none had no
+		// prompt since the previous snapshot: its whole window is agent work.)
+		humanDiffUnknown := false
 		if state.PendingPromptAttribution != nil {
 			promptAttr = *state.PendingPromptAttribution
 			state.PendingPromptAttribution = nil
 		} else {
 			promptAttr = PromptAttribution{CheckpointNumber: state.StepCount + 1}
+			humanDiffUnknown = state.StepCount == 0
 		}
 
 		attrLogCtx := logging.WithComponent(ctx, "attribution")
@@ -94,6 +99,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			AuthorName:        step.AuthorName,
 			AuthorEmail:       step.AuthorEmail,
 			IsFirstCheckpoint: isFirstCheckpointOfSession,
+			SkipWhenUnchanged: step.SkipWhenUnchanged,
 		})
 		writeCheckpointSpan.RecordError(err)
 		writeCheckpointSpan.End()
@@ -117,8 +123,14 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		// trailers on amend operations.
 		state.StepCount++
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
-		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
-		if state.StepCount == 1 {
+		var snapshotAgentFiles []string
+		if !humanDiffUnknown {
+			snapshotAgentFiles = agentChangedFiles(result.ChangedFiles, promptAttr)
+		}
+		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles, snapshotAgentFiles)
+		// The first step that knows its transcript position anchors it. A
+		// snapshot taken when a subagent stops carries none.
+		if state.TranscriptIdentifierAtStart == "" && step.StepTranscriptIdentifier != "" {
 			state.TranscriptIdentifierAtStart = step.StepTranscriptIdentifier
 		}
 		if step.TokenUsage != nil {
@@ -327,6 +339,26 @@ func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepCo
 		return nil
 	}
 	return mutErr
+}
+
+// agentChangedFiles returns the snapshot's changed files that agent work
+// changed: every file whose content changed since the previous snapshot,
+// except the ones this window's human diff counted user edits in. Those
+// changed while no agent was busy; a file both the human and an agent changed
+// in one window is left to the transcript-derived lists. A window whose human
+// diff is incomplete contributes nothing: it cannot tell the two apart.
+func agentChangedFiles(changed []string, human PromptAttribution) []string {
+	if human.Incomplete {
+		return nil
+	}
+	var files []string
+	for _, f := range changed {
+		if human.UserAddedPerFile[f] > 0 || human.UserRemovedPerFile[f] > 0 {
+			continue
+		}
+		files = append(files, f)
+	}
+	return files
 }
 
 // mergeFilesTouched merges multiple file lists into existing touched files, deduplicating.
