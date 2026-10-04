@@ -114,7 +114,10 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			// The tree already matches the last snapshot, so this step's
 			// pending subagent files are snapshotted. Clear them, and leave
 			// the prompt attribution for the next step that does write.
-			if !removePendingSubagentFiles(state, step.ModifiedFiles, step.NewFiles, step.DeletedFiles) {
+			// The scan positions advance with the snapshot they describe.
+			removed := removePendingSubagentFiles(state, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
+			advanced := SubagentEditCapture{ScannedLines: step.SubagentScannedLines}.apply(state)
+			if !removed && !advanced {
 				return ErrMutationSkip
 			}
 			state.PendingPromptAttribution = pendingPromptAttr
@@ -128,6 +131,10 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
 		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
 		removePendingSubagentFiles(state, step.ModifiedFiles, step.NewFiles, step.DeletedFiles)
+		// In the same update as the snapshot: separately, a failed second
+		// update would leave snapshotted files unscanned, and the next scan
+		// would re-baseline them from content that may include user edits.
+		SubagentEditCapture{ScannedLines: step.SubagentScannedLines}.apply(state)
 		if state.StepCount == 1 {
 			state.TranscriptIdentifierAtStart = step.StepTranscriptIdentifier
 		}
@@ -434,10 +441,11 @@ type SubagentEditCapture struct {
 	ScannedLines map[string]int
 }
 
-// apply records the capture in state. An existing baseline wins: it was
-// observed closer to the subagent's write, so changes since then are not the
-// subagent's.
-func (c SubagentEditCapture) apply(state *SessionState) {
+// apply records the capture in state and reports whether it changed it. An
+// existing baseline wins: it was observed closer to the subagent's write, so
+// changes since then are not the subagent's.
+func (c SubagentEditCapture) apply(state *SessionState) bool {
+	changed := false
 	for path, hash := range c.Baselines {
 		if _, ok := state.PendingSubagentFiles[path]; ok {
 			continue
@@ -446,12 +454,15 @@ func (c SubagentEditCapture) apply(state *SessionState) {
 			state.PendingSubagentFiles = make(map[string]string)
 		}
 		state.PendingSubagentFiles[path] = hash
+		changed = true
 	}
 	for toolUseID, lines := range c.ScannedLines {
 		if rec := state.FindTaskRecord(toolUseID); rec != nil && lines > rec.ScannedTranscriptLines {
 			rec.ScannedTranscriptLines = lines
+			changed = true
 		}
 	}
+	return changed
 }
 
 // CaptureSubagentBaselines stores the current worktree content of files a
@@ -498,7 +509,9 @@ func RecordSubagentEdits(ctx context.Context, sessionID string, capture Subagent
 		return nil
 	}
 	err := MutateSessionState(ctx, sessionID, func(state *SessionState) error {
-		capture.apply(state)
+		if !capture.apply(state) {
+			return ErrMutationSkip
+		}
 		return nil
 	})
 	if err != nil {
@@ -547,7 +560,7 @@ func CompleteTaskRecord(ctx context.Context, sessionID string, rec session.TaskR
 		if err := applyTaskRecordCompletion(state, rec); err != nil {
 			return err
 		}
-		capture.apply(state)
+		_ = capture.apply(state)
 		completed = true
 		return nil
 	})

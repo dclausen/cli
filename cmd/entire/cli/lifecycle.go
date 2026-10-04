@@ -1143,6 +1143,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 
 	// Build fully-populated step context and delegate to strategy
 	stepCtx := strategy.StepContext{
+		SubagentScannedLines:     subagentScans,
 		SessionID:                sessionID,
 		ModifiedFiles:            relModifiedFiles,
 		NewFiles:                 relNewFiles,
@@ -1198,7 +1199,6 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 		}
 		return fmt.Errorf("failed to save step: %w", err)
 	}
-	recordSubagentScans()
 
 	finishTurn(captureDegraded)
 	return nil

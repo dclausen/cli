@@ -166,6 +166,11 @@ type StepContext struct {
 	// while token evidence was extracted. nil means no inventory snapshot;
 	// a pointer to zero is a valid snapshot before the first child is observed.
 	SubagentLedgerVersion *uint64
+
+	// SubagentScannedLines is the scan position each still-running subagent's
+	// transcript reached at this turn end (tool use ID → lines), recorded in
+	// the same state update as the snapshot. See TaskRecord.ScannedTranscriptLines.
+	SubagentScannedLines map[string]int
 }
 
 // TaskStepContext contains all information needed for saving a task step checkpoint.

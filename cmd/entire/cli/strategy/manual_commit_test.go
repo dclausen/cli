@@ -3933,3 +3933,58 @@ func memoryOnlyRepo(t *testing.T) *git.Repository {
 	require.NoError(t, err)
 	return repo
 }
+
+// TestSaveStep_AdvancesSubagentScansWithTheSnapshot pins that the snapshot
+// and the running subagents' scan positions are recorded in one state update,
+// on a written step and on a skipped one alike. Recorded separately, a failed
+// second update would leave files snapshotted (and no longer pending) but
+// unscanned, so the next scan would re-baseline them from content that may
+// include user edits.
+func TestSaveStep_AdvancesSubagentScansWithTheSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+
+	s := &ManualCommitStrategy{}
+	sessionID := "subagent-scan-with-snapshot"
+	metadataDir := ".entire/metadata/" + sessionID
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, metadataDir), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, metadataDir, paths.TranscriptFileName), []byte(`{"type":"human","message":{"content":"go"}}`+"\n"), 0o644))
+	testutil.WriteFile(t, dir, "sub.md", "written by a subagent\n")
+
+	step := StepContext{
+		SessionID:     sessionID,
+		NewFiles:      []string{"sub.md"},
+		MetadataDir:   metadataDir,
+		CommitMessage: "Checkpoint",
+		AuthorName:    "Test",
+		AuthorEmail:   "test@test.com",
+	}
+	require.NoError(t, s.SaveStep(context.Background(), step))
+	require.NoError(t, MutateSessionState(context.Background(), sessionID, func(state *SessionState) error {
+		state.AddTaskRecord(session.TaskRecord{ToolUseID: "toolu_running", AgentID: "running", StartedAt: time.Now()})
+		return nil
+	}))
+
+	scanned := func() int {
+		t.Helper()
+		state, err := s.loadSessionState(context.Background(), sessionID)
+		require.NoError(t, err)
+		return state.FindTaskRecord("toolu_running").ScannedTranscriptLines
+	}
+
+	// A written step.
+	testutil.WriteFile(t, dir, "sub.md", "written by a subagent\nand more\n")
+	step.NewFiles, step.ModifiedFiles = nil, []string{"sub.md"}
+	step.SubagentScannedLines = map[string]int{"toolu_running": 7}
+	require.NoError(t, s.SaveStep(context.Background(), step))
+	assert.Equal(t, 7, scanned(), "a written step must advance the scan")
+
+	// A skipped step: the tree is unchanged.
+	step.SubagentScannedLines = map[string]int{"toolu_running": 12}
+	require.NoError(t, s.SaveStep(context.Background(), step))
+	assert.Equal(t, 12, scanned(), "a skipped step must still advance the scan")
+}
