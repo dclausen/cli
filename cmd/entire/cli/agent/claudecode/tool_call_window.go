@@ -55,7 +55,7 @@ func (c *ClaudeCodeAgent) ExtractToolCallWindows(_ context.Context, path string,
 			return nil, fmt.Errorf("failed to read transcript: %w", readErr)
 		}
 		if len(data) > 0 && lineNum > startOffset {
-			collectToolWindows(data, &windows, open)
+			collectToolWindows(data, lineNum, &windows, open)
 		}
 		if readErr != nil {
 			break
@@ -64,7 +64,7 @@ func (c *ClaudeCodeAgent) ExtractToolCallWindows(_ context.Context, path string,
 	return windows, nil
 }
 
-func collectToolWindows(data []byte, windows *[]agent.ToolCallWindow, open map[string]int) {
+func collectToolWindows(data []byte, lineNum int, windows *[]agent.ToolCallWindow, open map[string]int) {
 	var line timedLine
 	if json.Unmarshal(data, &line) != nil || line.Timestamp.IsZero() {
 		return
@@ -83,7 +83,7 @@ func collectToolWindows(data []byte, windows *[]agent.ToolCallWindow, open map[s
 			if json.Unmarshal(block.Input, &input) != nil {
 				continue
 			}
-			window := agent.ToolCallWindow{Start: line.Timestamp}
+			window := agent.ToolCallWindow{Start: line.Timestamp, Line: lineNum}
 			if block.Name == ToolBash {
 				window.Command = input.Command
 			} else {

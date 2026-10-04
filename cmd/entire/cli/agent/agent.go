@@ -670,6 +670,8 @@ type ToolCallWindow struct {
 	Command string
 	// FilePath is the edited file as the transcript names it, for a file-edit call.
 	FilePath string
+	// Line is the 1-based transcript line that issued the call.
+	Line int
 }
 
 // ToolCallWindowExtractor reports when a transcript's shell and file-edit tool

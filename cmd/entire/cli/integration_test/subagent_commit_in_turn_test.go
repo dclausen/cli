@@ -680,7 +680,7 @@ func TestSubagentCheckpoints_UserEditToSubagentFile_StaysHuman(t *testing.T) {
 // writeShellSubagentTranscript writes a Claude Code subagent transcript whose
 // only file change is a Bash command, in Claude Code's real line shape
 // (millisecond timestamps), with the call issued at start and its result
-// recorded at end.
+// recorded at end. A zero end leaves the call running: no result yet.
 func writeShellSubagentTranscript(t *testing.T, sess *Session, agentID, command string, start, end time.Time) string {
 	t.Helper()
 	dir := paths.SubagentsDir(filepath.Dir(sess.TranscriptPath), sess.ID)
@@ -693,10 +693,14 @@ func writeShellSubagentTranscript(t *testing.T, sess *Session, agentID, command 
 		{"type": "assistant", "uuid": "a1", "timestamp": stamp(start), "message": map[string]any{"role": "assistant", "content": []map[string]any{
 			{"type": "tool_use", "id": "toolu_01ShellWriteCall0000000001", "name": "Bash", "input": map[string]any{"command": command}},
 		}}},
-		{"type": "user", "uuid": "u2", "timestamp": stamp(end), "message": map[string]any{"role": "user", "content": []map[string]any{
-			{"type": "tool_result", "tool_use_id": "toolu_01ShellWriteCall0000000001", "content": ""},
-		}}},
-		{"type": "assistant", "uuid": "a2", "timestamp": stamp(end.Add(time.Second)), "message": map[string]any{"role": "assistant", "content": "Done."}},
+	}
+	if !end.IsZero() {
+		lines = append(lines,
+			map[string]any{"type": "user", "uuid": "u2", "timestamp": stamp(end), "message": map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "tool_result", "tool_use_id": "toolu_01ShellWriteCall0000000001", "content": ""},
+			}}},
+			map[string]any{"type": "assistant", "uuid": "a2", "timestamp": stamp(end.Add(time.Second)), "message": map[string]any{"role": "assistant", "content": "Done."}},
+		)
 	}
 	var b strings.Builder
 	for _, l := range lines {
@@ -859,5 +863,87 @@ func setModTime(t *testing.T, path string, at time.Time) {
 	t.Helper()
 	if err := os.Chtimes(path, at, at); err != nil {
 		t.Fatalf("set mtime of %s: %v", path, err)
+	}
+}
+
+// TestSubagentCheckpoints_LongRunningShellCall_MatchedAcrossScans pins that a
+// still-running shell call stays a candidate across scans. A turn start scans
+// the running subagent's transcript and records how far it read; a later scan
+// must still see the call that was open then, or files the command writes
+// after the first scan are counted as user work.
+func TestSubagentCheckpoints_LongRunningShellCall_MatchedAcrossScans(t *testing.T) {
+	t.Parallel()
+
+	const (
+		taskToolUseID = "toolu_01LongRunningShellCall"
+		subagentID    = "c8888999900001111"
+		outFile       = "docs/build.out"
+		outContent    = "build step one finished\nbuild step two finished\n"
+		parentFile    = "docs/parent.md"
+	)
+	env := NewFeatureBranchEnv(t)
+	sess := env.NewSession()
+	sess.CreateTranscript("start a long background build", []FileChange{{Path: parentFile, Content: "# Parent\n"}})
+
+	if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit (turn 1) failed: %v", err)
+	}
+	env.WriteFile(parentFile, "# Parent\n")
+	if err := env.SimulatePreTask(sess.ID, sess.TranscriptPath, taskToolUseID); err != nil {
+		t.Fatalf("SimulatePreTask failed: %v", err)
+	}
+	if err := env.SimulatePostTask(PostTaskInput{
+		SessionID:      sess.ID,
+		TranscriptPath: sess.TranscriptPath,
+		ToolUseID:      taskToolUseID,
+		AgentID:        subagentID,
+		Background:     true,
+	}); err != nil {
+		t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
+	}
+	if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop (turn 1) failed: %v", err)
+	}
+
+	// The subagent's build command starts and keeps running.
+	writeShellSubagentTranscript(t, sess, subagentID, "make build > "+outFile, time.Now().Add(-10*time.Second), time.Time{})
+
+	// Turn 2 scans the running subagent while the call is open.
+	if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit (turn 2) failed: %v", err)
+	}
+	if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop (turn 2) failed: %v", err)
+	}
+
+	// The still-running command writes its output afterwards.
+	env.WriteFile(outFile, outContent)
+
+	if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit (turn 3) failed: %v", err)
+	}
+	if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop (turn 3) failed: %v", err)
+	}
+	env.GitCommitWithShadowHooksAsAgent("Add build output", outFile, parentFile)
+
+	checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash())
+	if checkpointID == "" {
+		t.Fatalf("commit should carry an Entire-Checkpoint trailer")
+	}
+	content, ok := env.ReadFileFromBranch(paths.MetadataBranchName, SessionMetadataPath(checkpointID))
+	if !ok {
+		t.Fatalf("session metadata.json not found for checkpoint %s", checkpointID)
+	}
+	var metadata checkpoint.Metadata
+	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+		t.Fatalf("parse session metadata: %v", err)
+	}
+	if metadata.Attribution == nil {
+		t.Fatal("session metadata has no attribution")
+	}
+	// 2 build lines plus the parent's 1.
+	if attr := metadata.Attribution; attr.AgentLines != 3 || attr.HumanAdded != 0 {
+		t.Errorf("attribution: agent_lines=%d human_added=%d, want agent_lines=3 human_added=0", attr.AgentLines, attr.HumanAdded)
 	}
 }

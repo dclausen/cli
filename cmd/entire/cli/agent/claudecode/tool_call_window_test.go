@@ -37,6 +37,7 @@ func TestExtractToolCallWindows(t *testing.T) {
 	assert.Equal(t, "/repo/b.go", windows[1].FilePath)
 	assert.Equal(t, at("2026-10-03T20:00:04.300Z"), windows[1].End)
 	assert.True(t, windows[2].End.IsZero(), "a call without a result is still running")
+	assert.Equal(t, []int{2, 4, 6}, []int{windows[0].Line, windows[1].Line, windows[2].Line}, "each call records the line that issued it")
 
 	fromOffset, err := (&ClaudeCodeAgent{}).ExtractToolCallWindows(t.Context(), path, 3)
 	require.NoError(t, err)

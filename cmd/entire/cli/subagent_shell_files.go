@@ -146,10 +146,14 @@ func containsWord(s, word string) bool {
 // The subagent's calls are read from line from of transcriptPath; known are
 // the files the transcript analyzer already attributed to it. The other
 // agents are the parent and the session's other subagents.
-func shellWrittenSubagentFiles(ctx context.Context, ag agent.Agent, state *strategy.SessionState, rec session.TaskRecord, transcriptPath, repoRoot string, from int, known []string) (matched, ambiguous []string) {
+//
+// openFrom is the transcript line that issued the earliest write-looking
+// shell call still running (0 when none): a later scan must start before it,
+// or files the command writes after this scan are never matched to it.
+func shellWrittenSubagentFiles(ctx context.Context, ag agent.Agent, state *strategy.SessionState, rec session.TaskRecord, transcriptPath, repoRoot string, from int, known []string) (matched, ambiguous []string, openFrom int) {
 	extractor, ok := agent.AsToolCallWindowExtractor(ag)
 	if !ok || transcriptPath == "" || state == nil {
-		return nil, nil
+		return nil, nil, 0
 	}
 	own, err := extractor.ExtractToolCallWindows(ctx, transcriptPath, from)
 	if err != nil {
@@ -157,17 +161,23 @@ func shellWrittenSubagentFiles(ctx context.Context, ag agent.Agent, state *strat
 			slog.String("session_id", state.SessionID),
 			slog.String("tool_use_id", rec.ToolUseID),
 			slog.String("error", err.Error()))
-		return nil, nil
+		return nil, nil, 0
+	}
+	for _, w := range own {
+		if w.End.IsZero() && shellCommandMayWrite(w.Command) && (openFrom == 0 || w.Line < openFrom) {
+			openFrom = w.Line
+		}
 	}
 	if !slices.ContainsFunc(own, func(w agent.ToolCallWindow) bool { return shellCommandMayWrite(w.Command) }) {
-		return nil, nil
+		return nil, nil, openFrom
 	}
 	now := time.Now()
 	mtimes := changedFileMtimes(ctx, repoRoot, known, own, now)
 	if len(mtimes) == 0 {
-		return nil, nil
+		return nil, nil, openFrom
 	}
-	return matchShellWrittenFiles(own, otherAgentWindows(ctx, extractor, state, rec, repoRoot), mtimes, now)
+	matched, ambiguous = matchShellWrittenFiles(own, otherAgentWindows(ctx, extractor, state, rec, repoRoot), mtimes, now)
+	return matched, ambiguous, openFrom
 }
 
 // changedFileMtimes returns the modification times of changed worktree files

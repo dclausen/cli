@@ -1951,7 +1951,13 @@ func scanSubagentEdits(ctx context.Context, ag agent.Agent, state *strategy.Sess
 		return nil, 0, false
 	}
 	files = FilterAndNormalizePaths(modified, repoRoot)
-	matched, ambiguous := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, rec.ScannedTranscriptLines, files)
+	matched, ambiguous, openFrom := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, rec.ScannedTranscriptLines, files)
+	if openFrom > 0 && openFrom-1 < lines {
+		// Re-read from the still-running shell call next time. Its edit calls
+		// after that line are re-read too; their files keep the baseline
+		// already recorded for them.
+		lines = openFrom - 1
+	}
 	return mergeUnique(files, mergeUnique(matched, ambiguous)), lines, true
 }
 
@@ -2044,7 +2050,7 @@ func shellWrittenTaskFiles(ctx context.Context, ag agent.Agent, event *agent.Eve
 	if live := state.FindTaskRecord(event.ToolUseID); live != nil {
 		rec = *live
 	}
-	matched, _ := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, 0, known)
+	matched, _, _ := shellWrittenSubagentFiles(ctx, ag, state, rec, transcriptPath, repoRoot, 0, known)
 	return matched
 }
 
