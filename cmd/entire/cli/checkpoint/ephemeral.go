@@ -93,7 +93,10 @@ func (s *ephemeralStore) writeCheckpoint(ctx context.Context, opts WriteEphemera
 	if err != nil {
 		return WriteEphemeralResult{}, fmt.Errorf("failed to collect changed files: %w", err)
 	}
-	allFiles := changed.Changed
+	// git status still reports tracked files that match .gitignore (a
+	// committed template filled with local secrets). Keep the ignore policy:
+	// those stay at their base content. filterGitIgnoredFiles fails closed.
+	allFiles := filterGitIgnoredFiles(ctx, s.repo, changed.Changed)
 	allDeletedFiles := slices.Concat(changed.Deleted, opts.DeletedFiles)
 
 	commitMsg := trailers.FormatShadowCommit(opts.CommitMessage, opts.MetadataDir, opts.SessionID)

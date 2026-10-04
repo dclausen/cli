@@ -7,7 +7,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWriteCheckpoint_SnapshotsTheWholeDirtyWorktree pins that every shadow
@@ -88,4 +90,49 @@ func TestWriteCheckpoint_SnapshotsTheWholeDirtyWorktree(t *testing.T) { //nolint
 	if want := []string{"file1.txt", "file2.txt", "shell.out"}; !slices.Equal(changed, want) {
 		t.Errorf("ChangedFiles = %v, want %v", changed, want)
 	}
+}
+
+// TestSnapshotExcludesIgnoredTrackedEdits pins that a full-worktree snapshot
+// keeps the ignore policy for tracked files that match .gitignore: git status
+// reports their local edits (a template filled with a secret), and the
+// snapshot must keep their base content instead.
+func TestSnapshotExcludesIgnoredTrackedEdits(t *testing.T) { //nolint:paralleltest // t.Chdir requires non-parallel
+	repo, dir := setupTestRepo(t)
+	t.Chdir(dir)
+
+	testutil.WriteFile(t, dir, ".gitignore", "file1.txt\n")
+	testutil.GitAdd(t, dir, ".gitignore")
+	testutil.GitCommit(t, dir, "ignore local template edits")
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+	store := newEphemeralStore(repo, DefaultV1Refs())
+
+	snapshot := func(first bool) WriteEphemeralResult {
+		t.Helper()
+		result, err := store.Write(context.Background(), Step{
+			SessionID:         "ignored-tracked",
+			BaseCommit:        head.Hash().String(),
+			CommitMessage:     "snapshot",
+			AuthorName:        "Test",
+			AuthorEmail:       "test@test.com",
+			IsFirstCheckpoint: first,
+			ModifiedFiles:     []string{"file1.txt", "file2.txt"},
+		})
+		require.NoError(t, err)
+		return result
+	}
+
+	testutil.WriteFile(t, dir, "file2.txt", "agent change\n")
+	snapshot(true)
+	testutil.WriteFile(t, dir, "file1.txt", "PASSWORD=synthetic-secret\n")
+	result := snapshot(false)
+
+	commit, err := repo.CommitObject(result.CommitHash)
+	require.NoError(t, err)
+	file, err := commit.File("file1.txt")
+	require.NoError(t, err)
+	content, err := file.Contents()
+	require.NoError(t, err)
+	require.Equal(t, "initial content of file1.txt", content)
 }
