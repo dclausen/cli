@@ -922,3 +922,109 @@ func TestSubagentCheckpoints_LongRunningShellCall_CountsWhileSubagentAlive(t *te
 		t.Errorf("attribution: agent_lines=%d human_added=%d, want agent_lines=3 human_added=0", attr.AgentLines, attr.HumanAdded)
 	}
 }
+
+// TestSubagentCheckpoints_ChildFinishesMidTurn_ParentCommitsSameTurn pins
+// issue #2653: a background child finishes while its parent's turn is still
+// running, and the parent commits in that same turn, with no Stop in between.
+// The child's lines are agent work whether or not Claude Code delivers the
+// completion notification as a mid-turn prompt first, and the parent's own
+// edits stay agent work when a prompt arrives mid-turn.
+func TestSubagentCheckpoints_ChildFinishesMidTurn_ParentCommitsSameTurn(t *testing.T) {
+	t.Parallel()
+
+	const (
+		taskToolUseID = "toolu_01ChildFinishesMidTurn"
+		subagentID    = "d9999000011112222"
+		notesFile     = "notes.txt"
+		childContent  = "line appended by the background child\n"
+		parentFile    = "docs/parent.md"
+		parentContent = "# Parent edit made earlier in the same turn\n"
+	)
+
+	for _, tt := range []struct {
+		name string
+		// midTurnPrompt delivers the completion notification as a prompt
+		// while the parent's turn is still running.
+		midTurnPrompt bool
+		// parentEdits makes the parent edit a file earlier in the turn.
+		parentEdits    bool
+		wantAgentLines int
+	}{
+		{name: "commit right after the child stops", wantAgentLines: 1},
+		{name: "notification arrives mid-turn, then commit", midTurnPrompt: true, wantAgentLines: 1},
+		{name: "parent edited earlier, notification mid-turn, then commit", midTurnPrompt: true, parentEdits: true, wantAgentLines: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			env := NewFeatureBranchEnv(t)
+			sess := env.NewSession()
+			var parentChanges []FileChange
+			if tt.parentEdits {
+				parentChanges = []FileChange{{Path: parentFile, Content: parentContent}}
+			}
+			sess.CreateTranscript("launch a child, keep working, then commit", parentChanges)
+
+			if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+				t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+			}
+			if tt.parentEdits {
+				env.WriteFile(parentFile, parentContent)
+			}
+			if err := env.SimulatePreTask(sess.ID, sess.TranscriptPath, taskToolUseID); err != nil {
+				t.Fatalf("SimulatePreTask failed: %v", err)
+			}
+			if err := env.SimulatePostTask(PostTaskInput{
+				SessionID:      sess.ID,
+				TranscriptPath: sess.TranscriptPath,
+				ToolUseID:      taskToolUseID,
+				AgentID:        subagentID,
+				Background:     true,
+			}); err != nil {
+				t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
+			}
+
+			// The child appends a line while the parent keeps working; no Stop.
+			subagentTranscript := sess.CreateSubagentTranscript(subagentID, []FileChange{{Path: notesFile, Content: childContent}})
+			env.WriteFile(notesFile, childContent)
+			if err := env.SimulateSubagentStop(SubagentStopInput{
+				SessionID:           sess.ID,
+				TranscriptPath:      sess.TranscriptPath,
+				AgentID:             subagentID,
+				AgentTranscriptPath: subagentTranscript,
+			}); err != nil {
+				t.Fatalf("SimulateSubagentStop failed: %v", err)
+			}
+			if tt.midTurnPrompt {
+				if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+					t.Fatalf("SimulateUserPromptSubmit (mid-turn notification) failed: %v", err)
+				}
+			}
+
+			committed := []string{notesFile}
+			if tt.parentEdits {
+				committed = append(committed, parentFile)
+			}
+			env.GitCommitWithShadowHooksAsAgent("Commit in the same turn", committed...)
+
+			checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash())
+			if checkpointID == "" {
+				t.Fatalf("commit should carry an Entire-Checkpoint trailer")
+			}
+			content, ok := env.ReadFileFromBranch(paths.MetadataBranchName, SessionMetadataPath(checkpointID))
+			if !ok {
+				t.Fatalf("session metadata.json not found for checkpoint %s", checkpointID)
+			}
+			var metadata checkpoint.Metadata
+			if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+				t.Fatalf("parse session metadata: %v", err)
+			}
+			if metadata.Attribution == nil {
+				t.Fatal("session metadata has no attribution")
+			}
+			if attr := metadata.Attribution; attr.AgentLines != tt.wantAgentLines || attr.HumanAdded != 0 {
+				t.Errorf("attribution: agent_lines=%d human_added=%d, want agent_lines=%d human_added=0",
+					attr.AgentLines, attr.HumanAdded, tt.wantAgentLines)
+			}
+		})
+	}
+}

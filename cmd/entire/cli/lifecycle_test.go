@@ -4135,45 +4135,36 @@ func TestHandleLifecycleSubagentEnd_SubagentStop_Background_ExcludesForeignWorkt
 	assert.NotContains(t, state.FilesTouched, "foreign.txt")
 }
 
-// TestHandleLifecycleSubagentEnd_SubagentStop_TranscriptOnlyBeforeFirstSaveStep_PreservesBaseline
-// is the regression for overloading StepCount with transcript-only task
-// steps: StepCount's ==0 value drives SaveStep's IsFirstCheckpoint (the FIRST
-// shadow checkpoint snapshots the user's whole pre-existing uncommitted
-// worktree state — checkpoint/ephemeral.go's collectChangedFiles baseline)
-// and its ==1 value anchors TranscriptIdentifierAtStart. A transcript-only
-// background Final landing BEFORE the session's first SaveStep must therefore
-// register only on the task record, not StepCount —
-// otherwise the subsequent first SaveStep sees StepCount==1, skips the
-// baseline capture (silently dropping the user's pre-existing dirt from every
-// checkpoint), and never sets the transcript anchor.
-func TestHandleLifecycleSubagentEnd_SubagentStop_TranscriptOnlyBeforeFirstSaveStep_PreservesBaseline(t *testing.T) {
+// TestHandleLifecycleSubagentEnd_SubagentStop_BeforeFirstSaveStep_KeepsBaselineAndAnchor
+// pins that a background subagent completing before the session's first turn
+// end leaves the first-checkpoint guarantees intact. Its stop snapshots the
+// worktree (every snapshot captures the whole dirty worktree, the user's
+// pre-existing uncommitted work included), and the transcript anchor is set by
+// the first step that knows its transcript position, not by step number one.
+func TestHandleLifecycleSubagentEnd_SubagentStop_BeforeFirstSaveStep_KeepsBaselineAndAnchor(t *testing.T) {
 	// NOT parallel: uses t.Chdir via setupSubagentEndTestRepo.
 	repoDir, headHash := setupSubagentEndTestRepo(t)
 	ctx := context.Background()
 	sessionID := "baseline-order-session"
 	toolUseID := "toolu_baseline1"
 
-	// The user's pre-existing uncommitted work, on disk BEFORE the session
-	// saves anything. Only the first SaveStep's baseline capture picks it up.
+	// The user's pre-existing uncommitted work, on disk before the session
+	// saves anything.
 	testutil.WriteFile(t, repoDir, "user-dirt.txt", "pre-existing uncommitted work")
 
 	saveInFlightSession(ctx, t, sessionID, headHash,
 		session.TaskRecord{ToolUseID: toolUseID, AgentID: "agent-baseline1", StartedAt: time.Now(), SubagentType: "reviewer"})
 
-	// A read-only background subagent completes first: transcript-only Final
-	// capture (no file changes; subagent transcript unresolvable is fine here —
-	// the point is the step registers without touching StepCount).
 	ag := newMockAgent()
 	require.NoError(t, handleLifecycleSubagentEnd(ctx, ag, finalSubagentEvent(sessionID, toolUseID, "agent-baseline1")))
 
 	state, err := strategy.LoadSessionState(ctx, sessionID)
 	require.NoError(t, err)
 	require.NotNil(t, state)
-	require.Zero(t, state.StepCount, "transcript-only task step must not consume StepCount")
 	require.True(t, state.HasTaskContent(), "the completed record must register as pending task content")
+	require.Empty(t, state.TranscriptIdentifierAtStart, "a subagent-stop snapshot knows no transcript position")
 
-	// Now the session's FIRST SaveStep. It must still get first-checkpoint
-	// semantics: baseline capture of user-dirt.txt and the transcript anchor.
+	// The session's first turn-end SaveStep, which knows its transcript position.
 	metadataDir := ".entire/metadata/" + sessionID
 	metadataDirAbs := filepath.Join(repoDir, metadataDir)
 	require.NoError(t, os.MkdirAll(metadataDirAbs, 0o755))
@@ -4195,14 +4186,12 @@ func TestHandleLifecycleSubagentEnd_SubagentStop_TranscriptOnlyBeforeFirstSaveSt
 	state, err = strategy.LoadSessionState(ctx, sessionID)
 	require.NoError(t, err)
 	require.NotNil(t, state)
-	assert.Equal(t, 1, state.StepCount, "the first SaveStep must be checkpoint #1")
 	assert.Equal(t, "anchor-uuid-1", state.TranscriptIdentifierAtStart,
-		"the first SaveStep must set the transcript anchor (StepCount==1 semantics)")
+		"the first step that knows its transcript position must set the anchor")
 
 	shadowBranch := checkpoint.ShadowBranchNameForCommit(headHash, "")
 	content, gotDirt := readShadowBranchFile(t, repoDir, shadowBranch, "user-dirt.txt")
-	assert.True(t, gotDirt,
-		"the first SaveStep must snapshot pre-existing uncommitted state (IsFirstCheckpoint baseline) even after a transcript-only task step")
+	assert.True(t, gotDirt, "the snapshot must hold the user's pre-existing uncommitted state")
 	assert.Equal(t, "pre-existing uncommitted work", content)
 }
 

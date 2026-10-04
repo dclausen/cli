@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/entiredir"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
 )
@@ -19,6 +21,15 @@ import (
 // skipped when nothing changed since the previous snapshot, and nothing is
 // written for a session whose state is gone or ended (no resurrection).
 func snapshotAgentStop(ctx context.Context, ag agent.Agent, sessionID, commitMessage string) error {
+	// The snapshot carries the session's metadata directory, which a turn
+	// end creates; a subagent can stop before its parent's first turn end.
+	root, err := entiredir.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("open .entire: %w", err)
+	}
+	if err := osroot.MkdirAllNoSymlink(root, sessionMetadataName(sessionID), 0o750); err != nil {
+		return fmt.Errorf("create session metadata directory: %w", err)
+	}
 	author, err := GetGitAuthor(ctx)
 	if err != nil {
 		return fmt.Errorf("get git author: %w", err)
