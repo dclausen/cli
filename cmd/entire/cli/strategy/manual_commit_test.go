@@ -23,6 +23,7 @@ import (
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/storage/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -3892,4 +3893,43 @@ func TestSaveStep_SkippedStepClearsSnapshottedPendingSubagentFiles(t *testing.T)
 	assert.Equal(t, 1, state.StepCount, "unchanged tree must not add a step")
 	assert.Empty(t, state.PendingSubagentFiles, "snapshotted pending file must be cleared")
 	assert.Equal(t, pendingPA, state.PendingPromptAttribution, "a skipped step must not consume the pending prompt attribution")
+}
+
+// TestCaptureSubagentBaselines_SkipsGitIgnoredFiles pins that a subagent's
+// gitignored file (a .env, say) is never written to the object store as a
+// baseline blob. Shadow snapshots filter ignored files for the same reason,
+// and an ignored file is never snapshotted or attributed anyway.
+func TestCaptureSubagentBaselines_SkipsGitIgnoredFiles(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, ".gitignore", ".env\n")
+	testutil.GitAdd(t, dir, ".gitignore")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+
+	const secret = "API_TOKEN=s3cr3t-value-from-subagent\n"
+	testutil.WriteFile(t, dir, ".env", secret)
+	testutil.WriteFile(t, dir, "notes.md", "subagent notes\n")
+
+	baselines, err := CaptureSubagentBaselines(context.Background(), []string{".env", "notes.md"})
+	require.NoError(t, err)
+	assert.Contains(t, baselines, "notes.md")
+	assert.NotContains(t, baselines, ".env", "an ignored file must not get a baseline")
+
+	repo, err := OpenRepository(context.Background())
+	require.NoError(t, err)
+	defer repo.Close()
+	secretHash, err := checkpoint.CreateBlobFromContent(memoryOnlyRepo(t), []byte(secret))
+	require.NoError(t, err)
+	_, err = repo.BlobObject(secretHash)
+	assert.Error(t, err, "the ignored file's content must not be in the object store")
+}
+
+// memoryOnlyRepo returns an in-memory repository, for hashing content
+// without writing it anywhere.
+func memoryOnlyRepo(t *testing.T) *git.Repository {
+	t.Helper()
+	repo, err := git.Init(memory.NewStorage(), nil)
+	require.NoError(t, err)
+	return repo
 }

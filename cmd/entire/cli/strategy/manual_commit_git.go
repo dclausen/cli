@@ -456,7 +456,9 @@ func (c SubagentEditCapture) apply(state *SessionState) {
 
 // CaptureSubagentBaselines stores the current worktree content of files a
 // subagent wrote as git blobs and returns their hashes, keyed by path. A file
-// that no longer exists maps to "".
+// that no longer exists maps to "". Gitignored files are left out, as shadow
+// snapshots leave them out: their content (a .env, say) must not reach the
+// object store, and an ignored file is never snapshotted or attributed.
 func CaptureSubagentBaselines(ctx context.Context, files []string) (map[string]string, error) {
 	baselines := make(map[string]string, len(files))
 	if len(files) == 0 {
@@ -467,6 +469,7 @@ func CaptureSubagentBaselines(ctx context.Context, files []string) (map[string]s
 		return nil, fmt.Errorf("open repository: %w", err)
 	}
 	defer repo.Close()
+	files = checkpoint.FilterGitIgnoredFiles(ctx, repo, files)
 	repoRoot, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree root: %w", err)

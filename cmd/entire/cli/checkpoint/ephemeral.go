@@ -1201,6 +1201,13 @@ type changedFilesResult struct {
 // This prevents secrets in gitignored files (e.g., .env) from leaking into shadow branch
 // commits when agents report them as modified/new in their transcripts.
 // On failure, fails closed (returns nil) to avoid leaking secrets.
+// FilterGitIgnoredFiles returns files without the ones git ignores, for
+// callers outside this package that store worktree content as blobs. See
+// filterGitIgnoredFiles.
+func FilterGitIgnoredFiles(ctx context.Context, repo *git.Repository, files []string) []string {
+	return filterGitIgnoredFiles(ctx, repo, files)
+}
+
 func filterGitIgnoredFiles(ctx context.Context, repo *git.Repository, files []string) []string {
 	if len(files) == 0 {
 		return files
