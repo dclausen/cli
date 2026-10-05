@@ -1134,22 +1134,39 @@ func TestParseEntireCloneURL(t *testing.T) {
 		// it has to parse: a URL read out of the table is pasted back in.
 		{name: "native clone URL", raw: "entire://aws-us-east-2.entire.io/et/acme/web",
 			wantCluster: "aws-us-east-2.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "web"},
-		// A trailing .git is decoration on either forge (085804b150): git
-		// tooling reserves the suffix — Git LFS derives its endpoint by
-		// appending it — so a repo literally named `foo.git` is
+		// A trailing .git is decoration on either forge, in any case
+		// (621ecf062a): git tooling reserves the suffix — Git LFS derives its
+		// endpoint by appending it — so a repo literally named `foo.git` is
 		// indistinguishable from `foo` to anything following that convention.
-		// Delegating to parseNativeCloneRef is what keeps this URL following
-		// the rule without the URL parser restating it.
+		// Delegating to parseMirrorRepoRef is what keeps this URL following the
+		// rule without the URL parser restating it, which is how five
+		// spellings of one rule got three of them wrong.
 		{name: "native clone URL drops a trailing .git", raw: "entire://c.entire.io/et/acme/web.git",
 			wantCluster: "c.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "web"},
 		{name: "owner and repo lowercased", raw: "entire://c.entire.io/gh/OctoCat/Hello-World",
 			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "octocat", wantRepo: "hello-world"},
-		// Still trimmed on the /gh/ side, where GitHub's own naming rules make
-		// the suffix decoration rather than a name.
-		{name: "trailing .git is trimmed on a GitHub URL", raw: "entire://c.entire.io/gh/entireio/cli.git",
+		{name: "trailing .git is trimmed", raw: "entire://c.entire.io/gh/entireio/cli.git",
 			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "entireio", wantRepo: "cli"},
+		// The suffix is cut BEFORE the name is lowercased. Doing it the other
+		// way round — which is what shipped — left ".GIT" in place for the
+		// case-sensitive cut, then lowercased the whole thing to "cli.git": a
+		// repo spelling no stored mirror can ever match, so the lookup
+		// reported no such mirror for a clone URL git itself resolves.
+		{name: "uppercase .GIT is trimmed, not lowercased into the name", raw: "entire://c.entire.io/gh/EntireIO/CLI.GIT",
+			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "entireio", wantRepo: "cli"},
+		{name: "mixed-case .Git is trimmed", raw: "entire://c.entire.io/gh/entireio/cli.Git",
+			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "entireio", wantRepo: "cli"},
+		// The same three on the native side, because this parser serves both
+		// forges and the rule is one rule: whatever parseMirrorRepoRef decides
+		// about a suffix, a clone URL of either kind inherits.
+		{name: "uppercase .GIT is trimmed on a native URL", raw: "entire://c.entire.io/et/acme/Web.GIT",
+			wantCluster: "c.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "Web"},
+		{name: "a longer dotted extension is not the suffix, natively too", raw: "entire://c.entire.io/et/acme/web.gitignore",
+			wantCluster: "c.entire.io", wantForge: nativeCloneForge, wantOwner: "acme", wantRepo: "web.gitignore"},
 		{name: "interior dots in repo name are kept", raw: "entire://c.entire.io/gh/entirehq/entire-trails.el",
 			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "entirehq", wantRepo: "entire-trails.el"},
+		{name: "a longer dotted extension is not the suffix", raw: "entire://c.entire.io/gh/entireio/cli.gitignore",
+			wantCluster: "c.entire.io", wantForge: mirrorCloneForge, wantOwner: "entireio", wantRepo: "cli.gitignore"},
 		{name: "wrong scheme", raw: "https://c.entire.io/gh/a/b", wantErr: true},
 		{name: "unknown forge segment", raw: "entire://c.entire.io/git/a/b", wantErr: true},
 		{name: "missing repo", raw: "entire://c.entire.io/gh/a", wantErr: true},
