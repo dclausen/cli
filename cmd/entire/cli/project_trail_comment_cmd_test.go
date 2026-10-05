@@ -31,7 +31,7 @@ func TestProjectTrailDiscussionsUseProjectRoutes(t *testing.T) {
 				assert.Empty(t, r.Header.Get("If-Match"))
 				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 					"discussion": api.TrailDiscussionSummary{ID: "discussion-one", Title: "Plan", TrailID: projectTrailTestID},
-					"message":    api.TrailDiscussionMessage{ID: "message-one", Body: "Plan"},
+					"message":    api.TrailDiscussionMessage{ID: "message-one", Body: "Plan", ETag: `W/"message-version"`},
 					"items":      []api.TrailDiscussionSummary{{ID: "discussion-one", Title: "Plan"}},
 				}))
 			})
@@ -40,6 +40,9 @@ func TestProjectTrailDiscussionsUseProjectRoutes(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 1, calls)
 			require.NotEmpty(t, out)
+			// ETags drive conditional writes internally; they never reach output.
+			assert.NotContains(t, out, "etag")
+			assert.NotContains(t, out, "-version")
 		})
 	}
 }
