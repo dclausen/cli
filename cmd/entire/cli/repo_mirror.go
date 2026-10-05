@@ -117,6 +117,13 @@ type repoDirPlacement struct {
 	// only: readiness is Status and nothing else, so stage never decides
 	// anything — it says how far along a wait is.
 	Stage string `json:"stage,omitempty"`
+	// LastError is the server's reason for a placement that is not healthy —
+	// the one thing a caller selecting `.status=="failed"` needs to decide
+	// between retrying and escalating. The human view gets it from
+	// reportNativeMirrorNotes, which never runs under --json, so without this
+	// the two outputs disagree about whether the reason exists. A GitHub
+	// placement has no equivalent, so omitempty keeps the shared shape honest.
+	LastError string `json:"lastError,omitempty"`
 	// Removing marks a placement whose teardown is in flight. It stays listed
 	// rather than being hidden: creating on that cluster meanwhile is refused
 	// until the row is gone, so hiding it would hide the reason.

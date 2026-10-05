@@ -490,6 +490,55 @@ func TestRepoView_ACancelledCommandDoesNotPrintAWonRace(t *testing.T) {
 	require.NotContains(t, out.String(), "CLUSTER", "no table for work the user stopped")
 }
 
+// TestRepoView_GitHubIgnoredFlagNote pins that the note fires on a flag the
+// caller actually asked for. --authoritative=false requests exactly what the
+// GitHub path does, so reporting it as ignored tells someone a flag they turned
+// off was disregarded. Nothing covered this warning at either call site.
+//
+// Not parallel: runCoreCmd replaces the shared client constructor.
+func TestRepoView_GitHubIgnoredFlagNote(t *testing.T) {
+	serve := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/clusters":
+				fmt.Fprint(w, `{"clusters":[]}`)
+			default:
+				assert.NoError(t, printJSON(w, &coreapi.ListReposOutputBody{
+					Repos: []coreapi.RepoIndexEntry{{
+						ID: "01R", Name: "hello", FullName: "octocat/hello",
+						Org:      coreapi.NewOptString("octocat"),
+						Provider: coreapi.NewOptString(repoProviderGitHub), Visibility: "public",
+						Jurisdiction: "us", Cell: "c", ClusterSlug: "us",
+					}},
+				}))
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	t.Run("--authoritative is reported as ignored", func(t *testing.T) {
+		_, stderr, err := runCoreCmd(t, newRepoViewCmd, serve(t).URL, "/gh/octocat/hello", "--authoritative")
+		require.NoError(t, err)
+		require.Contains(t, stderr, "--authoritative is ignored")
+	})
+
+	t.Run("--authoritative=false is not", func(t *testing.T) {
+		_, stderr, err := runCoreCmd(t, newRepoViewCmd, serve(t).URL, "/gh/octocat/hello", "--authoritative=false")
+		require.NoError(t, err)
+		require.NotContains(t, stderr, "is ignored",
+			"the caller asked for exactly the behaviour they got")
+	})
+
+	t.Run("omitted says nothing", func(t *testing.T) {
+		_, stderr, err := runCoreCmd(t, newRepoViewCmd, serve(t).URL, "/gh/octocat/hello")
+		require.NoError(t, err)
+		require.NotContains(t, stderr, "is ignored")
+	})
+}
+
 func TestRepoCreateReadinessFlags(t *testing.T) {
 	// Not parallel: shared client seam.
 	for _, tc := range []struct {
@@ -1076,8 +1125,9 @@ func TestRepoViewAuthoritativeFlag(t *testing.T) {
 			// The server's own message reaches the user either way.
 			require.Contains(t, stderr, "repository read failed")
 			if tc.hint {
-				require.Contains(t, stderr, "entire repo view "+testNativeRepoPath+" to inspect")
-				require.Contains(t, stderr, "without a readiness check")
+				require.Contains(t, stderr, "entire repo view "+testNativeRepoPath+" without --authoritative")
+				require.NotContains(t, stderr, "without a readiness check",
+					"the read is unconditional now, so dropping the flag skips nothing — it only changes the failure from an error to a warning")
 			} else {
 				require.NotContains(t, stderr, "readiness check")
 			}

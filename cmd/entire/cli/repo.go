@@ -412,7 +412,7 @@ func newRepoViewCmd() *cobra.Command {
 				if target.forge == nativeCloneForge {
 					return runNativeRepoView(cmd, target.qualified(), clusterHost, authoritative)
 				}
-				warnFlagsGitHubViewIgnores(cmd)
+				warnFlagsGitHubViewIgnores(cmd, authoritative)
 				return runRepoMirrorViewByName(cmd, target.owner+"/"+target.repo, clusterHost)
 			}
 			// A repository is named /<forge>/<a>/<b> and no other way. A bare
@@ -427,7 +427,7 @@ func newRepoViewCmd() *cobra.Command {
 				return err
 			}
 			if target.forge == mirrorCloneForge {
-				warnFlagsGitHubViewIgnores(cmd)
+				warnFlagsGitHubViewIgnores(cmd, authoritative)
 				return runRepoMirrorViewByName(cmd, target.owner+"/"+target.repo, "")
 			}
 			return runNativeRepoView(cmd, target.qualified(), "", authoritative)
@@ -637,8 +637,14 @@ func warnRedundantProjectFlag(cmd *cobra.Command, project *string) {
 //
 // --project is not checked: `repo view` does not register it, so Changed()
 // could only ever answer false.
-func warnFlagsGitHubViewIgnores(cmd *cobra.Command) {
-	if cmd.Flags().Changed("authoritative") {
+//
+// The VALUE is what decides, not Changed(): --authoritative=false asks for
+// exactly what the GitHub path does, so reporting it as ignored tells the
+// caller a flag they turned off was disregarded. warnRedundantProjectFlag tests
+// Changed() alone on purpose — an explicit --project "" still states a scope —
+// but false is this flag's default and states nothing.
+func warnFlagsGitHubViewIgnores(cmd *cobra.Command, authoritative bool) {
+	if authoritative {
 		fmt.Fprintln(cmd.ErrOrStderr(), "Note: --authoritative is ignored for a GitHub repository; Entire holds no repository record for an upstream, only the mirrors of it.")
 	}
 }
