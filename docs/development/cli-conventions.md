@@ -21,12 +21,40 @@ the default. Register a command as experimental with `experimental.Register(pare
 child)` instead of `parent.AddCommand(child)`. Gating only controls visibility —
 the commands are always runnable in every build.
 
-- `session` (alias: `sessions`): `list`, `info`, `tokens`, `stop`, `attach`, `adopt`, `resume`, `current`.
-  `resume` with a branch arg switches to it and resumes its session; with no arg
-  it opens an interactive picker of stopped sessions (across all worktrees),
+- `session` (alias: `sessions`): `list`, `info`, `tokens`, `stop`, `attach`, `adopt`, `resume`, `share`, `current`.
+  `resume` takes a branch, a checkpoint ID (or prefix), or a commit, routed through the
+  same auto-detect ladder as `checkpoint resume` (`resumeAutoTarget`) rather than a second
+  resolver. A branch arg switches to it and resumes its session; a checkpoint ID needs no
+  branch at all and restores the session log in place when no local branch contains it,
+  fetching the ref on demand. That is the path a shared session takes: an investigative
+  session never commits, so no trailer names its checkpoint and no branch holds it. With no
+  arg `resume` opens an interactive picker of stopped sessions (across all worktrees),
   resolving each to its branch and pointing at the owning worktree when the
   branch is checked out elsewhere. Resume keeps an existing local session log
-  as-is by default (`--force` overwrites it from the checkpoint).
+  as-is by default (`--force` overwrites it from the checkpoint). Hints that name the
+  command to re-run build it from `resumeCommandPath(cmd)`, since the resolver is shared
+  by two commands and must not send the user to the other one.
+  `share` is `checkpoint create` plus the push: it writes a snapshot checkpoint through
+  `strategy.CreateSnapshotCheckpoint`, pushes it, and prints the `session resume <id>` line
+  to hand over — sharing needs neither a commit nor a branch. It reuses
+  `resolveCheckpointCreateSession`, so only a resolution that identified the caller is
+  accepted; the most-recent-session tiers are guesses, and publishing a transcript on a
+  guess publishes someone else's. A session with pending file changes is refused by
+  `CreateSnapshotCheckpoint` itself (`ErrPendingFileChanges`, detected through
+  `resolveFilesTouched` so an edit visible only in the live transcript still counts), and
+  `share` turns that into "commit first" guidance rather than surfacing the sentinel — the
+  next commit checkpoints that work with attribution, and a snapshot would publish a weaker
+  copy. What a snapshot does write carries no attribution
+  (`condenseOpts.noCommitAttribution`), since with no commit HEAD predates the agent's
+  changes and each would score as a human removal, and a redaction failure is an error
+  rather than a dropped transcript (`condenseOpts.failOnRedactionError`) — which matters
+  more here than for `checkpoint create`, because share publishes. The session's checkpoint
+  window is untouched, so the next commit's checkpoint still covers the same work. The push goes
+  through `strategy.PushSharedCheckpoints`, which dispatches on the primary backend the way
+  pre-push does; callers must run `EnsureRedactionConfigured` first, which both halves need
+  — the checkpoint write must not fall back to the default scanner set, and the OPF gate
+  otherwise reads as "off". `share` is classified user-owned in `agentHelpClassification`:
+  it publishes a transcript to a remote.
   `adopt` moves an active session from another repo or worktree into the current
   worktree and resets target-local checkpoint bookkeeping so future commits link
   to the adopted session from the new location.
