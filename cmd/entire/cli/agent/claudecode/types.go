@@ -13,6 +13,7 @@ type ClaudeHooks struct {
 	SessionEnd       []ClaudeHookMatcher `json:"SessionEnd,omitempty"`
 	UserPromptSubmit []ClaudeHookMatcher `json:"UserPromptSubmit,omitempty"`
 	Stop             []ClaudeHookMatcher `json:"Stop,omitempty"`
+	StopFailure      []ClaudeHookMatcher `json:"StopFailure,omitempty"`
 	SubagentStop     []ClaudeHookMatcher `json:"SubagentStop,omitempty"`
 	PreToolUse       []ClaudeHookMatcher `json:"PreToolUse,omitempty"`
 	PostToolUse      []ClaudeHookMatcher `json:"PostToolUse,omitempty"`
