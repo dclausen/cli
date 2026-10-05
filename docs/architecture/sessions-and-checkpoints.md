@@ -54,6 +54,8 @@ const (
 | Ephemeral | Full state (code + metadata) | Pending session state, pre-commit |
 | Persistent | Metadata + commit reference | Permanent record, post-commit |
 
+Most persistent checkpoints are written when a commit condenses a session, but some have no commit: eager condensation at session end, `entire doctor` and the session sweeper, and snapshots from the hidden `entire checkpoint create`. Snapshots exist for sessions that change no files (research, planning, review), which no other path checkpoints; see [implementation contracts](../development/checkpoint-implementation.md).
+
 ## Interface
 
 ### Session Access
@@ -359,23 +361,9 @@ for task work; the payload is materialized at condensation (below).
 
 **Producers.**
 
-- **Background launch** (`run_in_background: true` in the Task tool's input):
-  Claude Code's PostToolUse for a backgrounded Task fires at the launch
-  acknowledgment, seconds after dispatch, so the launch only records an
-  in-flight record and captures nothing. `SubagentType`/`TaskDescription` are
-  captured here because `SubagentStop`'s payload carries none of them.
-- **Foreground completion** (post-task, non-final): PostToolUse fires at true
-  completion, so the record is created-and-completed in one step, files and
-  transcript path attached.
-- **SubagentStop (final, authoritative)**: the real completion signal for
-  background tasks. `handleSubagentStopFinal` completes the live record —
-  bypassing any "no changes, skip" instinct: a read-only subagent (reviewer,
-  search agent) still produced a transcript worth materializing. File
-  attribution is analyzer-only (the subagent's own transcript, never a
-  whole-worktree scan that would sweep in the parent's concurrent work); the
-  accepted trade is that shell side-effect files the transcript never names,
-  and deletions, are under-captured. A record already completed (foreground
-  dedup, duplicate/racing Final event) is skipped.
+- **Background launch**: Claude Code reports the launch mode in the Agent tool's PostToolUse `tool_response` (`status: "async_launched"` with `isAsync`, versus `"completed"` for foreground), which the parser carries as `agent.Event.SubagentLaunch`. That report wins; `tool_input.run_in_background` (a boolean or a boolean string) is only the fallback, because Claude Code usually runs Agent calls in the background without the model passing it. A background PostToolUse fires at the launch acknowledgment, seconds after dispatch, so the launch only records an in-flight record (with the `agentId` from the response) and captures nothing. `SubagentType`/`TaskDescription` are captured here because `SubagentStop`'s payload carries none of them.
+- **Foreground completion** (post-task, non-final): PostToolUse fires at true completion, so the record is created-and-completed in one step, files and transcript path attached. Claude Code's foreground `SubagentStop` arrives just *before* this PostToolUse, when no record exists yet, and is a no-op.
+- **SubagentStop (final, authoritative)**: the real completion signal for background tasks. Claude Code's payload carries `agent_id` but no `tool_use_id`, so `handleSubagentStopFinal` finds the record by `AgentID` (`FindTaskRecordByAgentID`, a live record before a completed one) and adopts its `ToolUseID`, which keys exactly-once completion and the checkpoint's `tasks/<tool_use_id>/` tree. It then completes the live record, bypassing any "no changes, skip" instinct: a read-only subagent (reviewer, search agent) still produced a transcript worth materializing. File attribution is analyzer-only (the subagent's own transcript, never a whole-worktree scan that would sweep in the parent's concurrent work); the accepted trade is that shell side-effect files the transcript never names, and deletions, are under-captured. A record already completed (duplicate/racing Final event) is skipped. Known gap: a subagent continued with `SendMessage` gets a second `SubagentStart`/`SubagentStop` under the same `agent_id` but no new Agent call, so its stop finds the completed record and the resumed run's edits are not attributed to the task.
 - **SessionEnd sweep** (`completeLiveTaskRecords`): a session closing with
   tasks still in flight completes every remaining live record, strictly
   **before** `endSessionNow` marks `PhaseEnded` and eagerly condenses, so the
@@ -412,6 +400,13 @@ gets a `task.json` carrying a stable, path-free
 `transcript_unavailable_reason` — the record is never silently dropped.
 Records with an empty/unsafe `ToolUseID` or `AgentID` are skipped with a
 warning, never allowed to wedge condensation.
+
+**Reading them back.** `checkpoint.TaskReader` (`ListTasks`,
+`ReadTaskTranscript`; part of `PersistentStore`) reads the records through
+one tree reader shared by both git backends (`task_reader.go`), re-validating
+the directory name and `task.json`'s `agent_id` since both are pushed data.
+`entire checkpoint explain --json` lists them under `tasks`, and
+`--transcript --task <tool_use_id|agent_id>` streams one transcript.
 
 **Self-contained checkpoints.** Live records are materialized too: each
 condensation stores the transcript-so-far, so a mid-task commit carries a
