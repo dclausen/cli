@@ -545,7 +545,7 @@ func runNativeRepoView(cmd *cobra.Command, ref, clusterHost string, authoritativ
 			return printJSON(cmd.OutOrStdout(), out)
 		}
 		renderRepoDetail(cmd.OutOrStdout(), row)
-		reportNativeMirrorNotes(cmd.ErrOrStderr(), repo, mirrors, row)
+		reportNativeMirrorNotes(cmd.ErrOrStderr(), repo, row)
 		return nil
 	})
 }
@@ -777,36 +777,36 @@ func nativeRepoDetailRow(name string, repo *coreapi.Repo, mirrors []coreapi.Nati
 // own reason for a placement that is not healthy. It goes to stderr so a piped
 // table or --json stays clean, and names the cluster so a multi-placement repo
 // stays legible.
-// It reads the names off the ROW rather than re-deriving them: the row already
-// resolved each cluster once, with the primary's record fallback, so deriving
-// them again here is how stderr came to say `us-east` under a table saying
-// `aws-us-east-2.entire.io` — the same two-names-for-one-cluster split the row
-// itself was fixed for.
-func reportNativeMirrorNotes(w io.Writer, repo *coreapi.Repo, mirrors []coreapi.NativeMirrorPlacement, row repoDirRow) {
-	named := make(map[string]string, len(row.Placements))
-	for _, p := range row.Placements {
-		named[p.ClusterSlug] = p.Cluster
-	}
-	cluster := func(slug string) string {
-		if name := named[slug]; name != "" {
-			return name
-		}
-		return slug
-	}
-	// The primary's equivalent of a mirror's lastError: the STATUS cell says a
-	// repo failed to provision, and this is the only place that says why. It is
-	// therefore scoped to a repo that HAS failed — the field outlives the
-	// failure it describes, so printing it whenever it is non-empty put "max
-	// retries exhausted" under a repo reading `ready`. A failed repo with no
-	// placement prints its reason on stdout instead (renderRepoDetail), where
-	// there is no table for it to dirty.
+//
+// Everything it prints comes off the ROW. Each placement already carries its
+// resolved cluster name and its lastError, so re-deriving either here is how
+// stderr came to say `us-east` under a table saying `aws-us-east-2.entire.io`.
+// Reading the row is what makes that divergence unrepresentable rather than
+// merely fixed.
+//
+// One consequence: the notes follow the TABLE's order now — the row sorts its
+// placements, where the wire listing did not — so a reader scanning down the
+// table meets the reasons in the same sequence.
+func reportNativeMirrorNotes(w io.Writer, repo *coreapi.Repo, row repoDirRow) {
+	// The primary's reason comes from the repo record rather than a placement:
+	// it is the repo's own provisioning that failed, and this is the only place
+	// that says why. Scoped to a repo that HAS failed, because the field
+	// outlives the failure it describes — printing it whenever it is non-empty
+	// put "max retries exhausted" under a repo reading `ready`. A failed repo
+	// with no placement prints its reason on stdout instead (renderRepoDetail),
+	// where there is no table for it to dirty.
 	if reason := strings.TrimSpace(repo.ProvisionReason.Or("")); reason != "" &&
-		repo.State.Or("") == repoStateFailed && repo.ClusterSlug.Or("") != "" {
-		fmt.Fprintf(w, "%s: %s\n", cluster(repo.ClusterSlug.Or("")), reason)
+		repo.State.Or("") == repoStateFailed {
+		for _, p := range row.Placements {
+			if p.Role == placementRolePrimary {
+				fmt.Fprintf(w, "%s: %s\n", p.Cluster, reason)
+				break
+			}
+		}
 	}
-	for _, m := range mirrors {
-		if detail := strings.TrimSpace(m.LastError.Or("")); detail != "" {
-			fmt.Fprintf(w, "%s: %s\n", cluster(m.ClusterSlug), detail)
+	for _, p := range row.Placements {
+		if p.LastError != "" {
+			fmt.Fprintf(w, "%s: %s\n", p.Cluster, p.LastError)
 		}
 	}
 }

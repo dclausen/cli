@@ -184,7 +184,7 @@ func TestNativeRepoDetailRow_CatalogMissUsesTheRecord(t *testing.T) {
 		row := nativeRepoDetailRow("/et/acme/web", failed, nil, nil)
 
 		var errW bytes.Buffer
-		reportNativeMirrorNotes(&errW, failed, nil, row)
+		reportNativeMirrorNotes(&errW, failed, row)
 		require.Equal(t, "aws-us-east-2.entire.io: max retries exhausted\n", errW.String(),
 			"stderr saying us-east under a table saying the host is the same split, moved one line over")
 	})
@@ -196,6 +196,26 @@ func TestNativeRepoDetailRow_CatalogMissUsesTheRecord(t *testing.T) {
 		require.Len(t, row.Placements, 2)
 		require.Equal(t, "ghost", row.Placements[1].Cluster)
 		require.Empty(t, row.Placements[1].CloneURL, "no host means no URL, never a guessed one")
+	})
+
+	t.Run("a mirror's note names the cluster its row named", func(t *testing.T) {
+		t.Parallel()
+		// Two mirrors, one unresolvable, both failing — the notes have to name
+		// each the way its own row did, not the way the wire spelled it.
+		row := nativeRepoDetailRow("/et/acme/web", recorded(),
+			[]coreapi.NativeMirrorPlacement{
+				{ClusterSlug: "ghost", Status: coreapi.NativeMirrorPlacementStatusFailed,
+					LastError: coreapi.NewOptString("cluster unreachable")},
+				{ClusterSlug: "aws-eu-central-1", Status: coreapi.NativeMirrorPlacementStatusFailed,
+					LastError: coreapi.NewOptString("seed timed out")},
+			}, nativeTestClusters)
+
+		var errW bytes.Buffer
+		reportNativeMirrorNotes(&errW, recorded(), row)
+		require.Equal(t,
+			"aws-eu-central-1.entire.io: seed timed out\nghost: cluster unreachable\n",
+			errW.String(),
+			"each note names its row's CLUSTER cell, and they follow the table's order")
 	})
 
 	t.Run("a mirror's lastError reaches --json", func(t *testing.T) {
