@@ -17,6 +17,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitremote"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/internal/coreapi"
 )
@@ -1465,7 +1466,16 @@ func parseMirrorCloneURL(raw string) (clusterHost, provider, owner, repo string,
 	// Trim a trailing .git so a URL pasted from `git remote -v` resolves the
 	// same as the bare clone URL (matching gitremote.ParseURL). GitHub repo
 	// names can contain dots, so only the suffix is trimmed, not all dots.
-	repo = strings.ToLower(strings.TrimSuffix(parts[2], mirrorGitDirSuffix))
+	//
+	// Cut the suffix BEFORE lowercasing, and with gitremote.CutGitDirSuffix
+	// rather than a case-sensitive TrimSuffix. Either mistake alone is enough
+	// to break this: lowercasing first is pointless work, but cutting a
+	// lowercase-only suffix from an un-lowered name left ".GIT" attached and
+	// then folded the pair into "repo.git" — a spelling stored mirrors never
+	// carry, so the EqualFold match below could not find a mirror that plainly
+	// exists.
+	repo, _ = gitremote.CutGitDirSuffix(parts[2])
+	repo = strings.ToLower(repo)
 	return u.Host, string(coreapi.CreateMirrorRequestInputBodyProviderGithub), strings.ToLower(parts[1]), repo, nil
 }
 
