@@ -25,12 +25,6 @@ func submitWorkingTrailApproval(cmd *cobra.Command, selector, branch, event, mes
 	if err := checkTrailResponse(resp); err != nil {
 		return err
 	}
-	if selected.Target == nil {
-		var out api.TrailApprovalResponse
-		if err := api.DecodeJSON(resp, &out); err != nil {
-			return fmt.Errorf("decode approval response: %w", err)
-		}
-	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", verb, selected.description())
 	return nil
 }
