@@ -755,6 +755,15 @@ func installHooks(ctx context.Context, lockRoot, root *os.Root, hooksDir string,
 	for _, spec := range specs {
 		backupName := spec.name + backupSuffix
 
+		reclaimed, err := reclaimFromPreCommit(root, spec.name)
+		if err != nil {
+			return installedCount, fmt.Errorf("failed to take %s back from pre-commit: %w", spec.name, err)
+		}
+		if reclaimed {
+			fmt.Fprintf(os.Stderr, "[entire] pre-commit had moved Entire's %s hook to %s%s; Entire's hook is back and runs pre-commit's after it.\n", spec.name, spec.name, legacySuffix)
+			logging.Info(ctx, "git hook reclaimed from pre-commit", slog.String("hook", spec.name))
+		}
+
 		// Back up existing non-Entire hooks. A symlinked hook is one of those:
 		// Entire never installs a link, so it belongs to the user or another
 		// tool. Refusing to read through it must not mean quietly replacing it,
@@ -881,6 +890,17 @@ func removeHooks(ctx context.Context, lockRoot, root *os.Root) (int, error) {
 		}
 		hookIsOurs := class == hookOurs
 		hookExists := class != hookAbsent
+
+		if err := restoreLegacy(root, hook); err != nil {
+			removeErrors = append(removeErrors, fmt.Sprintf("restore %s%s: %v", hook, legacySuffix, err))
+		}
+		// pre-commit reinstalled over Entire's hook: its wrapper is at the path
+		// and an identical copy in the backup is redundant.
+		if class == hookForeign && sameHookFile(root, hook, backupName) {
+			if err := root.Remove(backupName); err != nil {
+				removeErrors = append(removeErrors, fmt.Sprintf("%s: %v", backupName, err))
+			}
+		}
 
 		if hookIsOurs {
 			if err := osroot.RemoveNoSymlinks(root, hook); err != nil {
