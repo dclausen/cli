@@ -291,6 +291,9 @@ func TestUninstallHooks(t *testing.T) {
 	if !hasEntireHook(settings.Hooks.SubagentStop) {
 		t.Fatal("SubagentStop hook should be installed before uninstall")
 	}
+	if !hasEntireHook(settings.Hooks.StopFailure) {
+		t.Fatal("StopFailure hook should be installed before uninstall")
+	}
 
 	// Uninstall
 	err = agent.UninstallHooks(context.Background())
@@ -310,6 +313,15 @@ func TestUninstallHooks(t *testing.T) {
 		settings := readClaudeSettings(t, tempDir)
 		if hasEntireHook(settings.Hooks.SubagentStop) {
 			t.Error("SubagentStop hook should be removed after uninstall")
+		}
+	})
+
+	// AreHooksInstalled only looks at Stop, so StopFailure needs its own check:
+	// a stop-failure hook left behind would keep running after `entire disable`.
+	t.Run("removes StopFailure", func(t *testing.T) {
+		settings := readClaudeSettings(t, tempDir)
+		if hasEntireHook(settings.Hooks.StopFailure) {
+			t.Error("StopFailure hook should be removed after uninstall")
 		}
 	})
 }
