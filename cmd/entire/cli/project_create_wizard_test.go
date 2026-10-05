@@ -339,6 +339,8 @@ func TestProjectCreate_FlagsNeverSeedTheWizard(t *testing.T) {
 		{"widgets", "--region", "eu"},
 		{"widgets", "--owner-type", "org"},
 		{"--owner-type", "account", "--region", "us"},
+		{"--owner", ""},
+		{"widgets", "--region", ""},
 	} {
 		_, err := execProjectCreate(t, args...)
 		require.ErrorContains(t, err, "a project name and --owner are required: entire project create <name> --owner", args)

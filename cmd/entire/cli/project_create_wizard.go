@@ -48,11 +48,12 @@ func (in projectCreateInput) complete() bool {
 	return in.name != "" && in.owner != ""
 }
 
-// usesFlags reports whether any create flag was given. Flags mean the flag
-// form: the wizard never takes them as starting values, so a flag with a
-// missing name or owner is refused rather than prompted for.
+// usesFlags reports whether any create flag was given, empty or not. Flags
+// mean the flag form: the wizard never takes them as starting values, so a
+// flag with a missing name or owner is refused rather than prompted for.
 func (in projectCreateInput) usesFlags(cmd *cobra.Command) bool {
-	return in.owner != "" || in.region != "" || cmd.Flags().Changed("owner-type")
+	f := cmd.Flags()
+	return f.Changed("owner") || f.Changed("region") || f.Changed("owner-type")
 }
 
 // projectOwner is one row of the owner picker. The user only ever sees ref (an
@@ -352,8 +353,8 @@ func projectRegions(jurisdictions []coreapi.TopologyJurisdiction) []projectRegio
 
 // newProjectCreateState assembles the wizard from what was loaded. name is
 // the name field's starting text: the command's argument, else defaultName.
-// The owner starts on the first row (the caller's own account when it has a
-// handle) and the region on that owner's.
+// The owner starts on the personal row, always the first, and the region on
+// that owner's.
 func newProjectCreateState(d projectCreateData, name, defaultName string) (*projectCreateState, error) {
 	owners, hidden := projectOwners(d.me, d.orgs)
 	s := &projectCreateState{
