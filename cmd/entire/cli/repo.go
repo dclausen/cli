@@ -140,7 +140,8 @@ the wizard defaults to private.
 
 --wait-timeout must be positive. It bounds project resolution, creation,
 and readiness polling after client setup, including creation with
---no-wait; time spent answering the wizard does not count. Use --no-wait
+--no-wait. The wizard's loading and create share that one budget; time
+spent answering the wizard does not count. Use --no-wait
 to return without confirming readiness.
 
 If creation succeeds but readiness cannot be confirmed, the command exits

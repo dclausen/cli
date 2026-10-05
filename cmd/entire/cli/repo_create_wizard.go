@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -266,18 +267,20 @@ var repoCreatePrompt = runRepoCreateForms
 // runRepoCreateWizard is the prompting path of `repo create`: load the
 // projects, ask, then create what the summary showed.
 //
-// --wait-timeout bounds the loading before the form and, separately, the
-// create and readiness wait after it: time spent answering is not the
-// server's to spend.
+// --wait-timeout is one budget for the server's work, as on the direct path:
+// the loading before the form and the create and readiness wait after it
+// share it (see repoCreateBudget). Time spent answering is not the server's
+// to spend, so it is not counted.
 func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions) error {
 	// The "Using context" notice would sit above the form; the wizard shows
 	// no login at all.
 	auth.SilenceContextNotice()
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
+		budget := &repoCreateBudget{left: opts.waitTimeout}
 		stop := startSpinner(cmd.ErrOrStderr(), "Loading projects")
-		loadCtx, cancelLoad := context.WithTimeout(ctx, opts.waitTimeout)
+		loadCtx, doneLoading := budget.phase(ctx)
 		projects, err := listAllProjects(loadCtx, c)
-		cancelLoad()
+		doneLoading()
 		// Always erase the spinner line: the form replaces it, and a lingering
 		// "✓ Loading…" above the form is noise.
 		stop(false)
@@ -300,10 +303,10 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 				return err
 			}
 			req := s.request()
-			createCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
+			createCtx, done := budget.phase(ctx)
 			created, err := createRepo(createCtx, c, req)
 			if err != nil {
-				cancel()
+				done()
 				// Typically the name was free when checked and someone took it
 				// since. Reopen the wizard on the same answers, with the
 				// server's reason, rather than fail a run the user answered.
@@ -316,10 +319,27 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 				return err
 			}
 			err = finishRepoCreate(createCtx, cmd, c, req, created, opts)
-			cancel()
+			done()
 			return err
 		}
 	})
+}
+
+// repoCreateBudget is what is left of --wait-timeout for the server's work.
+// The wizard spends it in phases separated by prompts — loading, then each
+// create attempt — and a prompt's time is never charged.
+type repoCreateBudget struct{ left time.Duration }
+
+// phase starts a phase bounded by the budget left; done ends it, charging the
+// time it took. A spent budget yields an already-expired context, so the
+// phase fails on the deadline as the direct path would.
+func (b *repoCreateBudget) phase(ctx context.Context) (context.Context, func()) {
+	start := time.Now()
+	phaseCtx, cancel := context.WithTimeout(ctx, b.left)
+	return phaseCtx, func() {
+		cancel()
+		b.left -= time.Since(start)
+	}
 }
 
 // runRepoCreateForms runs the wizard as one paged form, so Shift+Tab walks

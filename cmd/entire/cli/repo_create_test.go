@@ -935,3 +935,29 @@ func TestRepoCreate_RefusesGitSuffixName(t *testing.T) {
 		require.Zero(t, f.requestCount(), "refused before any request: %v", args)
 	}
 }
+
+// --wait-timeout is one budget across the wizard's phases, as on the direct
+// path: each phase is charged what it took, and a spent budget expires the
+// next phase at once rather than granting it the full timeout again.
+func TestRepoCreateBudget_PhasesShareOneTimeout(t *testing.T) {
+	t.Parallel()
+	b := &repoCreateBudget{left: time.Second}
+
+	ctx, done := b.phase(t.Context())
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok)
+	require.LessOrEqual(t, time.Until(deadline), time.Second)
+	time.Sleep(50 * time.Millisecond)
+	done()
+	require.Less(t, b.left, 960*time.Millisecond, "the first phase was charged")
+
+	ctx, done = b.phase(t.Context())
+	deadline, _ = ctx.Deadline()
+	require.Less(t, time.Until(deadline), 960*time.Millisecond, "the second phase gets only what is left")
+	done()
+
+	b.left = 0
+	ctx, done = b.phase(t.Context())
+	defer done()
+	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "a spent budget expires the next phase at once")
+}
