@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -44,8 +45,9 @@ func newProjectCreateCmd() *cobra.Command {
 			"owning org (by name) or account (github:handle), and --owner-type " +
 			"selects which (org or account).\n\n" +
 			"With both a name and --owner the project is created directly. " +
-			"Otherwise, in an interactive terminal, a wizard asks for the owner, " +
-			"name and region, starting from whatever was given.",
+			"Run without flags in an interactive terminal (optionally with a " +
+			"name), a wizard asks for the owner, name and region; flags always " +
+			"mean the flag form, so a flag with a missing name or --owner is an error.",
 		Example: "  # Project under an org (by name)\n" +
 			"  entire project create widgets --owner acme --owner-type org\n\n" +
 			"  # Project owned by an account (by handle)\n" +
@@ -56,25 +58,25 @@ func newProjectCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			if len(args) == 1 {
-				in.name = args[0]
+				// Trimmed once for both paths, as the wizard trims what is
+				// typed into it; a blank name counts as no name.
+				in.name = strings.TrimSpace(args[0])
 			}
 			ot, err := parseProjectOwnerType(in.ownerType)
 			if err != nil {
 				return err
 			}
-			if cmd.Flags().Changed("owner-type") {
-				in.ownerKind = ot
-			}
 			if in.complete() {
 				return createProjectDirect(cmd, in, ot)
 			}
 			// Settled before any request: a prompt nobody can answer must not
-			// cost a lookup.
-			if !interactive.CanPromptInteractively() {
-				return errors.New("a project name and --owner are required without an interactive terminal: " +
-					"entire project create <name> --owner <org|github:handle>")
+			// cost a lookup. Any flag means the flag form, which the wizard
+			// does not take starting values from, so it is refused too.
+			if in.usesFlags(cmd) || !interactive.CanPromptInteractively() {
+				return errors.New("a project name and --owner are required: entire project create <name> --owner <org|github:handle>" +
+					" (or run 'entire project create [<name>]' in a terminal, without flags, to be asked)")
 			}
-			return runProjectCreateWizard(cmd, in)
+			return runProjectCreateWizard(cmd, in.name)
 		},
 	}
 	cmd.Flags().StringVar(&in.owner, "owner", "", "Owning org (name), or account (github:handle)")

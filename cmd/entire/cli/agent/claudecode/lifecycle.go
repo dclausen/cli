@@ -182,12 +182,27 @@ func (c *ClaudeCodeAgent) parseSubagentEnd(stdin io.Reader) (*agent.Event, error
 		// Final stays false: PostToolUse fires at the background launch stub,
 		// seconds after launch, not at true completion. SubagentStop
 		// (parseSubagentStop) is the true-completion signal.
-		Final: false,
+		Final:          false,
+		SubagentLaunch: subagentLaunchMode(raw.ToolResponse.Status, raw.ToolResponse.IsAsync),
 	}
 	if raw.ToolResponse.AgentID != "" {
 		event.SubagentID = raw.ToolResponse.AgentID
 	}
 	return event, nil
+}
+
+// subagentLaunchMode classifies an Agent call from its tool_response. Claude
+// Code decides whether a subagent runs in the background, often without the
+// model passing run_in_background at all, so the response is authoritative.
+func subagentLaunchMode(status string, isAsync bool) agent.SubagentLaunchMode {
+	switch {
+	case isAsync || status == agentToolStatusAsyncLaunched:
+		return agent.SubagentLaunchBackground
+	case status == agentToolStatusCompleted:
+		return agent.SubagentLaunchForeground
+	default:
+		return agent.SubagentLaunchUnknown
+	}
 }
 
 // parseSubagentStop parses Claude Code's SubagentStop hook, the true
@@ -226,15 +241,12 @@ func (c *ClaudeCodeAgent) parseSubagentStop(ctx context.Context, stdin io.Reader
 		return nil, fmt.Errorf("failed to parse hook input: %w", err)
 	}
 
-	// Tripwire for the defensive-parse assumption: a well-formed SubagentStop
-	// payload always carries these two fields, so an empty value here means
-	// the payload shape diverged from what this parse expects (e.g. an
-	// alternate key spelling — see the key-name log above).
-	if raw.ToolUseID == "" || raw.SessionID == "" {
+	// Tripwire: a well-formed SubagentStop payload always carries session_id.
+	// tool_use_id is not checked: Claude Code's SubagentStop does not send it
+	// (observed through 2.1.288), so the lifecycle correlates on agent_id.
+	if raw.SessionID == "" {
 		logging.Warn(logging.WithComponent(ctx, "agent.claudecode"),
-			"subagent-stop payload missing tool_use_id or session_id — structurally impossible for a well-formed payload",
-			slog.Bool("has_tool_use_id", raw.ToolUseID != ""),
-			slog.Bool("has_session_id", raw.SessionID != ""))
+			"subagent-stop payload missing session_id")
 	}
 
 	return &agent.Event{

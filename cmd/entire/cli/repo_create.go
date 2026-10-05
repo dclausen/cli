@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,6 +38,22 @@ const repoVisibilityGrace = 30 * time.Second
 type repoCreateOptions struct {
 	noWait      bool
 	waitTimeout time.Duration
+}
+
+// refuseGitSuffixRepoName refuses a name that ends in `.git`. The suffix is
+// never part of a repo name (see gitDirSuffix): every ref parser drops it, so
+// the name would round-trip to a different string than the one typed. The
+// server refuses it too; saying so here costs no round trip and names the
+// spelling to use instead. An empty name passes: it is a missing one.
+func refuseGitSuffixRepoName(name string) error {
+	if !strings.HasSuffix(name, gitDirSuffix) {
+		return nil
+	}
+	err := fmt.Errorf("repo name %q must not end in %s: the suffix is never part of a repo name, so Entire could not address the repo by the name you typed", name, gitDirSuffix)
+	if trimmed := strings.TrimSuffix(name, gitDirSuffix); trimmed != "" {
+		err = fmt.Errorf("%w (use %q)", err, trimmed)
+	}
+	return err
 }
 
 // errRepoCreateNeedsInput refuses a run that cannot be prompted and was not

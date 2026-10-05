@@ -125,8 +125,8 @@ default. Active means provisioning completed; later pushes or mirror
 creation can still fail for other reasons.
 
 With both a name and --project the repository is created directly.
-Run with at most a name and no create flags, in an interactive terminal,
-a wizard asks for the project, name, visibility and advanced options,
+With at most a name and no create flags, in an interactive terminal, a
+wizard asks for the project, name, visibility and advanced options,
 starting from the given name (or the current folder's), and shows a
 summary before creating anything. With --json the prompts stay off
 stdout, which carries only the repository object. --project,
@@ -170,6 +170,10 @@ and recovery instructions go to stderr.`,
 				// name counts as missing.
 				req.name = strings.TrimSpace(args[0])
 			}
+			if err := refuseGitSuffixRepoName(req.name); err != nil {
+				cmd.SilenceUsage = true
+				return err
+			}
 			if objectFormat != "" {
 				parsed, err := parseObjectFormat(objectFormat)
 				if err != nil {
@@ -195,12 +199,15 @@ and recovery instructions go to stderr.`,
 				// positional name. --json still prompts, as `grant add` does:
 				// the form renders on stderr or the controlling terminal and
 				// stdout carries only the result.
+				// No terminal is checked first: the flag-form refusal suggests
+				// running without flags to be prompted, which nothing can do
+				// without one.
 				cmd.SilenceUsage = true
-				if repoCreateFlagsGiven(cmd) {
-					return errRepoCreateFlagsNeedInput
-				}
 				if !interactive.CanPromptInteractively() {
 					return errRepoCreateNeedsInput
+				}
+				if repoCreateFlagsGiven(cmd) {
+					return errRepoCreateFlagsNeedInput
 				}
 				return runRepoCreateWizard(cmd, req.name, opts)
 			}

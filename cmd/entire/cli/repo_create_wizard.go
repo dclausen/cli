@@ -188,6 +188,13 @@ func (s *repoCreateState) validateName(value string) error {
 		return errors.New("a repository name cannot contain '/'")
 	case strings.IndexFunc(name, unicode.IsSpace) >= 0:
 		return errors.New("a repository name cannot contain spaces")
+	case strings.HasSuffix(name, gitDirSuffix):
+		// The same rule the direct path enforces (refuseGitSuffixRepoName),
+		// said briefly enough for the page.
+		if trimmed := strings.TrimSuffix(name, gitDirSuffix); trimmed != "" {
+			return fmt.Errorf("a repository name cannot end in %s (use %q)", gitDirSuffix, trimmed)
+		}
+		return fmt.Errorf("a repository name cannot end in %s", gitDirSuffix)
 	}
 	if existing, ok := s.names.lookup(s.answers.projectID, name); ok {
 		return fmt.Errorf("%s already has a repository named %q", s.project().name, existing)
@@ -501,9 +508,9 @@ func (s *repoCreateState) nameNote() string {
 	// The endpoint's 409 is not documented as a name clash alone, so the
 	// server's own words are shown rather than a guess at the cause.
 	if s.conflict.reason != "" {
-		return fmt.Sprintf("Creating %q was refused (%s); pick another name.", s.conflict.name, s.conflict.reason)
+		return fmt.Sprintf("Creating %q was refused (%s); change the name or the project, or cancel.", s.conflict.name, s.conflict.reason)
 	}
-	return fmt.Sprintf("Creating %q was refused as a conflict; pick another name.", s.conflict.name)
+	return fmt.Sprintf("Creating %q was refused as a conflict; change the name or the project, or cancel.", s.conflict.name)
 }
 
 // nameGroup asks for the name. dynamic recaps the chosen project above the

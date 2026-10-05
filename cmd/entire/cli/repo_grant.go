@@ -30,8 +30,9 @@ import (
 // on reads as a bug the first time and a lie the second.
 
 // mirrorCollaboratorColumns is the mirror half of `repo grant list`. It is
-// grantColumns' leading pair, the two things the mirror endpoint answers for:
-// who, and with which role. The columns behind them are the native listing's
+// grantColumns' GRANTEE and ROLE, the two things the mirror endpoint answers
+// for: who, and with which role. NAME is absent because MirrorCollaborator
+// carries no display name yet. The columns behind them are the native listing's
 // provenance (SOURCE/TYPE), which the mirror endpoint does not report and which
 // would be invented if this table filled them in. Like every grant table it
 // prints no internal id — the account ULID is in the --json output.
@@ -113,7 +114,8 @@ const repoGrantListLong = "List who can reach a repository.\n\n" +
 	"`source`, plus `granteeName` when a name resolved, so one script reads either. " +
 	"A mirror's rows carry no `granteeType`: that endpoint reports no grantee kind, " +
 	"and the missing key is the answer, since an Entire repository's rows always " +
-	"have one."
+	"have one. Nor do they carry `displayName`, which an Entire repository's account " +
+	"rows have when the account has a name: the mirror endpoint reports no names."
 
 const repoGrantListExample = "  entire repo grant list /" + nativeCloneForge + "/acme/web\n" +
 	"  entire repo grant list /" + mirrorCloneForge + "/acme/widget"

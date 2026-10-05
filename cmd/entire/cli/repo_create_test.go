@@ -537,7 +537,9 @@ func TestRepoCreateState_ValidateName(t *testing.T) {
 	require.ErrorContains(t, s.validateName("  "), "enter a repository name")
 	require.ErrorContains(t, s.validateName("acme/web"), "cannot contain '/'")
 	require.ErrorContains(t, s.validateName("my repo"), "cannot contain spaces")
-	require.NoError(t, s.validateName("web.git"), "the server owns the naming rules")
+	require.NoError(t, s.validateName("web.site"), "the server owns the naming rules")
+	require.EqualError(t, s.validateName("web.git"), `a repository name cannot end in .git (use "web")`, "the direct path's rule, on the page")
+	require.EqualError(t, s.validateName(".git"), "a repository name cannot end in .git")
 	require.EqualError(t, s.validateName("WEB"), `Acme already has a repository named "web"`)
 
 	s.setProject(testCreateProjectBeta)
@@ -732,7 +734,7 @@ func TestRepoCreateWizard_ConflictReopensTheWizard(t *testing.T) {
 	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
 		runs++
 		if runs == 2 {
-			require.Equal(t, `Creating "web" was refused (Conflict); pick another name.`, s.nameNote(), "the server's reason, not a guess")
+			require.Equal(t, `Creating "web" was refused (Conflict); change the name or the project, or cancel.`, s.nameNote(), "the server's reason, not a guess")
 			repoProjectAccessor{s: s}.Set(testCreateProjectBeta)
 			require.Empty(t, s.nameNote(), "the note belongs to the project the create was refused in")
 			repoProjectAccessor{s: s}.Set(testCreateProjectAcme)
@@ -898,4 +900,38 @@ func TestRepoCreate_NameArgumentIsTrimmed(t *testing.T) {
 	_, _, err = execRepoCreateArgs(t, "   ")
 	require.ErrorIs(t, err, errRepoCreateNeedsInput, "a blank name is a missing one")
 	require.Len(t, f.createBodies, 1, "no second create")
+}
+
+// Without a terminal, a create flag with an input missing gets the
+// no-terminal refusal: the flag-form one suggests running without flags to be
+// prompted, which nothing can do there.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_NoTerminalRefusalWinsOverFlagForm(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+	f.serve()
+	_, _, err := execRepoCreateArgs(t, "--project", "acme")
+	require.ErrorIs(t, err, errRepoCreateNeedsInput)
+	require.NotContains(t, err.Error(), "to be prompted")
+	require.Zero(t, f.requestCount())
+}
+
+// A name ending in .git is refused on the direct path before any request,
+// naming the spelling to use — and before the wizard opens.
+//
+// Not parallel: sets env vars and swaps package-level seams.
+func TestRepoCreate_RefusesGitSuffixName(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
+		t.Error("the wizard must not open for a refused name")
+		return false, nil
+	})
+	for _, args := range [][]string{{"web.git", "--project", "acme"}, {" web.git "}} {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+		f.serve()
+		_, _, err := execRepoCreateArgs(t, args...)
+		require.ErrorContains(t, err, `repo name "web.git" must not end in .git`, args)
+		require.ErrorContains(t, err, `(use "web")`)
+		require.Zero(t, f.requestCount(), "refused before any request: %v", args)
+	}
 }
