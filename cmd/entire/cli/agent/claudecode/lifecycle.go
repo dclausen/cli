@@ -272,6 +272,8 @@ func (c *ClaudeCodeAgent) parseSubagentStop(ctx context.Context, stdin io.Reader
 
 // stopHookSentinel is the string that appears in Claude Code's hook_progress
 // entry when the stop hook has been invoked, indicating the transcript is fully flushed.
+// It is a prefix of "hooks claude-code stop-failure" on purpose: a turn ending
+// on an API error flushes the same way, so both turn-end verbs must match.
 const stopHookSentinel = "hooks claude-code stop"
 
 // waitForTranscriptFlush waits until Claude Code's async transcript writes have

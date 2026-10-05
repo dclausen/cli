@@ -997,62 +997,49 @@ func TestInstallHooks_SubagentStop_UpgradeInPlace(t *testing.T) {
 	}
 }
 
-// TestCheckHookConfig_Outdated_MissingSubagentStop pins CheckHookConfig's
-// drift detection for the new hook: an install that predates SubagentStop
-// (Stop + current tool-use matchers present, but no SubagentStop entry) must
-// read as outdated so `entire doctor`/`entire enable --force` picks it up,
-// not silently stay HooksCurrent forever.
-func TestCheckHookConfig_Outdated_MissingSubagentStop(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Chdir(tempDir)
+// TestCheckHookConfig_Outdated_MissingTurnHook pins CheckHookConfig's drift
+// detection for hooks added after the first install: a config that predates
+// SubagentStop or StopFailure (everything else current) must read as outdated
+// so `entire doctor`/`entire enable --force` picks it up, not silently stay
+// HooksCurrent forever.
+func TestCheckHookConfig_Outdated_MissingTurnHook(t *testing.T) {
+	for _, hookType := range []string{"SubagentStop", "StopFailure"} {
+		t.Run(hookType, func(t *testing.T) {
+			tempDir := t.TempDir()
+			t.Chdir(tempDir)
+			if _, err := (&ClaudeCodeAgent{}).InstallHooks(context.Background(), false); err != nil {
+				t.Fatalf("InstallHooks() error = %v", err)
+			}
+			writeSettingsFile(t, tempDir, settingsWithoutHookType(t, tempDir, hookType))
 
-	stop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code stop")
-	pre := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code pre-task")
-	post := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-task")
-	todo := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-todo")
-	writeSettingsFile(t, tempDir, fmt.Sprintf(`{
-  "hooks": {
-    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
-    "PreToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": %q}]}],
-    "PostToolUse": [
-      {"matcher": "Agent", "hooks": [{"type": "command", "command": %q}]},
-      {"matcher": "TaskCreate|TaskUpdate", "hooks": [{"type": "command", "command": %q}]}
-    ]
-  }
-}`, stop, pre, post, todo))
-
-	if got := CheckHookConfig(context.Background()); got != HooksOutdated {
-		t.Errorf("CheckHookConfig() = %v, want HooksOutdated (missing SubagentStop)", got)
+			if got := CheckHookConfig(context.Background()); got != HooksOutdated {
+				t.Errorf("CheckHookConfig() = %v, want HooksOutdated (missing %s)", got, hookType)
+			}
+		})
 	}
 }
 
-// TestCheckHookConfig_Outdated_MissingStopFailure verifies that a config
-// written before Entire installed StopFailure reads as outdated, so a turn
-// ending on an API error does not leave the session ACTIVE unnoticed.
-func TestCheckHookConfig_Outdated_MissingStopFailure(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Chdir(tempDir)
-
-	stop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code stop")
-	subagentStop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code subagent-stop")
-	pre := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code pre-task")
-	post := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-task")
-	todo := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-todo")
-	writeSettingsFile(t, tempDir, fmt.Sprintf(`{
-  "hooks": {
-    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
-    "SubagentStop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
-    "PreToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": %q}]}],
-    "PostToolUse": [
-      {"matcher": "Agent", "hooks": [{"type": "command", "command": %q}]},
-      {"matcher": "TaskCreate|TaskUpdate", "hooks": [{"type": "command", "command": %q}]}
-    ]
-  }
-}`, stop, subagentStop, pre, post, todo))
-
-	if got := CheckHookConfig(context.Background()); got != HooksOutdated {
-		t.Errorf("CheckHookConfig() = %v, want HooksOutdated (missing StopFailure)", got)
+// settingsWithoutHookType returns the installed settings.json with one hook
+// type removed, as a config written before Entire installed it would read.
+func settingsWithoutHookType(t *testing.T, tempDir, hookType string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(tempDir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("failed to read settings.json: %v", err)
 	}
+	var raw map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to parse settings.json: %v", err)
+	}
+	if _, ok := raw["hooks"][hookType]; !ok {
+		t.Fatalf("installed settings have no %s hook to remove", hookType)
+	}
+	delete(raw["hooks"], hookType)
+	out, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("failed to marshal settings.json: %v", err)
+	}
+	return string(out)
 }
 
 func TestCheckHookConfig_Absent(t *testing.T) {
