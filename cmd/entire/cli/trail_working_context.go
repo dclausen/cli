@@ -27,12 +27,18 @@ type trailWorkingContext struct {
 }
 
 func (t *trailWorkingContext) description() string {
+	if t.Target == nil {
+		return fmt.Sprintf("trail #%d", t.Work.Number)
+	}
 	return fmt.Sprintf("trail #%d (%s/%s/%s / %s)", t.Parent.Number, t.Host, t.Owner, t.Repo, tuiutil.SanitizeTerminalLabel(t.Work.Branch))
 }
 
 // localOnly is used by checkout/resume: --repo may assert a local repository,
 // but must never cause these commands to check out a foreign branch here.
 func resolveTrailWorkingContext(cmd *cobra.Command, selector, branch string, localOnly bool) (*trailWorkingContext, error) {
+	if !usesProjectTrails(cmd) {
+		return resolveLegacyTrailContext(cmd, selector, branch, localOnly)
+	}
 	ctx := cmd.Context()
 	if selector != "" && !looksLikeULID(selector) {
 		if _, ok := parseTrailNumberSelector(selector); !ok {

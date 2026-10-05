@@ -91,7 +91,7 @@ func setupProjectTrailTest(t *testing.T, handler http.HandlerFunc) (*fakeProject
 
 func executeProjectTrailTest(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
-	cmd := newTrailCmd()
+	cmd := newTrailCmdForMode(true)
 	cmd.SilenceUsage = true
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)

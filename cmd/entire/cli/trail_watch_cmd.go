@@ -89,7 +89,10 @@ func runTrailReviewWatch(cmd *cobra.Command, selector string, jsonOutput, showPi
 		return err
 	}
 	display := trailForDisplay(target.Trail)
-	description := trailWatchDescription(target.Host, target.Owner, target.Repo, display.Number, display.ID) + " / " + target.Trail.Branch
+	description := trailWatchDescription(target.Host, target.Owner, target.Repo, display.Number, display.ID)
+	if usesProjectTrails(cmd) {
+		description += " / " + target.Trail.Branch
+	}
 	return runTrailWatchResolved(cmd, client, target.Trail.ID, description, jsonOutput, showPings, once)
 }
 

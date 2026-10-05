@@ -241,8 +241,12 @@ func runTrailResume(cmd *cobra.Command, opts trailResumeOptions) error {
 	}
 
 	display := *found
-	display.Title, display.Status = selected.Parent.Title, selected.Parent.Status
-	resumeCtx := buildTrailResumeContextForRepoWithSkipped(display, sessions, sessionsUnavailable, sessionsSkipped, findings, forge+"/"+owner+"/"+repo)
+	repoRef := owner + "/" + repo
+	if selected.Target != nil {
+		display.Title, display.Status = selected.Parent.Title, selected.Parent.Status
+		repoRef = forge + "/" + repoRef
+	}
+	resumeCtx := buildTrailResumeContextForRepoWithSkipped(display, sessions, sessionsUnavailable, sessionsSkipped, findings, repoRef)
 	if opts.JSON {
 		return encodeTrailResumeContextJSON(cmd.OutOrStdout(), resumeCtx)
 	}
@@ -704,15 +708,21 @@ func buildTrailResumeCommands(ctx trailResumeContext) []string {
 	if project := strings.TrimSpace(ctx.Trail.Project); project != "" {
 		arg += " --project " + shellArg(project)
 	}
+	findingArg := arg
 	if repo := strings.TrimSpace(ctx.Trail.Repo); repo != "" {
 		arg += " --repo " + shellArg(repo)
 	}
 	if branch := strings.TrimSpace(ctx.Trail.Branch); branch != "" {
 		arg += " --branch " + shellArg(branch)
 	}
-	resumeCommand := "entire trail resume " + arg
+	prefix := ""
+	if ctx.Trail.Project != "" {
+		prefix = projectTrailsEnv + "=1 "
+		findingArg = arg
+	}
+	resumeCommand := prefix + "entire trail resume " + arg
 	commands := []string{
-		"entire trail finding " + arg + " --json",
+		prefix + "entire trail finding " + findingArg + " --json",
 		resumeCommand,
 	}
 	if ctx.DefaultResume != nil && ctx.DefaultResume.CheckpointID != "" {
@@ -730,6 +740,9 @@ func trailResumeSelectorForCommands(trail trailResumeTrailContext) string {
 	}
 	if trail.ID != "" {
 		return trail.ID
+	}
+	if trail.Project == "" {
+		return trail.Branch
 	}
 	return "" // A branch name is context, never a project trail selector.
 }

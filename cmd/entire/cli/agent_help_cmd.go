@@ -37,8 +37,7 @@ const agentHelpAnnotationEnabled = "true"
 const agentHelpOverview = `Entire's CLI is the source of truth for its own usage. Do not guess flags or
 subcommands — read them from this command. You are already inside the repo:
 entire auto-detects it from the git origin remote, so never ask the user for the
-repo name. For repository-scoped commands, pass --repo only to target a DIFFERENT
-repo. Trail listing requires an explicit --project; --repo only filters within it.`
+repo name. Pass --repo only to target a DIFFERENT repo.`
 
 // agentHelpAudience answers the question an agent actually has when it reads this
 // listing: may I run this without being asked? A flat alphabetical dump of every
@@ -124,6 +123,7 @@ var agentHelpClassification = map[string]agentHelpFacts{
 	"trail list":            {agentHelpAudienceReadOnly, false},
 	"trail show":            {agentHelpAudienceReadOnly, false},
 	"trail create":          {agentHelpAudienceTaskDriven, false},
+	"trail delete":          {agentHelpAudienceTaskDriven, false},
 	"trail update":          {agentHelpAudienceTaskDriven, false},
 	"trail approvals":       {agentHelpAudienceReadOnly, false},
 	"trail watch":           {agentHelpAudienceReadOnly, false},
@@ -688,7 +688,7 @@ func renderAgentHelpCommand(cmd *cobra.Command, repoLine string, trailsEnabled b
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	if agentHelpPath(cmd) == "trail list" {
+	if agentHelpPath(cmd) == "trail list" && usesProjectTrails(cmd) {
 		b.WriteString("Scope: one project; --project is required, even inside a clone. --repo only filters within that project.\n")
 	} else {
 		b.WriteString(agentHelpRepoBlock(repoLine))
@@ -736,6 +736,9 @@ func renderAgentHelpCommand(cmd *cobra.Command, repoLine string, trailsEnabled b
 func renderAgentHelpTop(rootCmd *cobra.Command, repoLine string, trailsEnabled bool) string {
 	var b strings.Builder
 	b.WriteString(agentHelpOverview)
+	if trailCmd, _, err := rootCmd.Find([]string{"trail"}); err == nil && usesProjectTrails(trailCmd) {
+		b.WriteString("\nProject trails are enabled by ENTIRE_PROJECT_TRAILS=1. Trail listing requires an explicit --project; --repo only filters within it.")
+	}
 	b.WriteString("\n\n")
 	b.WriteString(agentHelpRepoBlock(repoLine))
 

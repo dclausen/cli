@@ -77,10 +77,19 @@ func TestAgentHelpCommands_IncludesAnnotatedHiddenOnly(t *testing.T) {
 	}
 }
 
+func projectTrailsHelpTestRoot() *cobra.Command {
+	root := NewRootCmd()
+	if old, _, err := root.Find([]string{"trail"}); err == nil {
+		root.RemoveCommand(old)
+	}
+	root.AddCommand(newTrailCmdForMode(true))
+	return root
+}
+
 // Project intent remains discoverable without a repository Trails toggle.
 func TestAgentHelpCommands_ProjectTrailsIndependentOfRepoToggle(t *testing.T) {
 	t.Parallel()
-	root := NewRootCmd()
+	root := projectTrailsHelpTestRoot()
 
 	enabled := commandNames(agentHelpCommands(root, true))
 	if !contains(enabled, "trail") {
@@ -287,7 +296,7 @@ func TestRefreshAgentHelpTrailsEnabledCacheIfStaleForScope_NotOnboardedSavesDisa
 // Project-level operations do not require enabled repository code work.
 func TestRunAgentHelp_ProjectTrailDrillIndependentOfRepoToggle(t *testing.T) {
 	t.Parallel()
-	root := NewRootCmd()
+	root := projectTrailsHelpTestRoot()
 
 	if _, err := runAgentHelp(root, []string{"trail"}, agentHelpTestRepo, false, true); err != nil {
 		t.Errorf("trail drill should resolve when trails enabled: %v", err)
@@ -318,7 +327,7 @@ func TestRunAgentHelp_JSONProjectTrailsIndependentOfRepoToggle(t *testing.T) {
 		return false
 	}
 
-	disabled, err := runAgentHelp(NewRootCmd(), nil, agentHelpTestRepo, true /*json*/, false /*trailsDisabled*/)
+	disabled, err := runAgentHelp(projectTrailsHelpTestRoot(), nil, agentHelpTestRepo, true /*json*/, false /*trailsDisabled*/)
 	if err != nil {
 		t.Fatalf("json top (trails disabled): %v", err)
 	}
@@ -509,7 +518,7 @@ func TestRunAgentHelp_Dispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drill: unexpected error: %v", err)
 	}
-	if !strings.Contains(drill, "Manage trails across repositories and branches") || !strings.Contains(drill, "--repo") {
+	if !strings.Contains(drill, "Manage trails for your branches") || !strings.Contains(drill, "--repo") {
 		t.Fatalf("drill output unexpected:\n%s", drill)
 	}
 

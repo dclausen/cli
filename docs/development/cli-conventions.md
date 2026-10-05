@@ -732,6 +732,13 @@ unsupported and points the agent at this passive path instead.
 Cobra-native aliases (no hint): `sessions` → `session`, `cp`/`checkpoints` →
 `checkpoint`.
 
+`trail` has two command trees: legacy repository-scoped behavior by default,
+project-scoped behavior only with `ENTIRE_PROJECT_TRAILS=1` (exact value).
+Select the tree once at construction; help and agent-help must match its
+selectors and API semantics. Never infer the variant from API errors, `--project`,
+or experimental build visibility. See [Project trails CLI](../architecture/project-trails-cli.md)
+for the rollout contract and usage.
+
 Hidden infrastructure commands: `hooks`, `trail`,
 `curl-bash-post-install`, `__send_analytics`, `__sweep_sessions`, `mcp` (MCP
 stdio server for MCP-host agents).

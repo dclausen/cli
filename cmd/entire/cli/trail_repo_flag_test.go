@@ -154,7 +154,7 @@ func TestResolveTrailBranch_OverrideWins(t *testing.T) {
 // validation that fires before any auth/network/git access.
 func execTrailCmdExpectErr(t *testing.T, args ...string) error {
 	t.Helper()
-	cmd := newTrailCmd()
+	cmd := newTrailCmdForMode(true)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs(args)

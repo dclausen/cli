@@ -51,7 +51,9 @@ uses the following routing shapes, mirroring the entire.io BFF:
   used by cross-repo checkpoint reads (`explain --repo`, `explain_repo.go`) and
   by `experts --repo owner/repo`, which sends that placement id to entire-api
   instead of re-deriving it from a data-plane repo listing.
-- **Project-scoped trails → the assigned project cell**: `trail list` requires
+- **Project-scoped trails → the assigned project cell** (only with
+  `ENTIRE_PROJECT_TRAILS=1`; legacy repository-scoped trails remain the default):
+  `trail list` requires
   an explicit `--project gh/<owner>|et/<project>`, resolves it through Core, and
   sends one `GET /api/v1/trails?projectId=<ID>` to its assigned API URL.
   `--repo` is only an optional within-project filter, never an alternative

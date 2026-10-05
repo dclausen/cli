@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"reflect"
 	"strconv"
@@ -44,7 +45,26 @@ func trailContextBlurb() string {
 	return "A trail captures project intent across repositories and branches. Manage intent and discussions on the whole trail; use --repo and --branch to select context for checkout, sessions, findings, and approvals."
 }
 
+// Project trails are an explicit opt-in, independent of experimental visibility.
+const projectTrailsEnv = "ENTIRE_PROJECT_TRAILS"
+const projectTrailsAnnotation = "entire_project_trails"
+
 func newTrailCmd() *cobra.Command {
+	return newTrailCmdForMode(os.Getenv(projectTrailsEnv) == "1")
+}
+
+// Freeze the mode on the command tree: handlers and help must agree even if the
+// environment changes after construction. Tests can build either tree in parallel.
+func usesProjectTrails(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Annotations[projectTrailsAnnotation] == agentHelpAnnotationEnabled {
+			return true
+		}
+	}
+	return false
+}
+
+func newTrailCmdForMode(project bool) *cobra.Command {
 	var insecureHTTPAuth bool
 	var repoOverride string
 
@@ -77,16 +97,27 @@ func newTrailCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&repoOverride, "repo", "",
 		"Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project")
 
-	cmd.PersistentFlags().String("project", "", "Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace")
-
-	cmd.AddCommand(newProjectTrailShowCmd())
-	cmd.AddCommand(newProjectTrailListCmd())
-	cmd.AddCommand(newProjectTrailCreateCmd())
-	cmd.AddCommand(newProjectTrailUpdateCmd())
-	cmd.AddCommand(newTrailLinkCmd(), newTrailUnlinkCmd())
+	if !project {
+		cmd.Short = "Manage trails for your branches"
+		cmd.Long = "A trail ties together the context for a branch. Set ENTIRE_PROJECT_TRAILS=1 to opt into project-scoped trails."
+		cmd.Annotations[agentHelpRequiresTrailsAnnotation] = agentHelpAnnotationEnabled
+		cmd.PersistentFlags().Lookup("repo").Usage = "Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; defaults to the origin remote"
+		cmd.AddCommand(newTrailShowCmd(), newTrailListCmd(), newTrailCreateCmd(), newTrailUpdateCmd(), newTrailDeleteCmd(), newTrailCommentCmd())
+	} else {
+		cmd.Annotations[projectTrailsAnnotation] = agentHelpAnnotationEnabled
+		cmd.PersistentFlags().String("project", "", "Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace")
+		cmd.AddCommand(newProjectTrailShowCmd())
+		cmd.AddCommand(newProjectTrailListCmd())
+		cmd.AddCommand(newProjectTrailCreateCmd())
+		cmd.AddCommand(newProjectTrailUpdateCmd())
+		cmd.AddCommand(newTrailLinkCmd(), newTrailUnlinkCmd())
+		cmd.AddCommand(newProjectTrailCommentCmd())
+	}
 	cmd.AddCommand(newTrailCheckoutCmd(), newTrailResumeCmd(), newTrailFindingCmd(), newTrailWatchCmd())
 	cmd.AddCommand(newTrailApproveCmd(), newTrailRequestChangesCmd(), newTrailApprovalsCmd())
-	cmd.AddCommand(newProjectTrailCommentCmd())
+	if !project {
+		configureLegacyTrailHelp(cmd)
+	}
 
 	return cmd
 }
@@ -306,7 +337,7 @@ func resolveTrailBySelectorAtPath(ctx context.Context, client *api.Client, baseP
 			return nil, err
 		}
 		if found == nil {
-			return nil, fmt.Errorf("no trail found for current branch %q\nhint: run 'entire trail link <trail> --branch <branch>' or 'entire trail list'", branch)
+			return nil, fmt.Errorf("no trail found for current branch %q\nhint: run 'entire trail create' or 'entire trail list --status any'", branch)
 		}
 		return found, nil
 	}
@@ -692,9 +723,9 @@ func printTrailListEmpty(w io.Writer, authorFilter string, statusFilters []trail
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  entire trail link <trail> --branch <branch>   Link a branch")
+	fmt.Fprintln(w, "  entire trail create   Create a trail for the current branch")
 	fmt.Fprintln(w, "  entire trail list     List recent trails")
-	fmt.Fprintln(w, "  entire trail update   Update intent")
+	fmt.Fprintln(w, "  entire trail update   Update trail metadata")
 }
 
 func parseTrailStatusFilter(filter string) ([]trail.Status, error) {

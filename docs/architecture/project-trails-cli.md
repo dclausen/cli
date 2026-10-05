@@ -1,5 +1,39 @@
 # Project trails CLI
 
+## Rollout: legacy by default, project trails by opt-in
+
+The default `entire trail` command tree retains the legacy repository-scoped
+API and selectors (repository-local number, ID, or branch). It includes
+`delete`, repository discussions, `list --author`, and the existing code-work
+create/update flow. `--repo` defaults to origin; no project resolution or parent
+lookup takes place, even if the server returns a parent reference.
+
+The project-scoped variant described below is available **only** with
+`ENTIRE_PROJECT_TRAILS=1`. Unset, empty, `0`, or any other value selects legacy.
+There is no CLI flag, persisted setting, automatic API detection, or error-driven
+fallback. Experimental build visibility does not enable this variant.
+
+```sh
+# Legacy: repository-local trails and API.
+entire trail list --json
+
+# Opt-in for one invocation.
+ENTIRE_PROJECT_TRAILS=1 entire trail list --project gh/entireio --json
+
+# Or for a shell, including all examples below.
+export ENTIRE_PROJECT_TRAILS=1
+# Return to legacy with: unset ENTIRE_PROJECT_TRAILS
+```
+
+The command tree is selected once at construction, so help, agent-help, flags,
+selectors, reads, and writes use the same variant. Legacy rejects `--project`
+and has no `link`/`unlink`; project mode exposes those but not `delete`.
+Shared checkout, resume, findings, approvals, and watch code selects identities
+through the corresponding resolver. Project resume suggestions include the
+opt-in variable so copied commands cannot silently target a legacy number.
+
+## Project model
+
 There is one user-facing entity: **a trail**, representing intent across
 repositories and branches. Internal project-trail and repository-work identities
 remain separate, but there is no `trail change` subgroup or change selector.
