@@ -195,32 +195,52 @@ func resolveTrailProjectReference(cmd *cobra.Command) (string, string, error) {
 	return host, owner, err
 }
 
+// trailProjectReferenceOr returns --project when given, otherwise the supplied
+// repository namespace: a repo's own project is the default collection.
+func trailProjectReferenceOr(cmd *cobra.Command, host, project string) (string, string, error) {
+	if ref := projectTrailProjectFlag(cmd); ref != "" {
+		return parseTrailProjectRef(ref)
+	}
+	return host, project, nil
+}
+
+// validateProjectTrailSelector rejects anything but a project trail ID or
+// number before any I/O. Branch work is selected with --branch, never by a
+// repo-local selector.
+func validateProjectTrailSelector(selector string) error {
+	if looksLikeULID(selector) {
+		return nil
+	}
+	if _, ok := parseTrailNumberSelector(selector); !ok {
+		return errors.New("use a project trail ID or number; select a branch with --branch")
+	}
+	return nil
+}
+
 // With no selector, discover the project parent through the branch's Change.
 // This does NOT call ResolveProject: repo-only readers must retain access to an
 // addressed parent even when they cannot enumerate the project's collection.
+// A selector plus --branch goes through the working context so the branch is
+// verified to belong to that trail.
 func resolveProjectTrail(cmd *cobra.Command, selector string) (*projectTrailTarget, error) {
 	branch := trailBranchFlag(cmd)
-	if selector != "" && branch != "" {
+	switch {
+	case selector == "":
+		return resolveBranchProjectTrail(cmd, branch)
+	case branch == "":
+		return resolveProjectTrailBySelector(cmd, selector)
+	default:
 		selected, err := resolveTrailWorkingContext(cmd, selector, branch, false)
 		if err != nil {
 			return nil, err
 		}
 		return selected.Target, nil
 	}
-	return resolveProjectTrailWithBranch(cmd, selector, branch)
 }
 
-func resolveProjectTrailWithBranch(cmd *cobra.Command, selector, branch string) (*projectTrailTarget, error) {
-	if selector != "" && branch != "" {
-		return nil, errors.New("pass a project trail selector or --branch, not both")
-	}
-	if selector == "" {
-		return resolveBranchProjectTrail(cmd, branch)
-	}
-	if !looksLikeULID(selector) {
-		if _, ok := parseTrailNumberSelector(selector); !ok {
-			return nil, errors.New("use a project trail ID or number; select branch work with --branch")
-		}
+func resolveProjectTrailBySelector(cmd *cobra.Command, selector string) (*projectTrailTarget, error) {
+	if err := validateProjectTrailSelector(selector); err != nil {
+		return nil, err
 	}
 	target, err := resolveProjectTrailCollection(cmd)
 	if err != nil {
@@ -230,14 +250,14 @@ func resolveProjectTrailWithBranch(cmd *cobra.Command, selector, branch string) 
 }
 
 func (t *projectTrailTarget) resolveSelector(ctx context.Context, selector string) (*projectTrailTarget, error) {
+	if err := validateProjectTrailSelector(selector); err != nil {
+		return nil, err
+	}
 	if looksLikeULID(selector) {
 		t.TrailID = selector
 		return t, nil
 	}
-	number, ok := parseTrailNumberSelector(selector)
-	if !ok {
-		return nil, errors.New("use a project trail ID or number; select a branch with --branch")
-	}
+	number, _ := parseTrailNumberSelector(selector)
 	pageToken := ""
 	seen := map[string]bool{}
 	for range trailFindMaxPages {
@@ -288,13 +308,17 @@ func resolveBranchProjectTrail(cmd *cobra.Command, branch string) (*projectTrail
 	if err != nil {
 		return nil, err
 	}
-	if change == nil || change.Parent == nil {
+	return openTrailParentTarget(cmd, change, branch)
+}
+
+// openTrailParentTarget routes to the project parent a branch's Change points
+// at. An absent parent may be inaccessible or unresolved, so this never falls
+// back to a repo-scoped read; --project, when given, must name that parent.
+func openTrailParentTarget(cmd *cobra.Command, change *api.TrailResource, branch string) (*projectTrailTarget, error) {
+	if change == nil || change.Parent == nil || !looksLikeULID(change.Parent.ID) {
 		return nil, fmt.Errorf("branch %q has no discoverable project trail; pass a project trail ID with --project (a missing parent may be inaccessible or unresolved)", branch)
 	}
 	parent := *change.Parent
-	if !looksLikeULID(parent.ID) {
-		return nil, errors.New("branch parent reference is missing a valid project trail ID")
-	}
 	if ref := projectTrailProjectFlag(cmd); ref != "" {
 		host, project, err := parseTrailProjectRef(ref)
 		if err != nil {
@@ -308,7 +332,7 @@ func resolveBranchProjectTrail(cmd *cobra.Command, branch string) (*projectTrail
 	if err != nil {
 		return nil, fmt.Errorf("project control plane: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, requiredCellResolveTimeout)
+	ctx, cancel := context.WithTimeout(cmd.Context(), requiredCellResolveTimeout)
 	defer cancel()
 	return openProjectTrailTarget(ctx, core, parent, trailInsecureHTTP(cmd))
 }

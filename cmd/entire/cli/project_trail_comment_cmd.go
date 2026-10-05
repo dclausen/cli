@@ -100,13 +100,7 @@ func runProjectDiscussion(cmd *cobra.Command, action string, args []string, body
 		if err != nil {
 			return err
 		}
-		if jsonRequested(cmd) {
-			return printJSON(cmd.OutOrStdout(), items)
-		}
-		for _, item := range items {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s  %s (resolved: %t)\n", tuiutil.SanitizeTerminalLabel(item.ID), tuiutil.SanitizeTerminalLabel(item.Title), item.Resolved)
-		}
-		return nil
+		return printTrailDiscussions(cmd.OutOrStdout(), items, "trail "+target.TrailID, jsonRequested(cmd), true)
 	}
 	if len(args) > 0 {
 		path += "/" + url.PathEscape(args[0])

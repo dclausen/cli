@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,16 +33,15 @@ func (t *trailWorkingContext) description() string {
 // but must never cause these commands to check out a foreign branch here.
 func resolveTrailWorkingContext(cmd *cobra.Command, selector, branch string, localOnly bool) (*trailWorkingContext, error) {
 	ctx := cmd.Context()
-	if selector != "" && !looksLikeULID(selector) {
-		if _, ok := parseTrailNumberSelector(selector); !ok {
-			return nil, errors.New("use a project trail ID or number; select a branch with --branch")
+	if selector != "" {
+		if err := validateProjectTrailSelector(selector); err != nil {
+			return nil, err
 		}
 	}
 	repoOverride := trailRepoFlag(cmd)
 	if localOnly {
 		repoOverride = ""
-	}
-	if err := requireTrailWorkingTarget(repoOverride, selector, branch); err != nil {
+	} else if err := ensureTrailRepoHasTarget(cmd, selector != "" || strings.TrimSpace(branch) != "", "pass a trail selector or --branch"); err != nil {
 		return nil, err
 	}
 	host, owner, repo, err := resolveTrailRepoOrRemote(ctx, repoOverride)
@@ -69,35 +67,14 @@ func resolveTrailWorkingContext(cmd *cobra.Command, selector, branch string, loc
 		if err != nil {
 			return nil, err
 		}
-		if work == nil || work.Parent == nil || !looksLikeULID(work.Parent.ID) {
-			return nil, fmt.Errorf("branch %q has no discoverable trail; pass a project trail ID with --project", branch)
-		}
-		if ref := projectTrailProjectFlag(cmd); ref != "" {
-			forge, project, err := parseTrailProjectRef(ref)
-			if err != nil {
-				return nil, err
-			}
-			if forge != work.Parent.Host || !strings.EqualFold(project, work.Parent.Project) {
-				return nil, errors.New("branch's trail does not belong to --project")
-			}
-		}
-		core, err := newProjectTrailCoreClient()
-		if err != nil {
-			return nil, fmt.Errorf("project control plane: %w", err)
-		}
-		routingCtx, cancel := context.WithTimeout(ctx, requiredCellResolveTimeout)
-		defer cancel()
-		target, err = openProjectTrailTarget(routingCtx, core, *work.Parent, trailInsecureHTTP(cmd))
+		target, err = openTrailParentTarget(cmd, work, branch)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		forge, project := host, owner
-		if ref := projectTrailProjectFlag(cmd); ref != "" {
-			forge, project, err = parseTrailProjectRef(ref)
-			if err != nil {
-				return nil, err
-			}
+		forge, project, err := trailProjectReferenceOr(cmd, host, owner)
+		if err != nil {
+			return nil, err
 		}
 		target, err = resolveProjectTrailCollectionFor(ctx, forge, project, trailInsecureHTTP(cmd))
 		if err != nil {
@@ -125,12 +102,7 @@ func resolveTrailWorkingContext(cmd *cobra.Command, selector, branch string, loc
 	}
 	// Read via the owned route to recheck containment, not a repo-local number
 	// that could name unrelated work. The repo client is retained for reviews.
-	var out struct {
-		api.TrailResource
-
-		TrailID      string `json:"trailId"`
-		RepositoryID string `json:"repositoryId"`
-	}
+	var out api.ChangeResource
 	_, err = target.Client.ProjectTrailRequest(ctx, http.MethodGet, target.path()+"/changes/"+url.PathEscape(selected.ID), nil, nil, &out)
 	if err != nil {
 		return nil, fmt.Errorf("read trail branch: %w", err)
@@ -143,13 +115,6 @@ func resolveTrailWorkingContext(cmd *cobra.Command, selector, branch string, loc
 	client.SetTrailRoute(out.ID, trailNumberPathForBase(base, out.Number))
 	return &trailWorkingContext{Target: target, Parent: parent, ETag: etag, Client: client, BasePath: base,
 		Host: host, Owner: owner, Repo: repo, Work: out.TrailResource}, nil
-}
-
-func requireTrailWorkingTarget(repo, selector, branch string) error {
-	if repo != "" && selector == "" && strings.TrimSpace(branch) == "" {
-		return errors.New("--repo requires an explicit target: pass a trail selector or --branch")
-	}
-	return nil
 }
 
 func selectTrailWorkingBranch(changes []api.ChangeSummary, repoID, explicit, preferred string) (api.ChangeSummary, error) {
@@ -183,13 +148,6 @@ func selectTrailWorkingBranch(changes []api.ChangeSummary, repoID, explicit, pre
 		branches[i] = tuiutil.SanitizeTerminalLabel(item.Branch)
 	}
 	return api.ChangeSummary{}, fmt.Errorf("trail has multiple branches in this repository; select --branch: %s", strings.Join(branches, ", "))
-}
-
-func trailDisplayNumber(work *api.TrailResource) int {
-	if work.Parent != nil {
-		return work.Parent.Number
-	}
-	return work.Number
 }
 
 func trailForDisplay(work api.TrailResource) api.TrailResource {

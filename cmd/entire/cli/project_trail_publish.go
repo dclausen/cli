@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -10,7 +11,7 @@ import (
 
 func resolveProjectTrailCreateBranch(cmd *cobra.Command, title, branch, base string) (string, string, error) {
 	if trailRepoFlag(cmd) != "" {
-		if err := requireTrailWorkingTarget(trailRepoFlag(cmd), "", branch); err != nil {
+		if err := ensureTrailRepoHasTarget(cmd, strings.TrimSpace(branch) != "", "pass --branch"); err != nil {
 			return "", "", err
 		}
 		return branch, base, ValidateBranchName(cmd.Context(), branch)
