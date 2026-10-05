@@ -33,22 +33,26 @@ const projectNameMaxLen = 100
 const projectCreateCancelled = "Project create"
 
 // projectCreateInput is what `project create` was given on the command line.
-// In the wizard every field is only a starting value.
+// Only the direct path reads the flags: the wizard takes the name at most, as
+// the name field's starting text.
 type projectCreateInput struct {
 	name      string
 	owner     string
 	ownerType string
 	region    string
-	// ownerKind is the parsed --owner-type, set only when the flag was given:
-	// the wizard then offers --owner only rows of that kind. Left unset, the
-	// flag's "org" default does not stop --owner naming the caller's account.
-	ownerKind coreapi.CreateProjectInputBodyOwnerType
 }
 
 // complete reports whether the command line names everything a project needs,
 // in which case it is created without prompting.
 func (in projectCreateInput) complete() bool {
 	return in.name != "" && in.owner != ""
+}
+
+// usesFlags reports whether any create flag was given. Flags mean the flag
+// form: the wizard never takes them as starting values, so a flag with a
+// missing name or owner is refused rather than prompted for.
+func (in projectCreateInput) usesFlags(cmd *cobra.Command) bool {
+	return in.owner != "" || in.region != "" || cmd.Flags().Changed("owner-type")
 }
 
 // projectOwner is one row of the owner picker. The user only ever sees ref (an
@@ -70,6 +74,16 @@ type projectOwner struct {
 	// its id is never shown: "created 2025-03-01", or finer when that collides
 	// (see sameNameAsides). Empty for a name no other visible row shares.
 	aside string
+}
+
+// noFlagReason says why an owner has no --owner spelling (flagRef is empty),
+// for the summary's Command row. Counted over every org, so the namesake may
+// be one the picker hides.
+func (o projectOwner) noFlagReason() string {
+	if o.personal {
+		return "your account has no handle"
+	}
+	return fmt.Sprintf("more than one of your organizations is named %q", o.ref)
 }
 
 // orgKind describes an org row: "organization, us", plus the creation day
@@ -136,9 +150,6 @@ type projectCreateState struct {
 	// because huh validates on the UI loop. Nil when the listing failed; the
 	// server's own conflict check still applies.
 	existing []coreapi.Project
-	// regionPinned is set when --region was given: the region then stays put
-	// instead of following the owner.
-	regionPinned bool
 	// ownerChanges counts owner changes. The region select's options are
 	// bound to it rather than to the owner, because huh caches options per
 	// binding value and, on a cache hit, leaves the cursor where it was: going
@@ -148,9 +159,6 @@ type projectCreateState struct {
 	// nameGrp and regionGrp are the live pages whose headings recap earlier
 	// answers; nil outside the paged form.
 	nameGrp, regionGrp *huh.Group
-
-	// ownerNote explains on the owner page why no owner was pre-selected.
-	ownerNote string
 
 	// loginNote names the acting login on the owner page (wizardLoginNote),
 	// in place of the "Using context" notice printed above the form.
@@ -251,8 +259,8 @@ func projectOwners(me *coreapi.GetMeOutputBody, orgs []coreapi.Org) ([]projectOw
 			creatable = append(creatable, o)
 		}
 	}
-	// Same-named orgs sort oldest first, so the one --owner pre-selects
-	// among them is predictable.
+	// Same-named orgs sort oldest first, which is also the order their
+	// sameNameAsides ordinals follow.
 	slices.SortStableFunc(creatable, func(a, b coreapi.Org) int {
 		return cmp.Or(
 			cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)),
@@ -342,10 +350,11 @@ func projectRegions(jurisdictions []coreapi.TopologyJurisdiction) []projectRegio
 	return out
 }
 
-// newProjectCreateState assembles the wizard from what was loaded and what the
-// command line said. A --owner or --region that names nothing on offer is an
-// error rather than a silently different starting point.
-func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultName string) (*projectCreateState, error) {
+// newProjectCreateState assembles the wizard from what was loaded. name is
+// the name field's starting text: the command's argument, else defaultName.
+// The owner starts on the first row (the caller's own account when it has a
+// handle) and the region on that owner's.
+func newProjectCreateState(d projectCreateData, name, defaultName string) (*projectCreateState, error) {
 	owners, hidden := projectOwners(d.me, d.orgs)
 	s := &projectCreateState{
 		owners:     owners,
@@ -356,87 +365,9 @@ func newProjectCreateState(d projectCreateData, in projectCreateInput, defaultNa
 	if len(s.regions) == 0 {
 		return nil, errors.New("no regions available to create a project in")
 	}
-
-	s.answers.name = cmp.Or(in.name, defaultName)
-
-	if in.region != "" {
-		r, ok := s.regionByID(in.region)
-		if !ok {
-			return nil, fmt.Errorf("unknown --region %q: choose one of %s", in.region, strings.Join(s.regionIDs(), ", "))
-		}
-		s.answers.region = r.id
-		s.regionPinned = true
-	}
-
-	ownerKey := projectOwnerKeyPersonal
-	if in.owner == "" && in.ownerKind == coreapi.CreateProjectInputBodyOwnerTypeOrg {
-		// An explicit --owner-type org asks for an org: start on the first
-		// one offered, or on the personal row when there is none.
-		if i := slices.IndexFunc(s.owners, func(o projectOwner) bool { return !o.personal }); i >= 0 {
-			ownerKey = s.owners[i].key
-		}
-	}
-	if in.owner != "" {
-		matches := s.matchOwner(in.owner, in.ownerKind)
-		switch len(matches) {
-		case 0:
-			switch in.ownerKind {
-			case coreapi.CreateProjectInputBodyOwnerTypeOrg:
-				return nil, fmt.Errorf("--owner %q is not an organization you can create projects in", in.owner)
-			case coreapi.CreateProjectInputBodyOwnerTypeAccount:
-				return nil, fmt.Errorf("--owner %q is not your account", in.owner)
-			}
-			return nil, fmt.Errorf("--owner %q is not an owner you can create projects under", in.owner)
-		case 1:
-			ownerKey = matches[0].key
-		default:
-			// Same-named orgs: the picker is where they can be told apart
-			// (their rows and the summary add sameNameAsides), so start
-			// there on the first of them, the oldest, which is what was asked
-			// for either way. Never the personal row, which Enter would then
-			// create under.
-			ownerKey = matches[0].key
-			s.ownerNote = fmt.Sprintf("%d organizations are named %q; pick the one you mean.", len(matches), in.owner)
-		}
-	}
-	s.setOwner(ownerKey)
+	s.answers.name = cmp.Or(name, defaultName)
+	s.setOwner(s.owners[0].key)
 	return s, nil
-}
-
-// matchOwner finds the rows a --owner value names, mirroring resolveOrgRef: an
-// id, else names matched exactly, else case-folded. Several rows sharing the
-// name are all returned for the caller to treat as ambiguous. A non-empty kind
-// (an explicit --owner-type) limits the match to rows of that kind.
-func (s *projectCreateState) matchOwner(ref string, kind coreapi.CreateProjectInputBodyOwnerType) []projectOwner {
-	owners := s.owners
-	if kind != "" {
-		owners = slices.DeleteFunc(slices.Clone(owners), func(o projectOwner) bool { return o.kind != kind })
-	}
-	for _, o := range owners {
-		if o.id == ref {
-			return []projectOwner{o}
-		}
-	}
-	name := func(o projectOwner) string {
-		if o.personal {
-			return o.flagRef
-		}
-		return o.ref
-	}
-	var exact, folded []projectOwner
-	for _, o := range owners {
-		switch n := name(o); {
-		case n == "":
-		case n == ref:
-			exact = append(exact, o)
-		case strings.EqualFold(n, ref):
-			folded = append(folded, o)
-		}
-	}
-	if len(exact) > 0 {
-		return exact
-	}
-	return folded
 }
 
 func (s *projectCreateState) owner() projectOwner {
@@ -448,8 +379,8 @@ func (s *projectCreateState) owner() projectOwner {
 	return s.owners[0]
 }
 
-// setOwner records the owner and, unless --region pinned it, moves the region
-// to that owner's jurisdiction (the first region when it has none on offer).
+// setOwner records the owner and moves the region to that owner's
+// jurisdiction (the first region when it has none on offer).
 // Re-setting the current owner is a no-op: huh writes a select's value back
 // after every message, which must not undo a region the user picked.
 func (s *projectCreateState) setOwner(key string) {
@@ -459,9 +390,6 @@ func (s *projectCreateState) setOwner(key string) {
 	s.answers.ownerKey = key
 	s.ownerChanges++
 	defer s.refreshPageTitles()
-	if s.regionPinned {
-		return
-	}
 	if r, ok := s.regionByID(s.owner().region); ok {
 		s.answers.region = r.id
 		return
@@ -476,14 +404,6 @@ func (s *projectCreateState) regionByID(id string) (projectRegion, bool) {
 		}
 	}
 	return projectRegion{}, false
-}
-
-func (s *projectCreateState) regionIDs() []string {
-	ids := make([]string, len(s.regions))
-	for i, r := range s.regions {
-		ids[i] = r.id
-	}
-	return ids
 }
 
 // validateName checks the length the API enforces and, when the listing
@@ -563,7 +483,7 @@ func (s *projectCreateState) summary() string {
 	}
 	// The row count must not change while the form runs (huh sizes pages up
 	// front; see summaryGroup), so a missing command keeps its row.
-	rows = append(rows, [2]string{"Command", cmp.Or(s.command(), "(none: this owner can only be picked here)")})
+	rows = append(rows, [2]string{"Command", cmp.Or(s.command(), "(none: "+s.owner().noFlagReason()+")")})
 	var b strings.Builder
 	for i, r := range rows {
 		if i > 0 {
@@ -594,7 +514,7 @@ var projectCreatePrompt = runProjectCreateForms
 
 // runProjectCreateWizard is the prompting path of `project create`: load the
 // choices, ask, then create what the summary showed.
-func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
+func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 	// The wizard names the acting login on its first page instead, so nothing
 	// is printed above the form.
 	loginNote := wizardLoginNote()
@@ -608,7 +528,7 @@ func runProjectCreateWizard(cmd *cobra.Command, in projectCreateInput) error {
 		if err != nil {
 			return err
 		}
-		s, err := newProjectCreateState(d, in, currentFolderName(ctx))
+		s, err := newProjectCreateState(d, name, currentFolderName(ctx))
 		if err != nil {
 			return err
 		}
@@ -739,9 +659,6 @@ func (s *projectCreateState) ownerGroup(accessible bool) *huh.Group {
 		sel.Options(opts...).Accessor(projectOwnerAccessor{s: s})
 	}
 	var notes []string
-	if s.ownerNote != "" {
-		notes = append(notes, s.ownerNote)
-	}
 	if s.loginNote != "" {
 		notes = append(notes, s.loginNote)
 	}

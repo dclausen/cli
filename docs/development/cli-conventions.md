@@ -224,9 +224,12 @@ the commands are always runnable in every build.
   grantee, roles reader/writer/admin; both `add` and `remove` take the grantee
   optionally (see the grant-subtree notes below). `create <name> --owner <ref>`
   creates without prompting even in a terminal, leaving an omitted `--region`
-  to the server. Missing either, a terminal gets one paged wizard (owner →
-  name → region → summary; Shift+Tab goes back) seeded from whatever was
-  given, and no terminal is refused before any request. Owners are shown and
+  to the server. Without flags (bare, or with just the name as the name
+  field's starting text), a terminal gets one paged wizard (owner → name →
+  region → summary; Shift+Tab goes back). Flags always mean the flag form and
+  never seed the wizard, following `repo mirror add` and `dispatch`: a flag
+  with a missing name or `--owner` is refused before any request, as is a
+  missing input with no terminal. Owners are shown and
   echoed by org name or `provider:handle`, never by ULID (a ULID `--owner` is
   still accepted, undocumented). The personal account is listed first, then
   only orgs whose `canCreateProject` is set; the region defaults to the
@@ -237,7 +240,7 @@ the commands are always runnable in every build.
   The "Using context" notice is shown on the owner page instead of above the
   form, under the same several-logins rule. An owner with no `--owner`
   spelling but its ULID (an account with no handle, an org sharing its name)
-  gets no command in the summary and no owner in the success line
+  gets no command in the summary, which says why
 - `repo`: control-plane repository lifecycle — `create`, `list --project`,
   `view`, `edit`, `delete`, `clone`, plus the `mirror`, `remote`,
   `visibility`, `protection` and `grant` subtrees (`repo grant` mirrors
