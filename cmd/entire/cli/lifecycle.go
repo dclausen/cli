@@ -1089,7 +1089,7 @@ func handleLifecycleTurnEnd(ctx context.Context, ag agent.Agent, event *agent.Ev
 			modifiedFiles: relModifiedFiles,
 			newFiles:      relNewFiles,
 			deletedFiles:  relDeletedFiles,
-			agentType:     agentType,
+			ag:            ag,
 			strat:         strat,
 		})
 	}
@@ -2273,7 +2273,7 @@ type subagentSessionStep struct {
 	modifiedFiles []string
 	newFiles      []string
 	deletedFiles  []string
-	agentType     types.AgentType
+	ag            agent.Agent
 	strat         *strategy.ManualCommitStrategy
 }
 
@@ -2300,8 +2300,17 @@ func saveSubagentSessionTaskStep(ctx context.Context, step subagentSessionStep) 
 
 	// SaveTaskStep's old parent-state guarantee: the parent may not have any
 	// session state yet when its Worker finishes first.
-	if err := step.strat.EnsureSessionExists(ctx, step.link.ParentSessionID, step.agentType); err != nil {
+	if err := step.strat.EnsureSessionExists(ctx, step.link.ParentSessionID, step.ag.Type()); err != nil {
 		return fmt.Errorf("failed to ensure parent session state: %w", err)
+	}
+
+	// Like any subagent stop, snapshot the parent's worktree before the
+	// record completes: the Worker can finish after the parent's turn end,
+	// and commit linking needs its new files in the shadow tree.
+	if err := snapshotAgentStop(ctx, step.ag, step.link.ParentSessionID, "Worker finished"); err != nil {
+		logging.Warn(logCtx, "failed to snapshot worktree at worker stop",
+			slog.String("parent_session_id", step.link.ParentSessionID),
+			slog.String("error", err.Error()))
 	}
 
 	files := mergeUnique(mergeUnique(step.modifiedFiles, step.newFiles), step.deletedFiles)

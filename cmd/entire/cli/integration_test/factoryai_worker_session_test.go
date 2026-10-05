@@ -3,8 +3,10 @@
 package integration
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -83,9 +85,12 @@ func TestFactoryDroidWorkerSessionBecomesTaskCheckpoint(t *testing.T) {
 	}
 
 	// A shadow write for the Worker session would misattribute the work to a
-	// session the user never drove — the exact shape of the regression.
-	if got := shadowBranches(env); len(got) != 0 {
-		t.Errorf("a Worker's turn must write a task record, not shadow data: %v", got)
+	// session the user never drove — the exact shape of the regression. The
+	// Worker's stop snapshots the worktree for the parent only.
+	for _, branch := range shadowBranches(env) {
+		if env.FileExistsInBranch(branch, ".entire/metadata/"+worker.ID+"/full.jsonl") {
+			t.Errorf("a Worker's turn must write a task record, not shadow data for its own session: %s", branch)
+		}
 	}
 
 	// Multi-turn Workers upsert into the SAME record: a second turn must MERGE
@@ -125,6 +130,76 @@ func TestFactoryDroidWorkerSessionBecomesTaskCheckpoint(t *testing.T) {
 			t.Errorf("turn 2 must re-declare the Worker transcript path, got %q", rec.DeclaredTranscriptPath)
 		}
 	})
+}
+
+// TestFactoryDroidWorkerFileCommittedAfterParentSnapshot covers the E2E
+// TestFactoryCommittedCheckpointExcludesPreExistingUntrackedFiles: the
+// parent's turn end snapshots the worktree (a human's untracked file differs
+// from HEAD) before its Worker writes, so a shadow branch exists without the
+// Worker's file. The Worker's stop must snapshot the parent's worktree;
+// otherwise the commit's content overlap finds the Worker's new file missing
+// from the shadow tree and nothing condenses into the commit.
+func TestFactoryDroidWorkerFileCommittedAfterParentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workerFile    = "docs/worker.md"
+		workerContent = "Findings.\n\n- one\n- two\n- three\n"
+	)
+	env := NewTestEnv(t)
+	env.InitRepo()
+	env.InitEntire()
+	env.WriteFile(".gitignore", ".entire/\n")
+	env.WriteFile("README.md", "# Test Repository")
+	env.GitAdd(".gitignore")
+	env.GitAdd("README.md")
+	env.GitCommit("Initial commit")
+	env.WriteFile("docs/human-note.md", "human-owned sentinel\n")
+
+	parent := env.NewFactoryDroidSession()
+	parent.CreateDroidTranscript("Run a Worker that writes "+workerFile, nil)
+	if err := env.SimulateFactoryDroidUserPromptSubmit(parent.ID); err != nil {
+		t.Fatalf("parent UserPromptSubmit failed: %v", err)
+	}
+	if err := env.SimulateFactoryDroidStop(parent.ID, parent.TranscriptPath); err != nil {
+		t.Fatalf("parent Stop failed: %v", err)
+	}
+
+	const toolUseID = "toolu_worker_after_parent"
+	worker := env.NewFactoryDroidSession()
+	if err := env.SimulateFactoryDroidUserPromptSubmit(worker.ID); err != nil {
+		t.Fatalf("worker UserPromptSubmit failed: %v", err)
+	}
+	env.WriteFile(workerFile, workerContent)
+	worker.CreateDroidTranscript("# Task Tool Invocation", []FileChange{{Path: workerFile, Content: workerContent}})
+	worker.MarkAsWorkerSession(parent.ID, toolUseID, "worker: write findings")
+	if err := env.SimulateFactoryDroidStop(worker.ID, worker.TranscriptPath); err != nil {
+		t.Fatalf("worker Stop failed: %v", err)
+	}
+
+	env.GitCommitWithShadowHooks("Add worker findings", workerFile)
+
+	checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash())
+	if checkpointID == "" {
+		t.Fatal("commit should carry an Entire-Checkpoint trailer")
+	}
+	content, ok := env.ReadFileFromBranch(paths.MetadataBranchName, SessionMetadataPath(checkpointID))
+	if !ok {
+		t.Fatalf("checkpoint %s was not condensed: no session metadata.json", checkpointID)
+	}
+	var metadata checkpoint.Metadata
+	if err := json.Unmarshal([]byte(content), &metadata); err != nil {
+		t.Fatalf("parse session metadata: %v", err)
+	}
+	if metadata.SessionID != parent.ID {
+		t.Errorf("checkpoint session = %q, want the parent %q", metadata.SessionID, parent.ID)
+	}
+	if !containsFile(metadata.FilesTouched, workerFile) {
+		t.Errorf("files_touched = %v, want it to include %s", metadata.FilesTouched, workerFile)
+	}
+	if containsFile(metadata.FilesTouched, "docs/human-note.md") {
+		t.Errorf("files_touched = %v, must not include the human's untracked file", metadata.FilesTouched)
+	}
 }
 
 // TestFactoryDroidTopLevelSessionStillCheckpoints guards the fallback: an
