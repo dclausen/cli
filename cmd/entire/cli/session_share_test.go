@@ -24,28 +24,24 @@ func TestResolveShareRemote_NoRemotesIsAnError(t *testing.T) {
 	testutil.InitRepo(t, dir)
 	t.Chdir(dir)
 
-	_, err := resolveShareRemote(context.Background(), "")
+	_, err := resolveShareRemote(context.Background())
 	if err == nil {
 		t.Fatal("resolveShareRemote() = nil error, want a failure when no remote is configured")
 	}
-	if !strings.Contains(err.Error(), "--remote") {
-		t.Errorf("the error should point at the escape hatch, got: %v", err)
+	if !strings.Contains(err.Error(), "nowhere to share") {
+		t.Errorf("the error should say why sharing cannot proceed, got: %v", err)
 	}
 }
 
-// An explicit --remote is honoured without consulting the elected sync remote,
-// so a repo with no remotes can still share to one named on the command line.
-func TestResolveShareRemote_ExplicitWins(t *testing.T) {
-	dir := t.TempDir()
-	testutil.InitRepo(t, dir)
-	t.Chdir(dir)
+// Share must not offer a remote override. Reads resolve through the same
+// election as the push (the elected remote, then origin), so a flag moving
+// only the push would strand the checkpoint somewhere the printed resume
+// command never looks.
+func TestSessionShare_HasNoRemoteOverride(t *testing.T) {
+	t.Parallel()
 
-	got, err := resolveShareRemote(context.Background(), "upstream")
-	if err != nil {
-		t.Fatalf("resolveShareRemote() error = %v", err)
-	}
-	if got != "upstream" {
-		t.Errorf("resolveShareRemote() = %q, want upstream", got)
+	if f := newSessionShareCmd().Flags().Lookup("remote"); f != nil {
+		t.Errorf("session share must not expose --remote; reads follow the elected remote, so an override strands the handoff")
 	}
 }
 
@@ -60,7 +56,7 @@ func TestPrintShareResult_PrintsARunnableResumeCommand(t *testing.T) {
 	root.AddCommand(share)
 
 	var out bytes.Buffer
-	printShareResult(&out, share, cpID, strategy.ShareCheckpointResult{Pushed: 1, Counted: true})
+	printShareResult(&out, share, cpID, strategy.ShareCheckpointResult{Pushed: 1})
 
 	want := "entire session resume " + cpID.String()
 	if !strings.Contains(out.String(), want) {
@@ -86,24 +82,6 @@ func TestPrintShareResult_PushDisabledSaysNothingLeftTheMachine(t *testing.T) {
 	}
 	if strings.Contains(got, "Pushed") {
 		t.Errorf("a disabled push must not claim it pushed, got: %s", got)
-	}
-}
-
-// The git-branch backend pushes a branch, not counted refs, so reporting a
-// count there would be a fiction — it says "Pushed." and nothing more.
-func TestPrintShareResult_UncountedPushDoesNotInventANumber(t *testing.T) {
-	t.Parallel()
-
-	var out bytes.Buffer
-	printShareResult(&out, nil, id.MustCheckpointID("abc123def456"),
-		strategy.ShareCheckpointResult{Counted: false})
-
-	got := out.String()
-	if !strings.Contains(got, "Pushed.") {
-		t.Errorf("an uncounted push should still report success, got: %s", got)
-	}
-	if strings.Contains(got, "ref(s)") {
-		t.Errorf("an uncounted push must not print a ref count, got: %s", got)
 	}
 }
 

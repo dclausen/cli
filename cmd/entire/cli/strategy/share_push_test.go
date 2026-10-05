@@ -29,7 +29,6 @@ func TestPushSharedCheckpoints_DeliversRefsToTheRemote(t *testing.T) {
 	result, err := (&ManualCommitStrategy{}).PushSharedCheckpoints(context.Background(), repo, bareDir)
 	require.NoError(t, err)
 	assert.False(t, result.PushDisabled)
-	assert.True(t, result.Counted, "the git-refs backend knows exactly what it sent")
 	assert.Equal(t, len(refs), result.Pushed)
 
 	for _, ref := range refs {
@@ -90,23 +89,21 @@ func TestPushSharedCheckpoints_FailureIsSurfaced(t *testing.T) {
 	assert.ElementsMatch(t, refs, remaining, "a failed push leaves the refs queued for the next attempt")
 }
 
-// With a git-branch primary there is no per-checkpoint ref to send: the record
-// travels on entire/checkpoints/v1, so the push reports success without a ref
-// count rather than claiming it pushed nothing. Pinned because the first
-// version of this dispatch was written against git-refs alone and reported a
-// git-branch share as "pushed 0".
-func TestPushSharedCheckpoints_GitBranchPrimaryReportsUncounted(t *testing.T) {
+// The git-branch backend must report delivery as strictly as git-refs. PrePush
+// is fail-soft and returns nil when the sync gate skips the push or the remote
+// refuses every ref; routing share through it reported those as a successful
+// share and printed a resume command for a checkpoint that never left.
+func TestPushSharedCheckpoints_GitBranchFailureIsNotSuccess(t *testing.T) {
 	t.Setenv("ENTIRE_CHECKPOINTS_PRIMARY", "git-branch")
-	workDir, bareDir, _ := setupRepoWithCheckpointRefs(t)
+	workDir, _, _ := setupRepoWithCheckpointRefs(t)
 	t.Chdir(workDir)
 	paths.ClearWorktreeRootCache()
 
 	repo, err := git.PlainOpen(workDir)
 	require.NoError(t, err)
 
-	result, err := (&ManualCommitStrategy{}).PushSharedCheckpoints(context.Background(), repo, bareDir)
-	require.NoError(t, err)
-	assert.False(t, result.Counted,
-		"the branch backend pushes one branch, so a ref count would be a fiction")
-	assert.False(t, result.PushDisabled)
+	result, err := (&ManualCommitStrategy{}).PushSharedCheckpoints(
+		context.Background(), repo, filepath.Join(t.TempDir(), "no-such-remote"))
+	require.Error(t, err, "an undeliverable branch push must not read as a successful share")
+	assert.Equal(t, 0, result.Pushed)
 }

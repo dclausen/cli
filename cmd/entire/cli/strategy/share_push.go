@@ -8,17 +8,15 @@ import (
 
 // ShareCheckpointResult reports what PushSharedCheckpoints delivered.
 type ShareCheckpointResult struct {
-	// Pushed counts the checkpoint refs that reached the remote. It is
-	// meaningful only for the git-refs backend, whose push queue names exactly
-	// the refs it sent; the git-branch backend pushes one branch carrying
-	// however many checkpoints it accumulated, and reports Counted=false.
+	// Pushed counts the refs confirmed on the remote. Both backends report a
+	// real count — git-refs the per-checkpoint refs it drained from the push
+	// queue, git-branch the v1 ref — and both treat "nothing landed" as an
+	// error, so a nil error with Pushed > 0 is the only shape that means the
+	// checkpoint is shareable.
 	Pushed int
-	// Counted records whether Pushed is a real count, so a caller does not
-	// print "pushed 0 checkpoints" for a branch push that in fact succeeded.
-	Counted bool
 	// PushDisabled reports push_sessions=false in settings: nothing left the
-	// machine, and the checkpoint stays local. Distinct from Pushed==0, which
-	// with pushing enabled means the queue was already empty.
+	// machine, and the checkpoint stays local. Distinct from an error, because
+	// it is a configured choice rather than a failure.
 	PushDisabled bool
 }
 
@@ -31,14 +29,12 @@ type ShareCheckpointResult struct {
 // not interchangeable: git-refs pushes the per-checkpoint refs named in the
 // push queue, git-branch pushes the single entire/checkpoints/v1 branch.
 //
-// git-refs goes through PushQueuedCheckpointRefs, which surfaces failures
-// rather than swallowing them — sharing is a foreground command whose whole
-// purpose is delivery, so "it didn't actually reach the remote" has to be an
-// error and not a log line. The git-branch path reuses PrePush, which is the
-// only implementation of that push and is fail-soft by design; a caller that
-// needs certainty there should verify the branch separately.
+// Both halves use the strict entry point for their backend rather than the
+// hook's. PrePush is fail-soft by contract — nil when the sync-remote gate
+// skips delivery, nil when a ref is refused — and sharing must never print a
+// resume command for a checkpoint that never reached the remote.
 //
-// Both paths run the OPF gate before anything is sent. Callers must have run
+// Both run the OPF gate before anything is sent. Callers must have run
 // EnsureRedactionConfigured first: unconfigured redaction reads as "OPF off"
 // and would wave un-OPF'd checkpoint content through.
 func (s *ManualCommitStrategy) PushSharedCheckpoints(ctx context.Context, repo *git.Repository, remote string) (ShareCheckpointResult, error) {
@@ -49,11 +45,9 @@ func (s *ManualCommitStrategy) PushSharedCheckpoints(ctx context.Context, repo *
 
 	if ps.primaryIsRefs {
 		pushed, pushDisabled, err := PushQueuedCheckpointRefs(ctx, repo, remote)
-		return ShareCheckpointResult{Pushed: pushed, Counted: true, PushDisabled: pushDisabled}, err
+		return ShareCheckpointResult{Pushed: pushed, PushDisabled: pushDisabled}, err
 	}
 
-	if err := s.PrePush(ctx, remote); err != nil {
-		return ShareCheckpointResult{}, err
-	}
-	return ShareCheckpointResult{Counted: false}, nil
+	pushed, pushDisabled, err := PushCheckpointBranch(ctx, remote)
+	return ShareCheckpointResult{Pushed: pushed, PushDisabled: pushDisabled}, err
 }

@@ -14,8 +14,6 @@ import (
 )
 
 func newSessionShareCmd() *cobra.Command {
-	var remoteFlag string
-
 	cmd := &cobra.Command{
 		Use:   "share [session-id]",
 		Short: "Publish a session's work so far and print the command to resume it",
@@ -44,8 +42,7 @@ guessing at the most recent one.
 
 Examples:
   entire session share
-  entire session share 2026-09-30-8f76b0e8-b8f1-4a87-9186-848bdd83d62e
-  entire session share --remote upstream`,
+  entire session share 2026-09-30-8f76b0e8-b8f1-4a87-9186-848bdd83d62e`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -53,16 +50,14 @@ Examples:
 				return nil
 			}
 			cmd.SilenceUsage = true
-			return runSessionShare(ctx, cmd, args, remoteFlag)
+			return runSessionShare(ctx, cmd, args)
 		},
 	}
-
-	cmd.Flags().StringVar(&remoteFlag, "remote", "", "Remote to push the checkpoint to (default: the checkpoint sync remote)")
 
 	return cmd
 }
 
-func runSessionShare(ctx context.Context, cmd *cobra.Command, args []string, remoteFlag string) error {
+func runSessionShare(ctx context.Context, cmd *cobra.Command, args []string) error {
 	w := cmd.OutOrStdout()
 
 	// Shares the session resolution `checkpoint create` uses: sharing acts on a
@@ -77,7 +72,7 @@ func runSessionShare(ctx context.Context, cmd *cobra.Command, args []string, rem
 	// Resolved before the checkpoint is written: a repo with no remote cannot
 	// share at all, and failing after the write would leave a checkpoint behind
 	// with nothing to show for it.
-	remote, err := resolveShareRemote(ctx, remoteFlag)
+	remote, err := resolveShareRemote(ctx)
 	if err != nil {
 		return err
 	}
@@ -149,28 +144,34 @@ func pushSharedCheckpoint(ctx context.Context, cmd *cobra.Command, strat *strate
 		// Declining OPF is a decision, not a failure: nothing shipped, and the
 		// checkpoint stays queued for the next push.
 		if errors.Is(err, strategy.ErrOPFAbortedByUser) {
+			// Printed here, so the error must not print again: the convention
+			// is NewSilentError after custom output (see errors.go).
 			fmt.Fprintln(cmd.ErrOrStderr(), "OPF cancelled; the checkpoint stays queued for the next push.")
-			return result, fmt.Errorf("share cancelled: %w", err)
+			return result, NewSilentError(err)
 		}
 		return result, fmt.Errorf("push checkpoint: %w", err)
 	}
 	return result, nil
 }
 
-// resolveShareRemote picks the remote the checkpoint is published to: the
-// explicit --remote when given, else the elected checkpoint sync remote.
+// resolveShareRemote returns the elected checkpoint sync remote, which is
+// where a shared checkpoint has to go and the only place it can usefully go.
+//
+// There is deliberately no override. Reads resolve through the same election
+// (CheckpointReadRemotes: the elected remote, then origin), so a flag that
+// moved only the push would strand the checkpoint somewhere the printed resume
+// command never looks. Directing checkpoint traffic elsewhere is the
+// checkpoint_push_remote setting's job, which moves reads with it.
+//
 // Fail-closed, matching the other non-hook push paths: a misconfigured
 // checkpoint_push_remote is an error, never a silent fallback to origin.
-func resolveShareRemote(ctx context.Context, explicit string) (string, error) {
-	if explicit != "" {
-		return explicit, nil
-	}
+func resolveShareRemote(ctx context.Context) (string, error) {
 	syncRemote, err := strategy.ResolveCheckpointSyncRemote(ctx)
 	if err != nil {
-		return "", fmt.Errorf("cannot determine the checkpoint remote (pass --remote explicitly): %w", err)
+		return "", fmt.Errorf("cannot determine the checkpoint remote to share to: %w", err)
 	}
 	if syncRemote.Name == "" {
-		return "", errors.New("no git remotes configured, so there is nowhere to share to; pass --remote explicitly")
+		return "", errors.New("no git remotes configured, so there is nowhere to share to")
 	}
 	return syncRemote.Name, nil
 }
@@ -189,20 +190,14 @@ func shareRootName(cmd *cobra.Command) string {
 func printShareResult(w io.Writer, cmd *cobra.Command, checkpointID id.CheckpointID, pushed strategy.ShareCheckpointResult) {
 	resumeCmd := fmt.Sprintf("%s %s resume %s", shareRootName(cmd), cmdSession, checkpointID)
 
-	switch {
-	case pushed.PushDisabled:
+	if pushed.PushDisabled {
 		fmt.Fprintln(w, "\nCheckpoint pushing is disabled in settings, so nothing left this machine.")
 		fmt.Fprintf(w, "Anyone with the repository can resume it once it is pushed:\n\n  %s\n", resumeCmd)
 		return
-	case pushed.Counted && pushed.Pushed == 0:
-		// Enabled, queue already empty — typically a concurrent git push
-		// flushed this very ref. Already delivered, so the share line stands.
-		fmt.Fprintln(w, "\nAlready pushed.")
-	case pushed.Counted:
-		fmt.Fprintf(w, "Pushed %d checkpoint ref(s).\n", pushed.Pushed)
-	default:
-		fmt.Fprintln(w, "Pushed.")
 	}
 
+	// Both backends report a confirmed count and error out when nothing
+	// landed, so reaching here means the checkpoint is on the remote.
+	fmt.Fprintf(w, "Pushed %d checkpoint ref(s).\n", pushed.Pushed)
 	fmt.Fprintf(w, "\nShare this:\n\n  %s\n", resumeCmd)
 }

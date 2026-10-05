@@ -50,9 +50,19 @@ the commands are always runnable in every build.
   rather than a dropped transcript (`condenseOpts.failOnRedactionError`) — which matters
   more here than for `checkpoint create`, because share publishes. The session's checkpoint
   window is untouched, so the next commit's checkpoint still covers the same work. The push goes
-  through `strategy.PushSharedCheckpoints`, which dispatches on the primary backend the way
-  pre-push does; callers must run `EnsureRedactionConfigured` first, which both halves need
-  — the checkpoint write must not fall back to the default scanner set, and the OPF gate
+  through `strategy.PushSharedCheckpoints`, which dispatches on the primary backend but uses
+  each one's **strict** entry point — `PushQueuedCheckpointRefs` for git-refs,
+  `PushCheckpointBranch` for git-branch — never `PrePush`. `PrePush` is fail-soft by
+  contract and returns nil when the sync gate skips delivery or every ref is refused, so a
+  share routed through it printed a resume command for a checkpoint that never left.
+  `PushCheckpointBranch` is the git-branch analogue added for this: same gates and the same
+  extracted `opfRewriteV1IfEnabled` / `deliverV1Refs` helpers the hook uses, opposite
+  failure posture. There is deliberately **no `--remote` override**: reads resolve through
+  the same election as the push (`CheckpointReadRemotes` — elected remote, then origin), so
+  a flag moving only the push would strand the checkpoint where the printed resume command
+  never looks; `checkpoint_push_remote` is the supported way to redirect, and it moves both.
+  Callers must run `EnsureRedactionConfigured` first, which both halves need — the
+  checkpoint write must not fall back to the default scanner set, and the OPF gate
   otherwise reads as "off". `share` is classified user-owned in `agentHelpClassification`:
   it publishes a transcript to a remote.
   `adopt` moves an active session from another repo or worktree into the current

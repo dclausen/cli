@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint"
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/id"
@@ -74,6 +75,13 @@ Existing local session logs are never overwritten unless --force is given.`,
 }
 
 func runCheckpointResume(ctx context.Context, cmd *cobra.Command, target, checkpointFlag, commitFlag, branchFlag string, force bool) error {
+	// Same reason runResume enables them, and needed on every target shape, not
+	// just the branch one: restoring a session log looks up the agent's
+	// transcript home from the user's shell, where a home the agent reads from
+	// its own settings is invisible to the environment. runResume enables them
+	// again on the branch path below, which is harmless.
+	agent.EnableHomeProbes()
+
 	if branchFlag != "" {
 		return runResume(ctx, cmd, branchFlag, force)
 	}
