@@ -4020,3 +4020,54 @@ func TestSaveStep_ExistingSessionOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, state.StepCount, "an ended session must not get a snapshot")
 }
+
+// TestSaveStep_SnapshotClaimsAreMeasuredFromTheSessionsOwnSnapshot pins that a
+// session claims the files that changed since its own previous snapshot, not
+// since the newest one on the worktree's shared shadow branch. Otherwise a
+// file session A shell-wrote is claimed by session B when B's turn ends first,
+// and A never claims it: B's snapshot already holds A's content.
+func TestSaveStep_SnapshotClaimsAreMeasuredFromTheSessionsOwnSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+	head := testutil.GetHeadHash(t, dir)
+
+	s := &ManualCommitStrategy{}
+	for _, id := range []string{"a", "b"} {
+		require.NoError(t, s.saveSessionState(context.Background(), &SessionState{
+			SessionID: id, BaseCommit: head, WorktreePath: dir, StartedAt: time.Now(),
+			Phase: session.PhaseActive, PendingPromptAttribution: &PromptAttribution{CheckpointNumber: 1},
+		}))
+		metadataDir := ".entire/metadata/" + id
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, metadataDir), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, metadataDir, paths.TranscriptFileName), []byte(`{"type":"human","message":{"content":"go"}}`+"\n"), 0o644))
+	}
+	step := func(id string) {
+		t.Helper()
+		require.NoError(t, s.SaveStep(context.Background(), StepContext{
+			SessionID: id, MetadataDir: ".entire/metadata/" + id, CommitMessage: "Checkpoint",
+			AuthorName: "Test", AuthorEmail: "test@test.com",
+		}))
+	}
+	filesOf := func(id string) []string {
+		t.Helper()
+		state, err := s.loadSessionState(context.Background(), id)
+		require.NoError(t, err)
+		return state.FilesTouched
+	}
+
+	// Each session snapshots once so it has a previous snapshot of its own.
+	testutil.WriteFile(t, dir, "a-first.txt", "a\n")
+	step("a")
+	testutil.WriteFile(t, dir, "b-first.txt", "b\n")
+	step("b")
+
+	// A's shell command writes foo.go; B's turn ends before A's.
+	testutil.WriteFile(t, dir, "foo.go", "package foo\n")
+	step("b")
+	step("a")
+	assert.Contains(t, filesOf("a"), "foo.go", "A wrote foo.go after its own previous snapshot, so A must claim it")
+}

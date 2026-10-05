@@ -145,23 +145,32 @@ func (s *ephemeralStore) writeCheckpoint(ctx context.Context, opts WriteEphemera
 			if from == plumbing.ZeroHash {
 				from = baseTreeHash
 			}
-			changedFiles, dErr := s.changedSince(from, treeHash)
+			changedSinceTip, dErr := s.changedSince(from, treeHash)
 			if dErr != nil {
 				return dErr
+			}
+			changedFiles := changedSinceTip
+			if opts.ClaimsSince != plumbing.ZeroHash && opts.ClaimsSince != parentHash {
+				if own, oErr := s.repo.CommitObject(opts.ClaimsSince); oErr == nil {
+					if sinceOwn, cErr := s.changedSince(own.TreeHash, treeHash); cErr == nil {
+						changedFiles = sinceOwn
+					}
+				}
 			}
 			// No worktree file changed since the previous snapshot: nothing to
 			// record. (Session metadata changes every turn, so the tree-hash
 			// check below cannot tell on its own.)
-			if opts.SkipWhenUnchanged && len(changedFiles) == 0 {
-				result = WriteEphemeralResult{CommitHash: parentHash, Skipped: true}
+			if opts.SkipWhenUnchanged && len(changedSinceTip) == 0 {
+				result = WriteEphemeralResult{CommitHash: parentHash, Skipped: true, ChangedFiles: changedFiles}
 				return nil
 			}
 
 			// Deduplication: skip if tree hash matches the current shadow tip.
 			if lastTreeHash != plumbing.ZeroHash && treeHash == lastTreeHash {
 				result = WriteEphemeralResult{
-					CommitHash: parentHash,
-					Skipped:    true,
+					CommitHash:   parentHash,
+					Skipped:      true,
+					ChangedFiles: changedFiles,
 				}
 				return nil
 			}

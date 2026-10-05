@@ -20,6 +20,7 @@ import (
 	"github.com/entireio/cli/perf"
 
 	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 // SaveStep saves a checkpoint to the shadow branch.
@@ -70,6 +71,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		shadowBranchName := checkpoint.ShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID)
 		branchExisted := store.ShadowBranchExists(state.BaseCommit, state.WorktreeID)
 
+		pendingPromptAttr := state.PendingPromptAttribution
 		var promptAttr PromptAttribution
 		// humanDiffUnknown: a session's first step with no prompt recorded
 		// has no human diff for its window. (A later step with none had no
@@ -107,6 +109,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			AuthorEmail:       step.AuthorEmail,
 			IsFirstCheckpoint: isFirstCheckpointOfSession,
 			SkipWhenUnchanged: step.SkipWhenUnchanged,
+			ClaimsSince:       ownPreviousSnapshot(state),
 		})
 		writeCheckpointSpan.RecordError(err)
 		writeCheckpointSpan.End()
@@ -123,7 +126,19 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 				slog.String("shadow_branch", shadowBranchName),
 			)
 			nothingChanged = true
-			return ErrMutationSkip
+			// The worktree already matches the newest snapshot, possibly
+			// another session's: record what changed in this session's window
+			// since its own previous snapshot, and take the newest one as its
+			// own. The prompt attribution waits for the next written step.
+			claims := snapshotClaims(ctx, state, result.ChangedFiles, promptAttr, humanDiffUnknown)
+			if result.CommitHash == plumbing.ZeroHash || (len(claims) == 0 && ownPreviousSnapshot(state) == result.CommitHash) {
+				return ErrMutationSkip
+			}
+			state.PendingPromptAttribution = pendingPromptAttr
+			state.FilesTouched = mergeFilesTouched(state.FilesTouched, claims)
+			state.LastSnapshotCommit = result.CommitHash.String()
+			state.LastSnapshotBaseCommit = state.BaseCommit
+			return nil
 		}
 
 		// LastCheckpointID is intentionally NOT cleared here. It is set during
@@ -131,10 +146,9 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		// trailers on amend operations.
 		state.StepCount++
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
-		var snapshotAgentFiles []string
-		if !humanDiffUnknown {
-			snapshotAgentFiles = agentChangedFiles(result.ChangedFiles, promptAttr, otherSessionsFiles(ctx, state))
-		}
+		snapshotAgentFiles := snapshotClaims(ctx, state, result.ChangedFiles, promptAttr, humanDiffUnknown)
+		state.LastSnapshotCommit = result.CommitHash.String()
+		state.LastSnapshotBaseCommit = state.BaseCommit
 		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles, snapshotAgentFiles)
 		// The first step that knows its transcript position anchors it. A
 		// snapshot taken when a subagent stops carries none.
@@ -316,6 +330,30 @@ func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepCo
 		return nil
 	}
 	return mutErr
+}
+
+// snapshotClaims returns the files of a snapshot's changes this session
+// claims as agent work (see agentChangedFiles). A window whose human diff is
+// unknown claims nothing. A first snapshot has no earlier one of this session
+// to measure from, so files other sessions already claim stay theirs.
+func snapshotClaims(ctx context.Context, state *SessionState, changed []string, human PromptAttribution, humanDiffUnknown bool) []string {
+	if humanDiffUnknown {
+		return nil
+	}
+	var others map[string]struct{}
+	if ownPreviousSnapshot(state) == plumbing.ZeroHash {
+		others = otherSessionsFiles(ctx, state)
+	}
+	return agentChangedFiles(changed, human, others)
+}
+
+// ownPreviousSnapshot returns state's previous shadow snapshot, when it was
+// taken on the current base commit.
+func ownPreviousSnapshot(state *SessionState) plumbing.Hash {
+	if state.LastSnapshotCommit == "" || state.LastSnapshotBaseCommit != state.BaseCommit {
+		return plumbing.ZeroHash
+	}
+	return plumbing.NewHash(state.LastSnapshotCommit)
 }
 
 // otherSessionsFiles returns the files other live sessions in self's worktree
