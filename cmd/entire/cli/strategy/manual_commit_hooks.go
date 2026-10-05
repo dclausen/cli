@@ -3086,6 +3086,7 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 			recomputed := s.calculatePromptAttributionAtStart(ctx, repo, state)
 			state.PendingPromptAttribution = &recomputed
 		}
+		recordClaimsStart(repo, state)
 
 		state.LastCheckpointID = ""
 		state.TurnCheckpointIDs = nil
@@ -3113,6 +3114,7 @@ func (s *ManualCommitStrategy) InitializeSession(ctx context.Context, sessionID 
 		}
 		promptAttr := s.calculatePromptAttributionAtStart(ctx, repo, state)
 		state.PendingPromptAttribution = &promptAttr
+		recordClaimsStart(repo, state)
 		captureSessionBranch(repo, state)
 		captureSessionOwner(state)
 		return nil

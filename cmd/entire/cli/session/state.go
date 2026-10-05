@@ -437,13 +437,16 @@ type State struct {
 	// pointer ledger for subagent work. See TaskRecord.
 	TaskRecords []TaskRecord `json:"task_records,omitempty"`
 
-	// LastSnapshotCommit is this session's most recent shadow snapshot, and
-	// LastSnapshotBaseCommit the base commit it was taken on. Sessions in a
-	// worktree share the shadow branch, so a session measures the files its
-	// window changed from its own previous snapshot, not from whichever
-	// session snapshotted last. Ignored once BaseCommit has moved.
-	LastSnapshotCommit     string `json:"last_snapshot_commit,omitempty"`
-	LastSnapshotBaseCommit string `json:"last_snapshot_base_commit,omitempty"`
+	// ClaimsSinceCommit is the shadow snapshot (or, with none yet, the base
+	// commit) this session measures the files its window changed from: the
+	// newest snapshot when its current turn started, moved forward by each
+	// of its own snapshots. Sessions in a worktree share the shadow branch:
+	// what another session snapshotted while this one was idle is not in its
+	// window, and what this session wrote while another snapshotted is.
+	// ClaimsSinceBaseCommit is the base commit it belongs to; it is ignored
+	// once BaseCommit has moved.
+	ClaimsSinceCommit     string `json:"claims_since_commit,omitempty"`
+	ClaimsSinceBaseCommit string `json:"claims_since_base_commit,omitempty"`
 
 	// SubagentInventory retains Codex child identities independently of task
 	// records so follow-up turns remain discoverable after materialization.

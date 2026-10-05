@@ -109,7 +109,7 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			AuthorEmail:       step.AuthorEmail,
 			IsFirstCheckpoint: isFirstCheckpointOfSession,
 			SkipWhenUnchanged: step.SkipWhenUnchanged,
-			ClaimsSince:       ownPreviousSnapshot(state),
+			ClaimsSince:       claimsSince(state),
 		})
 		writeCheckpointSpan.RecordError(err)
 		writeCheckpointSpan.End()
@@ -127,17 +127,16 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			)
 			nothingChanged = true
 			// The worktree already matches the newest snapshot, possibly
-			// another session's: record what changed in this session's window
-			// since its own previous snapshot, and take the newest one as its
-			// own. The prompt attribution waits for the next written step.
+			// another session's: record what changed in this session's window,
+			// and start its next window there. The prompt attribution waits for the next written step.
 			claims := snapshotClaims(ctx, state, result.ChangedFiles, promptAttr, humanDiffUnknown)
-			if result.CommitHash == plumbing.ZeroHash || (len(claims) == 0 && ownPreviousSnapshot(state) == result.CommitHash) {
+			if result.CommitHash == plumbing.ZeroHash || (len(claims) == 0 && claimsSince(state) == result.CommitHash) {
 				return ErrMutationSkip
 			}
 			state.PendingPromptAttribution = pendingPromptAttr
 			state.FilesTouched = mergeFilesTouched(state.FilesTouched, claims)
-			state.LastSnapshotCommit = result.CommitHash.String()
-			state.LastSnapshotBaseCommit = state.BaseCommit
+			state.ClaimsSinceCommit = result.CommitHash.String()
+			state.ClaimsSinceBaseCommit = state.BaseCommit
 			return nil
 		}
 
@@ -147,8 +146,8 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 		state.StepCount++
 		state.PromptAttributions = append(state.PromptAttributions, promptAttr)
 		snapshotAgentFiles := snapshotClaims(ctx, state, result.ChangedFiles, promptAttr, humanDiffUnknown)
-		state.LastSnapshotCommit = result.CommitHash.String()
-		state.LastSnapshotBaseCommit = state.BaseCommit
+		state.ClaimsSinceCommit = result.CommitHash.String()
+		state.ClaimsSinceBaseCommit = state.BaseCommit
 		state.FilesTouched = mergeFilesTouched(state.FilesTouched, step.ModifiedFiles, step.NewFiles, step.DeletedFiles, snapshotAgentFiles)
 		// The first step that knows its transcript position anchors it. A
 		// snapshot taken when a subagent stops carries none.
@@ -334,26 +333,41 @@ func (s *ManualCommitStrategy) SaveTaskStep(ctx context.Context, step TaskStepCo
 
 // snapshotClaims returns the files of a snapshot's changes this session
 // claims as agent work (see agentChangedFiles). A window whose human diff is
-// unknown claims nothing. A first snapshot has no earlier one of this session
-// to measure from, so files other sessions already claim stay theirs.
+// unknown claims nothing. A session with no claims start (no turn start or
+// snapshot of its own on this base) leaves files other sessions already claim
+// to them.
 func snapshotClaims(ctx context.Context, state *SessionState, changed []string, human PromptAttribution, humanDiffUnknown bool) []string {
 	if humanDiffUnknown {
 		return nil
 	}
 	var others map[string]struct{}
-	if ownPreviousSnapshot(state) == plumbing.ZeroHash {
+	if claimsSince(state) == plumbing.ZeroHash {
 		others = otherSessionsFiles(ctx, state)
 	}
 	return agentChangedFiles(changed, human, others)
 }
 
-// ownPreviousSnapshot returns state's previous shadow snapshot, when it was
-// taken on the current base commit.
-func ownPreviousSnapshot(state *SessionState) plumbing.Hash {
-	if state.LastSnapshotCommit == "" || state.LastSnapshotBaseCommit != state.BaseCommit {
+// claimsSince returns the commit state's snapshot claims are measured from
+// (see session.State.ClaimsSinceCommit), when it belongs to the current base
+// commit.
+func claimsSince(state *SessionState) plumbing.Hash {
+	if state.ClaimsSinceCommit == "" || state.ClaimsSinceBaseCommit != state.BaseCommit {
 		return plumbing.ZeroHash
 	}
-	return plumbing.NewHash(state.LastSnapshotCommit)
+	return plumbing.NewHash(state.ClaimsSinceCommit)
+}
+
+// recordClaimsStart starts state's claims window at a turn start: the newest
+// shadow snapshot for its base commit and worktree, or the base commit when
+// there is none yet.
+func recordClaimsStart(repo *git.Repository, state *SessionState) {
+	start := state.BaseCommit
+	shadow := plumbing.NewBranchReferenceName(checkpoint.ShadowBranchNameForCommit(state.BaseCommit, state.WorktreeID))
+	if ref, err := repo.Reference(shadow, true); err == nil {
+		start = ref.Hash().String()
+	}
+	state.ClaimsSinceCommit = start
+	state.ClaimsSinceBaseCommit = state.BaseCommit
 }
 
 // otherSessionsFiles returns the files other live sessions in self's worktree

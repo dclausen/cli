@@ -68,7 +68,7 @@ type WriteEphemeralResult struct {
 	Skipped bool
 
 	// ChangedFiles are the worktree files whose content differs from the
-	// session's own previous snapshot (WriteEphemeralOptions.ClaimsSince), or
+	// start of the session's window (WriteEphemeralOptions.ClaimsSince), or
 	// else from the previous snapshot on the shadow branch (from the base
 	// tree when there was none), as repo-relative paths. Session metadata is
 	// excluded.
@@ -125,9 +125,10 @@ type WriteEphemeralOptions struct {
 	// that turns which changed nothing write nothing.
 	SkipWhenUnchanged bool
 
-	// ClaimsSince is the session's own previous snapshot commit. ChangedFiles
-	// are measured from it when set and readable, rather than from the
-	// shared branch tip, which may be another session's snapshot.
+	// ClaimsSince is the commit the session's window started at (see
+	// session.State.ClaimsSinceCommit). ChangedFiles are measured from it when
+	// set and readable, rather than from the shared branch tip, which may be
+	// another session's snapshot.
 	ClaimsSince plumbing.Hash
 }
 

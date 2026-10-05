@@ -4071,3 +4071,50 @@ func TestSaveStep_SnapshotClaimsAreMeasuredFromTheSessionsOwnSnapshot(t *testing
 	step("a")
 	assert.Contains(t, filesOf("a"), "foo.go", "A wrote foo.go after its own previous snapshot, so A must claim it")
 }
+
+// TestSaveStep_TurnTakingSessionsClaimOnlyTheirOwnFiles pins that two
+// sessions taking turns in one worktree (never at the same time) do not claim
+// each other's files. A session measures its claims from the newest shadow
+// snapshot when its turn started, or its own later snapshot: what another
+// session wrote and snapshotted while this one was idle is not in its window.
+func TestSaveStep_TurnTakingSessionsClaimOnlyTheirOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "README.md", "# repo\n")
+	testutil.GitAdd(t, dir, "README.md")
+	testutil.GitCommit(t, dir, "initial")
+	t.Chdir(dir)
+
+	s := &ManualCommitStrategy{}
+	turn := func(id, file, content string) {
+		t.Helper()
+		require.NoError(t, s.InitializeSession(context.Background(), id, agent.AgentTypeClaudeCode, "", "go", ""))
+		metadataDir := ".entire/metadata/" + id
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, metadataDir), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, metadataDir, paths.TranscriptFileName), []byte(`{"type":"human","message":{"content":"go"}}`+"\n"), 0o644))
+		testutil.WriteFile(t, dir, file, content)
+		require.NoError(t, s.SaveStep(context.Background(), StepContext{
+			SessionID: id, MetadataDir: metadataDir, CommitMessage: "Checkpoint",
+			AuthorName: "Test", AuthorEmail: "test@test.com",
+		}))
+		require.NoError(t, MutateSessionState(context.Background(), id, func(state *SessionState) error {
+			state.Phase = session.PhaseIdle // the turn ended
+			return nil
+		}))
+	}
+	filesOf := func(id string) []string {
+		t.Helper()
+		state, err := s.loadSessionState(context.Background(), id)
+		require.NoError(t, err)
+		return state.FilesTouched
+	}
+
+	turn("b", "b.txt", "hello from B\n")
+	turn("a", "a.txt", "hello from A\n")
+	turn("b", "b.txt", "hello from B\nsecond\n")
+	turn("a", "a.txt", "hello from A\nsecond\n")
+	turn("b", "b.txt", "hello from B\nsecond\nthird\n")
+
+	assert.Equal(t, []string{"b.txt"}, filesOf("b"))
+	assert.Equal(t, []string{"a.txt"}, filesOf("a"))
+}
