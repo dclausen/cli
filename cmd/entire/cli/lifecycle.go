@@ -1337,6 +1337,61 @@ func finalizeCodexObservedAtSessionEnd(ctx context.Context, sessionID string) {
 	}
 }
 
+// refreshCodexInventoriesBeforeCondense reconciles the Codex child ledgers of
+// the sessions PostCommit is about to condense (registered with
+// strategy.SetBeforeCondense), so their child task records are stored
+// completed, with files and tokens. Codex's subagent-stop is provisional, and
+// otherwise only the parent's turn end or session end reads the child
+// rollouts: a parent that waits for a child and commits before its own turn
+// ends would store the child's record as still in flight. It reports whether
+// it refreshed anything.
+func refreshCodexInventoriesBeforeCondense(ctx context.Context, sessions []*strategy.SessionState) bool {
+	candidates := codexRefreshCandidates(sessions)
+	if len(candidates) == 0 {
+		return false
+	}
+	ag, err := agent.GetByAgentType(agent.AgentTypeCodex)
+	if err != nil {
+		logging.Debug(ctx, "codex inventory refresh skipped: codex agent unavailable",
+			slog.String("error", err.Error()))
+		return false
+	}
+	for _, state := range candidates {
+		// The refresh only stores child evidence and subagent counters, so the
+		// parent's offset does not matter. Child completion needs only the
+		// child rollouts, so an unreadable parent still refreshes, as session
+		// end does with no parent at all.
+		var parent []byte
+		if state.TranscriptPath != "" {
+			if parent, err = ag.ReadTranscript(state.TranscriptPath); err != nil {
+				logging.Debug(ctx, "codex inventory refresh: parent transcript unreadable",
+					slog.String("session_id", state.SessionID),
+					slog.String("error", err.Error()))
+				parent = nil
+			}
+		}
+		refreshCodexInventory(ctx, ag, state.SessionID, parent, 0)
+	}
+	return true
+}
+
+// codexRefreshCandidates returns the Codex sessions with in-flight task
+// records that have not ended: the only ones a refresh can change. (Session
+// end already ran it for ended ones.)
+func codexRefreshCandidates(sessions []*strategy.SessionState) []*strategy.SessionState {
+	var candidates []*strategy.SessionState
+	for _, state := range sessions {
+		if state == nil || state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
+			continue
+		}
+		if state.Phase == session.PhaseEnded || state.EndedAt != nil {
+			continue
+		}
+		candidates = append(candidates, state)
+	}
+	return candidates
+}
+
 // refreshCodexInventory snapshots the durable child ledger, performs the
 // potentially slow filesystem analysis outside its lock, then applies only
 // path enrichment and terminal evidence if no new child observation raced it.
@@ -1907,6 +1962,28 @@ func subagentTranscriptAndFiles(
 	return transcriptPath, mergeUnique(modifiedFiles, files), nil
 }
 
+// subagentTokenUsage computes a subagent's own token usage from its
+// transcript, for agents whose stop payload carries none (Claude Code). nil
+// when there is no transcript or the agent cannot compute usage from one.
+func subagentTokenUsage(ctx context.Context, ag agent.Agent, event *agent.Event, transcriptPath string) *agent.TokenUsage {
+	if transcriptPath == "" {
+		return nil
+	}
+	data, err := ag.ReadTranscript(transcriptPath)
+	if err != nil {
+		logging.Warn(ctx, "failed to read subagent transcript for token usage",
+			slog.String("session_id", event.SessionID),
+			slog.String("tool_use_id", event.ToolUseID),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	if len(data) == 0 {
+		// An empty transcript records no usage; exact zero would claim it.
+		return nil
+	}
+	return agent.CalculateTokenUsage(ctx, ag, data, 0, "")
+}
+
 // completeSubagentTaskRecord detects a completed subagent invocation's changes
 // and completes its durable task record (#2058): files, labels, tokens, and the
 // declared transcript path land on the record; condensation later materializes
@@ -2023,6 +2100,10 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 	}
 
 	files := mergeUnique(mergeUnique(relModifiedFiles, relNewFiles), relDeletedFiles)
+	tokenUsage := event.TokenUsage
+	if tokenUsage == nil {
+		tokenUsage = subagentTokenUsage(logCtx, ag, event, subagentTranscriptPath)
+	}
 	rec := session.TaskRecord{
 		ToolUseID:              event.ToolUseID,
 		AgentID:                event.SubagentID,
@@ -2032,7 +2113,7 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		DeclaredTranscriptPath: subagentTranscriptPath,
 		TranscriptUnavailable:  event.SubagentTranscriptUnavailable,
 		Files:                  files,
-		TokenUsage:             event.TokenUsage,
+		TokenUsage:             tokenUsage,
 	}
 	if opts.analyzerFilesOnly {
 		// A background subagent can finish after its parent's turn ended: no

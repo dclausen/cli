@@ -1083,6 +1083,20 @@ func (h *postCommitActionHandler) HandleWarnStaleSession(_ *session.State) error
 // During rebase/cherry-pick/revert operations, phase transitions are skipped entirely.
 //
 
+// beforeCondense, when set, runs in PostCommit for the sessions about to be
+// condensed into the commit's checkpoint, before any of them is. It runs
+// outside every session lock and may change their state; it reports whether
+// it did, and PostCommit then reads the sessions again. See SetBeforeCondense.
+var beforeCondense func(ctx context.Context, sessions []*SessionState) bool
+
+// SetBeforeCondense registers the hook PostCommit runs for the sessions it is
+// about to condense (nil clears it). The cli registers the Codex child-ledger
+// refresh here, so child task records are reconciled in exactly the set
+// PostCommit stores.
+func SetBeforeCondense(fn func(ctx context.Context, sessions []*SessionState) bool) {
+	beforeCondense = fn
+}
+
 func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error {
 	logCtx := logging.WithComponent(ctx, "checkpoint")
 
@@ -1146,6 +1160,13 @@ func (s *ManualCommitStrategy) PostCommit(ctx context.Context) error {
 			slog.String("checkpoint_id", checkpointID.String()),
 		)
 		return nil
+	}
+	if beforeCondense != nil && beforeCondense(ctx, sessions) {
+		// The hook changed session state (it runs outside every session
+		// lock); read the set again so commit claims see the change.
+		if reloaded, reloadErr := s.findSessionsForCommitLinking(ctx, worktreePath); reloadErr == nil && len(reloaded) > 0 {
+			sessions = reloaded
+		}
 	}
 
 	// Build transition context
