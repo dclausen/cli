@@ -1028,3 +1028,37 @@ func TestSubagentCheckpoints_ChildFinishesMidTurn_ParentCommitsSameTurn(t *testi
 		})
 	}
 }
+
+// TestSnapshot_MidTurnCommitWithHumanDirt_LeavesNoShadowBranch pins the E2E
+// TestDirtyWorkingTree flow: the human leaves an untracked file before the
+// prompt, the agent writes and commits its own file mid-turn, and the turn
+// then ends with nothing new detected. The turn-end snapshot must not
+// recreate a shadow branch for the human's file alone: it holds no agent work.
+func TestSnapshot_MidTurnCommitWithHumanDirt_LeavesNoShadowBranch(t *testing.T) {
+	t.Parallel()
+	const (
+		humanFile    = "human/notes.md"
+		agentFile    = "docs/red.md"
+		agentContent = "# Red\n\nRed is the colour of fire and of warning lights.\n"
+	)
+	env := NewFeatureBranchEnv(t)
+	sess := env.NewSession()
+	env.WriteFile(humanFile, "# Human notes\n")
+	sess.CreateTranscript("create docs/red.md and commit it", []FileChange{{Path: agentFile, Content: agentContent}})
+
+	if err := env.SimulateUserPromptSubmitWithTranscriptPath(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateUserPromptSubmit failed: %v", err)
+	}
+	env.WriteFile(agentFile, agentContent)
+	env.GitCommitWithShadowHooksAsAgent("Add red", agentFile)
+	if checkpointID := env.GetCheckpointIDFromCommitMessage(env.GetHeadHash()); checkpointID == "" {
+		t.Fatalf("the agent's mid-turn commit should carry an Entire-Checkpoint trailer")
+	}
+	if err := env.SimulateStop(sess.ID, sess.TranscriptPath); err != nil {
+		t.Fatalf("SimulateStop failed: %v", err)
+	}
+
+	if leftover := shadowBranches(env); len(leftover) != 0 {
+		t.Errorf("no shadow branch should remain after the commit and turn end, found %v", leftover)
+	}
+}

@@ -84,6 +84,14 @@ func (s *ManualCommitStrategy) SaveStep(ctx context.Context, step StepContext) e
 			promptAttr = PromptAttribution{CheckpointNumber: state.StepCount + 1}
 			humanDiffUnknown = state.StepCount == 0
 		}
+		// A fallback snapshot with no human diff for its window could claim
+		// nothing as agent work; writing it would only recreate a shadow
+		// branch for human changes, such as dirt left after the agent
+		// committed its own work mid-turn.
+		if step.SkipWhenUnchanged && humanDiffUnknown {
+			nothingChanged = true
+			return ErrMutationSkip
+		}
 
 		attrLogCtx := logging.WithComponent(ctx, "attribution")
 		logging.Debug(attrLogCtx, "prompt attribution at checkpoint save",
