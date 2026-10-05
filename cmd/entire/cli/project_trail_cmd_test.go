@@ -36,10 +36,14 @@ func (f *fakeProjectTrailCore) ResolveProject(_ context.Context, params coreapi.
 	f.resolveCalls++
 	resolved := struct {
 		Project *struct {
-			ID, Region, PrimaryProcessingCell, APIURL string
+			ID                    string `json:"id"`
+			Region                string `json:"region"`
+			PrimaryProcessingCell string `json:"primaryProcessingCell"`
+			APIURL                string `json:"apiUrl"`
 		} `json:"project"`
 		Reference struct {
-			Host, Project string
+			Host    string `json:"host"`
+			Project string `json:"project"`
 		} `json:"reference"`
 	}{}
 	body := f.resolutionJSON
@@ -209,7 +213,7 @@ func TestProjectTrailCreateWithoutRepo(t *testing.T) {
 	require.Contains(t, out, projectTrailTestID)
 }
 
-// Numeric selectors remain project-scoped even though user-facing list is global.
+// Numeric selectors use the same required-project collection as trail list.
 func TestProjectTrailNumberSelector(t *testing.T) {
 	pages := 0
 	setupProjectTrailTest(t, func(w http.ResponseWriter, r *http.Request) {
@@ -218,8 +222,9 @@ func TestProjectTrailNumberSelector(t *testing.T) {
 			return
 		}
 		pages++
-		assert.Equal(t, "/api/v1/gh/acme/trails", r.URL.Path)
-		assert.Empty(t, r.URL.Query().Get("status"), "project API has no status filter")
+		assert.Equal(t, "/api/v1/trails", r.URL.Path)
+		assert.Equal(t, projectTrailTestProject, r.URL.Query().Get("projectId"))
+		assert.Empty(t, r.URL.Query().Get("status"), "lookup must include all lifecycle states")
 		switch r.URL.Query().Get("pageToken") {
 		case "":
 			next := "page-two"

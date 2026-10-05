@@ -186,10 +186,14 @@ func newTrailResumeIntegrationAPIServer(t *testing.T, trail api.TrailResource) *
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/resolve/gh/entireio":
 			writeTrailResumeIntegrationJSON(t, w, map[string]any{
-				"project":   map[string]string{"id": projectID, "region": "us", "primaryProcessingCell": trailResumeIntegrationClusterSlug, "apiUrl": serverURLWithPath(r, "")},
+				"project": map[string]string{
+					"id": projectID, "name": "entireio", "region": "us", "ownerId": projectID,
+					"ownerType": "org", "createdAt": "2026-09-01T00:00:00Z",
+					"primaryProcessingCell": trailResumeIntegrationClusterSlug, "apiUrl": serverURLWithPath(r, ""),
+				},
 				"reference": map[string]string{"host": "gh", "project": "entireio"},
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/gh/entireio/trails":
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/trails" && r.URL.Query().Get("projectId") == projectID:
 			writeTrailResumeIntegrationJSON(t, w, api.ProjectTrailListResponse{Items: []api.ProjectTrail{parent}})
 		case r.Method == http.MethodGet && r.URL.Path == parentPath:
 			writeTrailResumeIntegrationJSON(t, w, parent)

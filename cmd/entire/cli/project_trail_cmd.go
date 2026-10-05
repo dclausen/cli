@@ -82,8 +82,8 @@ func newProjectTrailListCmd() *cobra.Command {
 	var status, cursor string
 	var pageSize int
 	cmd := &cobra.Command{
-		Use: "list", Short: "List trails across projects and repositories",
-		Long: "List accessible trails across available cells, newest update first, without requiring a checkout. --project and --repo are explicit filters; neither defaults to the current repository for list. --status filters on the server before pagination. Use --page-token with the same filters to continue. Omitting --status includes all lifecycle states.",
+		Use: "list", Short: "List trails in a project",
+		Long: "List trails in one explicitly selected --project, newest update first, without requiring a checkout. --project is required even inside a clone; --repo only filters within that project. Requests go directly to the project's assigned cell. --status filters on the server before pagination. Use --page-token with the same project and filters to continue. Omitting --status includes all lifecycle states.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if status != "" && !validProjectTrailStatus(status) {
@@ -92,7 +92,7 @@ func newProjectTrailListCmd() *cobra.Command {
 			if pageSize < 1 || pageSize > trailListServerMaxLimit {
 				return errors.New("--limit must be between 1 and 100")
 			}
-			page, err := listGlobalTrails(cmd, status, pageSize, cursor)
+			page, err := listProjectTrails(cmd, status, pageSize, cursor)
 			if err != nil {
 				return err
 			}
@@ -101,7 +101,7 @@ func newProjectTrailListCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), page)
 			}
 			if err := printTable(cmd.OutOrStdout(), []string{colHeaderProject, "NUMBER", "ID", colHeaderStatus, colHeaderTitle}, items, func(t api.ProjectTrail) []string {
-				project := t.Project.Reference.Forge + "/" + t.Project.Reference.Project
+				project := projectTrailProjectFlag(cmd)
 				return []string{tuiutil.SanitizeTerminalLabel(project), strconv.Itoa(t.Number), t.ID, tuiutil.SanitizeTerminalLabel(t.Status), tuiutil.SanitizeTerminalLabel(t.Title)}
 			}); err != nil {
 				return err

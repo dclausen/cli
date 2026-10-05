@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -242,7 +241,7 @@ func (t *projectTrailTarget) resolveSelector(ctx context.Context, selector strin
 	pageToken := ""
 	seen := map[string]bool{}
 	for range trailFindMaxPages {
-		page, err := t.list(ctx, trailListServerMaxLimit, pageToken)
+		page, err := t.list(ctx, trailListServerMaxLimit, pageToken, "", "")
 		if err != nil {
 			return nil, err
 		}
@@ -333,22 +332,4 @@ func (t *projectTrailTarget) validateResponse(out api.ProjectTrail) error {
 		return errors.New("project trail response identity does not match the request")
 	}
 	return nil
-}
-
-func (t *projectTrailTarget) list(ctx context.Context, size int, cursor string) (api.ProjectTrailListResponse, error) {
-	var out api.ProjectTrailListResponse
-	q := url.Values{"pageSize": {strconv.Itoa(size)}}
-	if cursor != "" {
-		q.Set("pageToken", cursor)
-	}
-	_, err := t.Client.ProjectTrailRequest(ctx, http.MethodGet, t.BasePath+"?"+q.Encode(), nil, nil, &out)
-	if err != nil {
-		return out, fmt.Errorf("list project trails: %w", err)
-	}
-	for _, item := range out.Items {
-		if item.ProjectID != t.ProjectID || !looksLikeULID(item.ID) {
-			return out, errors.New("project trail list returned an invalid identity")
-		}
-	}
-	return out, nil
 }

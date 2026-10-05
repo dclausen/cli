@@ -33,7 +33,7 @@ env token has none of, so it stays on the active context.
 The data plane (entire-api) is deployed per jurisdiction; a repo placement
 lives in exactly one cell, user `/me/*` activity is consolidated in the
 caller's home cell, and no server-side cross-cell aggregator exists. The CLI
-therefore has exactly three routing shapes, mirroring the entire.io BFF:
+uses the following routing shapes, mirroring the entire.io BFF:
 
 - **Repo-scoped → one cell**: `resolveRepoCellTarget` (`cell_target.go`) maps
   a repo (ULID or owner/repo) to the cell hosting it — via `GetRepo`'s
@@ -51,6 +51,13 @@ therefore has exactly three routing shapes, mirroring the entire.io BFF:
   used by cross-repo checkpoint reads (`explain --repo`, `explain_repo.go`) and
   by `experts --repo owner/repo`, which sends that placement id to entire-api
   instead of re-deriving it from a data-plane repo listing.
+- **Project-scoped trails → the assigned project cell**: `trail list` requires
+  an explicit `--project gh/<owner>|et/<project>`, resolves it through Core, and
+  sends one `GET /api/v1/trails?projectId=<ID>` to its assigned API URL.
+  `--repo` is only an optional within-project filter, never an alternative
+  routing scope. Numeric trail lookups use the same collection. No fleet or
+  affiliation enumeration, cross-cell merge, removed project-collection GET,
+  or unscoped fallback is allowed. Pagination passes the server token through.
 - **User-scoped `/me` → home cell, never fan out**:
   `auth.NewEntireAPICellClient(ctx, insecure, nil)` routes by the
   `home_jurisdiction` JWT claim; activity/recap use it with a data-API

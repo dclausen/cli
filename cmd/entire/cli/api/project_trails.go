@@ -28,27 +28,26 @@ type TrailParentReference struct {
 // Changes is absent from list responses. A detail is potentially access-filtered;
 // neither its changes nor its repoIds are an authoritative complete inventory.
 type ProjectTrail struct {
-	Project            *GlobalTrailProject `json:"project,omitempty"`
-	Order              *GlobalTrailOrder   `json:"order,omitempty"`
-	ContinuationToken  string              `json:"continuationToken,omitempty"`
-	ID                 string              `json:"id"`
-	ProjectID          string              `json:"projectId"`
-	Number             int                 `json:"number"`
-	Title              string              `json:"title"`
-	Body               string              `json:"body"`
-	Status             string              `json:"status"`
-	Metadata           map[string]any      `json:"metadata"`
-	Type               string              `json:"type"`
-	Priority           string              `json:"priority"`
-	Assignees          []string            `json:"assignees"`
-	AssigneeAccountIDs []*string           `json:"assigneeAccountIds"`
-	RepositoryIDs      []string            `json:"repoIds"`
-	AuthorAccountID    string              `json:"authorAccountId"`
-	CreatedAt          time.Time           `json:"createdAt"`
-	UpdatedAt          time.Time           `json:"updatedAt"`
-	ClosedAt           *time.Time          `json:"closedAt"`
-	Changes            []ChangeSummary     `json:"changes,omitempty"`
-	IsPossiblyPartial  bool                `json:"isPossiblyPartial,omitempty"`
+	Project            *TrailProject   `json:"project,omitempty"`
+	GroupKey           string          `json:"groupKey,omitempty"`
+	ID                 string          `json:"id"`
+	ProjectID          string          `json:"projectId"`
+	Number             int             `json:"number"`
+	Title              string          `json:"title"`
+	Body               string          `json:"body"`
+	Status             string          `json:"status"`
+	Metadata           map[string]any  `json:"metadata"`
+	Type               string          `json:"type"`
+	Priority           string          `json:"priority"`
+	Assignees          []string        `json:"assignees"`
+	AssigneeAccountIDs []*string       `json:"assigneeAccountIds"`
+	RepositoryIDs      []string        `json:"repoIds"`
+	AuthorAccountID    string          `json:"authorAccountId"`
+	CreatedAt          time.Time       `json:"createdAt"`
+	UpdatedAt          time.Time       `json:"updatedAt"`
+	ClosedAt           *time.Time      `json:"closedAt"`
+	Changes            []ChangeSummary `json:"changes,omitempty"`
+	IsPossiblyPartial  bool            `json:"isPossiblyPartial,omitempty"`
 }
 
 type ChangeSummary struct {
@@ -64,8 +63,9 @@ type ChangeSummary struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
-// GlobalTrailProject identifies otherwise ambiguous project-local numbers.
-type GlobalTrailProject struct {
+// TrailProject is project navigation returned by detail reads. List items
+// need not carry it: the collection is already addressed by projectId.
+type TrailProject struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Provider     string `json:"provider"`
@@ -79,26 +79,29 @@ type GlobalTrailProject struct {
 	} `json:"capabilities"`
 }
 
-// GlobalTrailOrder is the server's canonical cross-cell comparator. In
-// particular, UpdatedAt retains precision lost in the display timestamp.
-type GlobalTrailOrder struct {
-	GroupRank int    `json:"groupRank"`
-	GroupKey  string `json:"groupKey"`
-	SortRank  int    `json:"sortRank"`
-	SortValue string `json:"sortValue"`
-	UpdatedAt string `json:"updatedAt"`
-	TrailID   string `json:"trailId"`
+type ProjectTrailGroupTotal struct {
+	Rank       int    `json:"rank"`
+	Key        string `json:"key"`
+	Label      string `json:"label"`
+	TotalCount int    `json:"totalCount"`
 }
 
-type GlobalTrailListResponse struct {
-	ProjectTrailListResponse
+type ProjectTrailPageGroup struct {
+	ProjectTrailGroupTotal
 
-	Jurisdiction string `json:"jurisdiction"`
+	ItemCount int `json:"itemCount"`
 }
 
+// ProjectTrailListResponse is the single-project GET /api/v1/trails response.
+// Preserve server counts and the opaque project/filter-bound continuation token.
 type ProjectTrailListResponse struct {
-	Items         []ProjectTrail `json:"items"`
-	NextPageToken *string        `json:"nextPageToken"`
+	Items         []ProjectTrail           `json:"items"`
+	NextPageToken *string                  `json:"nextPageToken"`
+	Groups        []ProjectTrailPageGroup  `json:"groups,omitempty"`
+	GroupTotals   []ProjectTrailGroupTotal `json:"groupTotals,omitempty"`
+	GroupBy       string                   `json:"groupBy,omitempty"`
+	Jurisdiction  string                   `json:"jurisdiction,omitempty"`
+	Capabilities  map[string]bool          `json:"capabilities,omitempty"`
 }
 
 type ProjectTrailCreateRequest struct {

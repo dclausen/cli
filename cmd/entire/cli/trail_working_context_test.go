@@ -61,7 +61,8 @@ func serveWorkingProjectRead(t *testing.T, w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	switch r.URL.Path {
-	case "/api/v1/gh/acme/trails":
+	case "/api/v1/trails":
+		assert.Equal(t, projectTrailTestProject, r.URL.Query().Get("projectId"))
 		if err := json.NewEncoder(w).Encode(api.ProjectTrailListResponse{Items: []api.ProjectTrail{workingProjectTestResource()}}); err != nil {
 			t.Errorf("encode project list: %v", err)
 		}

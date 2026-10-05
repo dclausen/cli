@@ -7,12 +7,11 @@ remain separate, but there is no `trail change` subgroup or change selector.
 ## Intent
 
 ```sh
-# Global listing works outside a clone; origin never implicitly filters it.
-entire trail list --json
-entire trail list --status open --limit 50
-# Explicit project and repository filters use the same global endpoint.
+# Listing requires one explicit project, inside or outside a clone.
 entire trail list --project gh/entireio --json
-entire trail list --repo gh/entirehq/entire.io
+entire trail list --project gh/entireio --status open --limit 50
+# Repository scope is only a filter inside that project.
+entire trail list --project gh/entirehq --repo gh/entirehq/entire.io
 entire trail list --project et/widgets --limit 50 --page-token '<nextPageToken>'
 
 # No selector follows the current branch's parent.
@@ -36,30 +35,29 @@ numbers or branch names. Use `--branch` for a branch. Project status is
 deletion command. Show displays intent plus “Repositories and branches,” not a
 second class of user-visible entities.
 
-List uses `GET /api/v1/trails` and returns one globally ordered page: JSON is
-`{items, nextPageToken}`. Each item retains the global API's `project` reference,
-ordering metadata, and continuation token. Text includes the project namespace
-because numbers are project-local. `--status` filters server-side before
-pagination; `--limit` bounds the combined page, not each cell's displayed results.
+List uses `GET /api/v1/trails?projectId=<ID>`. `--project` is mandatory,
+even inside a checkout; it is addressing scope, not a global-feed filter.
+Core resolves the explicit `gh/<owner>` or `et/<project>` reference and its
+assigned API URL. One invocation makes one collection request to that cell,
+including when it is hidden from the cluster catalog. There is no fleet or
+project enumeration, cross-cell merge, or fallback on failed resolution/reads.
 
-Without filters, listing queries every distinct API origin in Core's available
-cluster catalog, including non-default cells. `--project` routes directly to
-Core's assigned API URL and sends `projectId`; `--repo` resolves the named
-repository's processing placement and sends `repoId`. A repo-only filter does
-not require a project catalog lookup. With both flags, the explicit project's
-route wins and the API enforces the intersection. A checkout is never inspected
-unless needed by another command. Hidden cells absent from the public catalog
-can still be queried with explicit project targeting.
+`--repo` resolves a repository ID only as an optional filter inside the selected
+project. The server enforces repository ownership/access; the repository's cell
+never replaces the project's route. A repo-only invocation fails before I/O.
+`--status` filters server-side before pagination; `--limit` is the page size.
+JSON preserves `items`, `nextPageToken`, groups, exact group totals, jurisdiction,
+and collection capabilities. Text identifies the selected project without
+requiring a per-item project object.
 
-Cross-cell pagination uses an opaque CLI cursor bound to the filters and
-resolved cell set. It advances only through consumed rows, using each row's
-server continuation token and full-precision ordering; buffered/unconsumed rows
-are refetched, not skipped. Repeat the same filters with `--page-token`; changing
-`--limit` is allowed. Cell failures abort the whole page without returning a
-misleading partial list or advancing a cursor. This is not a snapshot: concurrent
-updates have the upstream API's normal cursor semantics. Numeric selectors for
-show/update still resolve within a project; creation and other writes retain
-the project-scoped routes.
+Pagination forwards the server's project/filter-bound `nextPageToken` unchanged.
+Repeat the same project and filters with `--page-token`; no CLI composite cursor
+or per-item ordering/continuation metadata remains. Failed reads return an error,
+not an empty or partial success. Numeric selector lookups also use this scoped
+`/trails` collection and follow its cursor across all lifecycle states. The
+removed `GET /{host}/{project}/trails` is never retried or used as a fallback.
+Detail, create POST, update PATCH, Changes, and discussion routes remain
+project-scoped and unchanged.
 
 Update combines body and metadata in one conditional PATCH. `--assignee` replaces the list,
 `--assignee=` clears it, and `--add-assignee`/`--remove-assignee` modify the read

@@ -38,7 +38,7 @@ const agentHelpOverview = `Entire's CLI is the source of truth for its own usage
 subcommands — read them from this command. You are already inside the repo:
 entire auto-detects it from the git origin remote, so never ask the user for the
 repo name. For repository-scoped commands, pass --repo only to target a DIFFERENT
-repo. Global lists stay unfiltered unless you explicitly select a scope.`
+repo. Trail listing requires an explicit --project; --repo only filters within it.`
 
 // agentHelpAudience answers the question an agent actually has when it reads this
 // listing: may I run this without being asked? A flat alphabetical dump of every
@@ -689,7 +689,7 @@ func renderAgentHelpCommand(cmd *cobra.Command, repoLine string, trailsEnabled b
 	}
 	b.WriteString("\n")
 	if agentHelpPath(cmd) == "trail list" {
-		b.WriteString("Scope: global; only explicit --project/--repo filters narrow it, even inside a clone.\n")
+		b.WriteString("Scope: one project; --project is required, even inside a clone. --repo only filters within that project.\n")
 	} else {
 		b.WriteString(agentHelpRepoBlock(repoLine))
 	}

@@ -47,7 +47,7 @@ func listWorkingTrailApprovals(cmd *cobra.Command, selector, branch string, json
 		return fmt.Errorf("decode trail approvals: %w", err)
 	}
 	if jsonOut {
-		return printJSON(cmd.OutOrStdout(), out)
+		return printJSON(cmd.OutOrStdout(), toTrailApprovalsResponseJSON(out))
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Approvals for %s\n", selected.description())
 	renderTrailApprovals(cmd.OutOrStdout(), out.Approvals)

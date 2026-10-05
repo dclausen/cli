@@ -75,9 +75,9 @@ func newTrailCmd() *cobra.Command {
 	// backend). Commands that mutate the local clone (create, checkout, finding
 	// apply) reject it via ensureNoTrailRepoOverride.
 	cmd.PersistentFlags().StringVar(&repoOverride, "repo", "",
-		"Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; defaults to origin except for global list")
+		"Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project")
 
-	cmd.PersistentFlags().String("project", "", "Project as gh/<owner> or et/<project>; defaults to the repository's namespace except for global list")
+	cmd.PersistentFlags().String("project", "", "Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace")
 
 	cmd.AddCommand(newProjectTrailShowCmd())
 	cmd.AddCommand(newProjectTrailListCmd())
