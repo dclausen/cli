@@ -1014,6 +1014,35 @@ func TestCheckHookConfig_Outdated_MissingSubagentStop(t *testing.T) {
 	}
 }
 
+// TestCheckHookConfig_Outdated_MissingStopFailure verifies that a config
+// written before Entire installed StopFailure reads as outdated, so a turn
+// ending on an API error does not leave the session ACTIVE unnoticed.
+func TestCheckHookConfig_Outdated_MissingStopFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	stop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code stop")
+	subagentStop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code subagent-stop")
+	pre := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code pre-task")
+	post := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-task")
+	todo := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-todo")
+	writeSettingsFile(t, tempDir, fmt.Sprintf(`{
+  "hooks": {
+    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
+    "SubagentStop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
+    "PreToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": %q}]}],
+    "PostToolUse": [
+      {"matcher": "Agent", "hooks": [{"type": "command", "command": %q}]},
+      {"matcher": "TaskCreate|TaskUpdate", "hooks": [{"type": "command", "command": %q}]}
+    ]
+  }
+}`, stop, subagentStop, pre, post, todo))
+
+	if got := CheckHookConfig(context.Background()); got != HooksOutdated {
+		t.Errorf("CheckHookConfig() = %v, want HooksOutdated (missing StopFailure)", got)
+	}
+}
+
 func TestCheckHookConfig_Absent(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Chdir(tempDir)
@@ -1069,6 +1098,7 @@ func TestCheckHookConfig_SupersetMatchersAreCurrent(t *testing.T) {
 	t.Chdir(tempDir)
 
 	stop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code stop")
+	stopFailure := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code stop-failure")
 	subagentStop := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code subagent-stop")
 	pre := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code pre-task")
 	post := agentpkg.WrapProductionSilentHookCommand("entire hooks claude-code post-task")
@@ -1078,6 +1108,7 @@ func TestCheckHookConfig_SupersetMatchersAreCurrent(t *testing.T) {
 	writeSettingsFile(t, tempDir, fmt.Sprintf(`{
   "hooks": {
     "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
+    "StopFailure": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
     "SubagentStop": [{"matcher": "", "hooks": [{"type": "command", "command": %q}]}],
     "PreToolUse": [{"matcher": "Agent|Foo", "hooks": [{"type": "command", "command": %q}]}],
     "PostToolUse": [
@@ -1085,7 +1116,7 @@ func TestCheckHookConfig_SupersetMatchersAreCurrent(t *testing.T) {
       {"matcher": "TaskCreate|TaskUpdate|TaskGet", "hooks": [{"type": "command", "command": %q}]}
     ]
   }
-}`, stop, subagentStop, pre, post, todo))
+}`, stop, stopFailure, subagentStop, pre, post, todo))
 
 	if got := CheckHookConfig(context.Background()); got != HooksCurrent {
 		t.Errorf("CheckHookConfig() = %v, want HooksCurrent (superset matcher)", got)

@@ -137,6 +137,24 @@ func TestParseHookEvent_TurnEnd(t *testing.T) {
 	}
 }
 
+// TestParseHookEvent_StopFailure_EndsTurn verifies that a turn ending on an
+// API error ends the turn like Stop, so the session leaves ACTIVE instead of
+// waiting for the next prompt.
+func TestParseHookEvent_StopFailure_EndsTurn(t *testing.T) {
+	t.Parallel()
+
+	ag := &ClaudeCodeAgent{}
+	input := `{"session_id": "sess-fail", "transcript_path": "/tmp/fail.jsonl", "hook_event_name": "StopFailure", "error": "rate_limit"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameStopFailure, strings.NewReader(input))
+
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	require.Equal(t, agent.TurnEnd, event.Type)
+	require.Equal(t, "sess-fail", event.SessionID)
+	require.Equal(t, "/tmp/fail.jsonl", event.SessionRef)
+}
+
 func TestParseHookEvent_TurnEnd_IncludesModel(t *testing.T) {
 	t.Parallel()
 
@@ -503,6 +521,11 @@ func TestParseHookEvent_AllHookTypes(t *testing.T) {
 			hookName:      HookNameStop,
 			expectedType:  agent.TurnEnd,
 			inputTemplate: `{"session_id": "s3", "transcript_path": "/t"}`,
+		},
+		{
+			hookName:      HookNameStopFailure,
+			expectedType:  agent.TurnEnd,
+			inputTemplate: `{"session_id": "s3f", "transcript_path": "/t"}`,
 		},
 		{
 			hookName:      HookNameSessionEnd,

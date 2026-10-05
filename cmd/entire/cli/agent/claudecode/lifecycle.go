@@ -62,6 +62,7 @@ func (c *ClaudeCodeAgent) HookNames() []string {
 		HookNameSessionStart,
 		HookNameSessionEnd,
 		HookNameStop,
+		HookNameStopFailure,
 		HookNameUserPromptSubmit,
 		HookNamePreTask,
 		HookNamePostTask,
@@ -79,6 +80,12 @@ func (c *ClaudeCodeAgent) ParseHookEvent(ctx context.Context, hookName string, s
 	case HookNameUserPromptSubmit:
 		return c.parseTurnStart(stdin)
 	case HookNameStop:
+		return c.parseSessionInfoEvent(stdin, agent.TurnEnd)
+	case HookNameStopFailure:
+		// StopFailure fires instead of Stop when a turn ends on an API error
+		// (rate limit, overload, auth, max output tokens, ...). The turn is over
+		// and Claude Code waits for the next prompt, so it ends the turn like
+		// Stop; without it the session stays ACTIVE until the next prompt.
 		return c.parseSessionInfoEvent(stdin, agent.TurnEnd)
 	case HookNameSessionEnd:
 		return c.parseSessionInfoEvent(stdin, agent.SessionEnd)
@@ -120,7 +127,7 @@ func (c *ClaudeCodeAgent) CalculateTokenUsage(transcriptData []byte, fromOffset 
 // --- Internal hook parsing functions ---
 
 // parseSessionInfoEvent parses the hooks whose payload is sessionInfoRaw —
-// SessionStart, Stop, and SessionEnd differ only in the resulting event type.
+// SessionStart, Stop, StopFailure, and SessionEnd differ only in the resulting event type.
 func (c *ClaudeCodeAgent) parseSessionInfoEvent(stdin io.Reader, eventType agent.EventType) (*agent.Event, error) {
 	raw, err := agent.ReadAndParseHookInput[sessionInfoRaw](stdin)
 	if err != nil {

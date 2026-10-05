@@ -487,7 +487,7 @@ The framework dispatcher (`DispatchLifecycleEvent` in `lifecycle.go`) handles ea
 |------------|-------------------|------------------|-----------------|---------------|----------------------|-----------------|
 | `SessionStart` | Shows banner, checks concurrent sessions, fires state machine transition | `session-start` | `session-start` | `session-start` | `session-start` | `session-start` |
 | `TurnStart` | Captures pre-prompt state (git status, transcript position), ensures strategy setup, initializes session | `user-prompt-submit` | `before-submit-prompt` | `turn-start` | `user-prompt-submit` | `user-prompt-submitted` |
-| `TurnEnd` | Validates transcript, extracts metadata (prompts, summary, files), detects file changes via git status, saves step + checkpoint, transitions phase to IDLE | `stop` | `stop` | `turn-end` | `stop` | `agent-stop` |
+| `TurnEnd` | Validates transcript, extracts metadata (prompts, summary, files), detects file changes via git status, saves step + checkpoint, transitions phase to IDLE | `stop` + `stop-failure` (StopFailure: the turn ended on an API error) | `stop` | `turn-end` | `stop` | `agent-stop` |
 | `Compaction` | Fires compaction transition (stays ACTIVE), resets transcript offset | *(not used)* | `pre-compact` | `compaction` | `pre-compact` | *(not used)* |
 | `SessionEnd` | Marks session as ENDED in state machine | `session-end` | `session-end` | `session-end` | `session-end` | `session-end` |
 | `SubagentStart` | Captures pre-task state (git status snapshot) | `pre-task` (PreToolUse[Task]) | `subagent-start` | *(not used)* | `pre-tool-use` (config-level `matcher: Task`) | `subagent-start` (observed pass-through; no child identity) |
