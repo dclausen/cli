@@ -107,7 +107,7 @@ func TestReadTaskTranscript_FetchFallback(t *testing.T) {
 			t.Parallel()
 			ag := tt.ag(t.TempDir())
 			state := &SessionState{SessionID: "ses_parent"}
-			raw, path, err := readTaskTranscript(context.Background(), context.Background(), ag, state, tt.record)
+			raw, path, err := readTaskTranscript(context.Background(), context.Background(), ag, state, tt.record, "")
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
