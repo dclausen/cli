@@ -10,7 +10,9 @@ import (
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
+	"github.com/entireio/cli/cmd/entire/cli/proclive"
 	"github.com/entireio/cli/cmd/entire/cli/session"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -163,5 +165,44 @@ func TestCodexSubagent_CommitBeforeParentTurnEnds_CompletesTaskRecord(t *testing
 	}
 	require.NoError(t, json.Unmarshal([]byte(raw), &task))
 	require.NotEmpty(t, task.CompletedAt, "a child whose rollout shows its turn complete must be stored as completed: %s", raw)
+	require.Equal(t, []string{codexScenarioEditedFile}, task.Files, "stored task record must list the child's files: %s", raw)
+}
+
+// TestCodexSubagent_GuestLinkedCommit_CompletesTaskRecord pins that the Codex
+// child refresh before condensation covers every session PostCommit
+// condenses, not only those whose worktree is the committing one. Here the
+// session lives in a sibling worktree and is linked to the commit as a guest,
+// by process ancestry (its recorded owner is an ancestor of the hook), the
+// way a Codex agent committing from another worktree is.
+func TestCodexSubagent_GuestLinkedCommit_CompletesTaskRecord(t *testing.T) {
+	t.Parallel()
+	owner, ok := proclive.IdentityOf(os.Getpid())
+	if !ok {
+		t.Skip("process ancestry is not supported on this platform")
+	}
+	sc := newCodexSubagentScenario(t)
+
+	sibling := filepath.Join(t.TempDir(), "sibling")
+	testutil.RunGit(t, sc.env.RepoDir, "worktree", "add", "-b", "sibling-worktree", sibling)
+	state, err := sc.env.GetSessionState(codexScenarioSessionID)
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	state.WorktreePath = sibling
+	state.Owner = &owner
+	require.NoError(t, sc.env.WriteSessionState(codexScenarioSessionID, state))
+
+	sc.env.GitCommitWithShadowHooksAsAgent("Add red doc", codexScenarioEditedFile)
+	checkpointID := sc.env.TryGetLatestCheckpointID()
+	require.NotEmpty(t, checkpointID, "the guest-linked session must be condensed into the commit's checkpoint")
+
+	raw, ok := sc.env.ReadFileFromBranch(paths.MetadataBranchName,
+		CheckpointTaskFilePath(checkpointID, codexScenarioAgentID, "task.json"))
+	require.True(t, ok, "task.json not materialized under the checkpoint's tasks/ subtree")
+	var task struct {
+		CompletedAt string   `json:"completed_at"`
+		Files       []string `json:"files"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &task))
+	require.NotEmpty(t, task.CompletedAt, "a guest-linked session's finished child must be stored as completed: %s", raw)
 	require.Equal(t, []string{codexScenarioEditedFile}, task.Files, "stored task record must list the child's files: %s", raw)
 }
