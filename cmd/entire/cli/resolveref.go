@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitremote"
 	"github.com/entireio/cli/internal/coreapi"
 )
 
@@ -541,17 +542,30 @@ func noProjectNamedErr(name string) error {
 
 func noRepoNamedErr(name string) error {
 	msg := fmt.Sprintf("no repo named %q in that project (run `entire repo list --project <project>` to see names, or pass a ULID)", name)
-	// The hint is built into the message rather than wrapped around the error:
-	// repository routing classifies a definitive miss through
-	// errNamedRefNotFound, and wrapping would either hide that or duplicate it.
-	if trimmed, had := strings.CutSuffix(name, gitDirSuffix); had && trimmed != "" {
-		msg += fmt.Sprintf("; %q is never part of a repo name, so if you meant %q, drop the suffix", gitDirSuffix, trimmed)
-	}
-	return &namedRefNotFoundError{message: msg}
+	return &namedRefNotFoundError{message: msg + gitSuffixMissHint(name)}
 }
 
+// noRepoAtPathErr carries the same suffix hint as noRepoNamedErr. A bare name
+// with a project given by NAME lands here, not there (see
+// resolveRepoRefResolved), and the server's resolve endpoint matches the name
+// as sent, so `widgets.git --project acme` misses exactly as it does with a
+// project ULID and needs the same explanation.
 func noRepoAtPathErr(project, repoName string) error {
-	return &namedRefNotFoundError{message: fmt.Sprintf("repo /%s/%s/%s not found or not shared with you", nativeCloneForge, project, repoName)}
+	msg := fmt.Sprintf("repo /%s/%s/%s not found or not shared with you", nativeCloneForge, project, repoName)
+	return &namedRefNotFoundError{message: msg + gitSuffixMissHint(repoName)}
+}
+
+// gitSuffixMissHint explains a lookup miss on a name ending in `.git`, or
+// returns "" when the name does not. The hint is built into the message rather
+// than wrapped around the error: repository routing classifies a definitive
+// miss through errNamedRefNotFound, and wrapping would either hide that or
+// duplicate it.
+func gitSuffixMissHint(name string) string {
+	trimmed, had := gitremote.CutGitDirSuffix(name)
+	if !had || trimmed == "" {
+		return ""
+	}
+	return fmt.Sprintf("; %q is never part of a repo name, so if you meant %q, drop the suffix", gitDirSuffix, trimmed)
 }
 
 // resolvedRef is what a delete resolver reports: the ULID to act on, and the
