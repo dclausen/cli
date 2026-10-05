@@ -32,7 +32,6 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/session"
 	"github.com/entireio/cli/cmd/entire/cli/strategy"
-	"github.com/entireio/cli/cmd/entire/cli/trailers"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 	"github.com/entireio/cli/perf"
 )
@@ -1312,57 +1311,26 @@ func finalizeCodexObservedAtSessionEnd(ctx context.Context, sessionID string) {
 	}
 }
 
-// refreshCodexInventory snapshots the durable child ledger, performs the
-// potentially slow filesystem analysis outside its lock, then applies only
-// path enrichment and terminal evidence if no new child observation raced it.
-// It never manufactures an exact-empty result for an unknown/legacy ledger.
-// refreshCodexInventoriesBeforeCommit reconciles every Codex session that
-// still has in-flight task records before post-commit condensation stores
-// them. Codex's subagent-stop is provisional, and otherwise only the parent's
-// turn end or session end reads the child rollouts; a parent that waits for a
-// child and commits before its own turn ends would store the child's record
-// as still in flight, without its files or tokens.
-//
-// Only a commit carrying an Entire-Checkpoint trailer condenses, and the
-// session store is shared across worktrees, so the refresh is limited to
-// trailered commits and to sessions that live in this worktree (or whose
-// worktree is unknown): an unresolved child rollout can cost a bounded
-// fallback scan, which unrelated sessions must not add to every commit.
-func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
-	if !headHasCheckpointTrailer(ctx) {
-		return
+// refreshCodexInventoriesBeforeCondense reconciles the Codex child ledgers of
+// the sessions PostCommit is about to condense (registered with
+// strategy.SetBeforeCondense), so their child task records are stored
+// completed, with files and tokens. Codex's subagent-stop is provisional, and
+// otherwise only the parent's turn end or session end reads the child
+// rollouts: a parent that waits for a child and commits before its own turn
+// ends would store the child's record as still in flight. It reports whether
+// it refreshed anything.
+func refreshCodexInventoriesBeforeCondense(ctx context.Context, sessions []*strategy.SessionState) bool {
+	candidates := codexRefreshCandidates(sessions)
+	if len(candidates) == 0 {
+		return false
 	}
-	worktreeRoot, err := paths.WorktreeRoot(ctx)
+	ag, err := agent.GetByAgentType(agent.AgentTypeCodex)
 	if err != nil {
-		logging.Debug(ctx, "codex inventory refresh skipped: cannot resolve worktree",
+		logging.Debug(ctx, "codex inventory refresh skipped: codex agent unavailable",
 			slog.String("error", err.Error()))
-		return
+		return false
 	}
-	states, err := strategy.ListSessionStates(ctx)
-	if err != nil {
-		logging.Debug(ctx, "codex inventory refresh skipped: cannot list sessions",
-			slog.String("error", err.Error()))
-		return
-	}
-	var ag agent.Agent
-	for _, state := range states {
-		if state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
-			continue
-		}
-		// Session end already ran this refresh.
-		if state.Phase == session.PhaseEnded || state.EndedAt != nil {
-			continue
-		}
-		if state.WorktreePath != "" && filepath.Clean(state.WorktreePath) != filepath.Clean(worktreeRoot) {
-			continue
-		}
-		if ag == nil {
-			if ag, err = agent.GetByAgentType(agent.AgentTypeCodex); err != nil {
-				logging.Debug(ctx, "codex inventory refresh skipped: codex agent unavailable",
-					slog.String("error", err.Error()))
-				return
-			}
-		}
+	for _, state := range candidates {
 		// The refresh only stores child evidence and subagent counters, so the
 		// parent's offset does not matter. Child completion needs only the
 		// child rollouts, so an unreadable parent still refreshes, as session
@@ -1378,28 +1346,30 @@ func refreshCodexInventoriesBeforeCommit(ctx context.Context) {
 		}
 		refreshCodexInventory(ctx, ag, state.SessionID, parent, 0)
 	}
+	return true
 }
 
-// headHasCheckpointTrailer reports whether HEAD's message carries an
-// Entire-Checkpoint trailer. Any failure to read HEAD reports false.
-func headHasCheckpointTrailer(ctx context.Context) bool {
-	repo, err := gitrepo.OpenCurrent(ctx)
-	if err != nil {
-		return false
+// codexRefreshCandidates returns the Codex sessions with in-flight task
+// records that have not ended: the only ones a refresh can change. (Session
+// end already ran it for ended ones.)
+func codexRefreshCandidates(sessions []*strategy.SessionState) []*strategy.SessionState {
+	var candidates []*strategy.SessionState
+	for _, state := range sessions {
+		if state == nil || state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
+			continue
+		}
+		if state.Phase == session.PhaseEnded || state.EndedAt != nil {
+			continue
+		}
+		candidates = append(candidates, state)
 	}
-	defer repo.Close()
-	head, err := repo.Head()
-	if err != nil {
-		return false
-	}
-	commit, err := repo.CommitObject(head.Hash())
-	if err != nil {
-		return false
-	}
-	_, ok := trailers.ParseCheckpoint(commit.Message)
-	return ok
+	return candidates
 }
 
+// refreshCodexInventory snapshots the durable child ledger, performs the
+// potentially slow filesystem analysis outside its lock, then applies only
+// path enrichment and terminal evidence if no new child observation raced it.
+// It never manufactures an exact-empty result for an unknown/legacy ledger.
 func refreshCodexInventory(ctx context.Context, ag agent.Agent, sessionID string, parent []byte, fromOffset int) (*agent.TokenUsage, *uint64) {
 	state, err := strategy.LoadSessionState(ctx, sessionID)
 	if err != nil || state == nil || state.SubagentInventoryComplete == nil {
@@ -1979,6 +1949,10 @@ func subagentTokenUsage(ctx context.Context, ag agent.Agent, event *agent.Event,
 			slog.String("session_id", event.SessionID),
 			slog.String("tool_use_id", event.ToolUseID),
 			slog.String("error", err.Error()))
+		return nil
+	}
+	if len(data) == 0 {
+		// An empty transcript records no usage; exact zero would claim it.
 		return nil
 	}
 	return agent.CalculateTokenUsage(ctx, ag, data, 0, "")

@@ -4531,3 +4531,38 @@ func TestHandleLifecycleSubagentEnd_SubagentStop_RecordsSubagentTokenUsage(t *te
 	assert.Equal(t, 10, rec.TokenUsage.CacheCreationTokens)
 	assert.Equal(t, 2, rec.TokenUsage.APICallCount)
 }
+
+// TestCodexRefreshCandidates pins which of the sessions PostCommit is about to
+// condense get their Codex child ledger refreshed first: Codex sessions with
+// in-flight task records that have not ended. Everything else is skipped, so
+// the refresh costs nothing for commits without such a session.
+func TestCodexRefreshCandidates(t *testing.T) {
+	t.Parallel()
+	live := []session.TaskRecord{{ToolUseID: "child", AgentID: "child", StartedAt: time.Now()}}
+	done := []session.TaskRecord{{ToolUseID: "child", AgentID: "child", StartedAt: time.Now(), CompletedAt: time.Now()}}
+	ended := time.Now()
+	sessions := []*strategy.SessionState{
+		{SessionID: "codex-live", AgentType: agent.AgentTypeCodex, Phase: session.PhaseActive, TaskRecords: live},
+		{SessionID: "codex-idle-live", AgentType: agent.AgentTypeCodex, Phase: session.PhaseIdle, TaskRecords: live},
+		{SessionID: "codex-no-live", AgentType: agent.AgentTypeCodex, Phase: session.PhaseActive, TaskRecords: done},
+		{SessionID: "codex-ended", AgentType: agent.AgentTypeCodex, Phase: session.PhaseEnded, EndedAt: &ended, TaskRecords: live},
+		{SessionID: "claude-live", AgentType: agent.AgentTypeClaudeCode, Phase: session.PhaseActive, TaskRecords: live},
+		nil,
+	}
+	var ids []string
+	for _, st := range codexRefreshCandidates(sessions) {
+		ids = append(ids, st.SessionID)
+	}
+	assert.Equal(t, []string{"codex-live", "codex-idle-live"}, ids)
+}
+
+// TestSubagentTokenUsage_EmptyTranscriptIsUnknown pins that an existing but
+// empty subagent transcript reports no token usage rather than exact zero.
+func TestSubagentTokenUsage_EmptyTranscriptIsUnknown(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "agent-empty.jsonl")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	ag, err := agent.Get(agent.AgentNameClaudeCode)
+	require.NoError(t, err)
+	assert.Nil(t, subagentTokenUsage(context.Background(), ag, &agent.Event{SessionID: "s", ToolUseID: "t"}, path))
+}
