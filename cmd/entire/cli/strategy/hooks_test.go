@@ -1390,7 +1390,7 @@ func envWithPath(path string) []string {
 	return append(env, "PATH="+path)
 }
 
-func TestInstallGitHook_DoesNotOverwriteExistingBackup(t *testing.T) {
+func TestInstallGitHook_KeepsBothBackupAndNewForeignHook(t *testing.T) {
 	_, hooksDir := initHooksTestRepo(t)
 
 	// Create a backup file manually (simulating a previous backup)
@@ -1412,13 +1412,20 @@ func TestInstallGitHook_DoesNotOverwriteExistingBackup(t *testing.T) {
 		t.Fatalf("InstallGitHook() error = %v", err)
 	}
 
-	// Verify the original backup was NOT overwritten
+	// The current hook becomes the backup; the previous one is kept as an older copy.
 	backupData, err := os.ReadFile(backupPath)
 	if err != nil {
 		t.Fatalf("backup should still exist: %v", err)
 	}
-	if string(backupData) != firstBackupContent {
-		t.Errorf("backup content = %q, want original %q", string(backupData), firstBackupContent)
+	if string(backupData) != secondCustomContent {
+		t.Errorf("backup content = %q, want the current hook %q", string(backupData), secondCustomContent)
+	}
+	older, err := filepath.Glob(backupPath + ".*")
+	if err != nil || len(older) != 1 {
+		t.Fatalf("older copies = %v, %v; want one", older, err)
+	}
+	if data, err := os.ReadFile(older[0]); err != nil || string(data) != firstBackupContent {
+		t.Errorf("older copy = %q, %v; want the previous backup", data, err)
 	}
 
 	// Verify our hook was installed with chain call
