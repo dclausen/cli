@@ -491,7 +491,7 @@ the commands are always runnable in every build.
   A trailing `.git` is **never part of a repo name**, on either backend
   (`gitDirSuffix` documents the mechanics). One rule, three mechanics. Every ref
   parser drops it on the way in — `parseNativeCloneRef`, `parseMirrorCloneRef`,
-  `parseTrailRepoShape`, `parseExpertsRepo`, `parseMirrorCloneURL`, and
+  `parseTrailRepoShape`, `parseExpertsRepo`, `parseEntireCloneURL`, and
   `gitremote.splitOwnerRepo` for a remote read back from git config; the one
   deliberate exception is a bare name under `--project`, which is a name and not
   a path, so `resolveRepoRef` looks it up verbatim and names the suffix in its
