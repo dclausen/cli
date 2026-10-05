@@ -1556,12 +1556,15 @@ func TestRemoveGitHook_RestoresBackup(t *testing.T) {
 		t.Fatalf("InstallGitHook() error = %v", err)
 	}
 
-	removed, err := RemoveGitHook(context.Background())
+	res, err := RemoveGitHookDetailed(context.Background())
 	if err != nil {
-		t.Fatalf("RemoveGitHook(context.Background()) error = %v", err)
+		t.Fatalf("RemoveGitHookDetailed() error = %v", err)
 	}
-	if removed == 0 {
-		t.Error("RemoveGitHook(context.Background()) should remove hooks")
+	if res.Removed == 0 {
+		t.Error("RemoveGitHookDetailed() should remove hooks")
+	}
+	if !slices.Equal(res.Restored, []string{"prepare-commit-msg"}) {
+		t.Errorf("Restored = %v, want [prepare-commit-msg]", res.Restored)
 	}
 
 	// Original custom hook should be restored
