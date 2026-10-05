@@ -2271,9 +2271,9 @@ func TestRepoMirrorRemove_ClusterFlag(t *testing.T) {
 }
 
 // TestRepoView_NamesARepoOneWay pins the grammar of `repo view`: a repo is
-// named with its forge, and because the verb serves BOTH, a bare pair is
-// answered with both spellings rather than the one the resolver happens to
-// reach first.
+// named with its forge, so a bare pair is REFUSED — and because the verb
+// serves both forges, the refusal suggests both spellings rather than the one
+// the resolver happens to reach first.
 //
 // Not parallel: swaps the package-level activeCoreClient seam.
 func TestRepoView_NamesARepoOneWay(t *testing.T) {

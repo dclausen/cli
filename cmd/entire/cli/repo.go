@@ -464,9 +464,10 @@ func newRepoViewCmd() *cobra.Command {
 				warnFlagsGitHubViewIgnores(cmd, authoritative)
 				return runRepoMirrorViewByName(cmd, target.owner+"/"+target.repo, clusterHost)
 			}
-			// A repository is named /<forge>/<a>/<b> and no other way. A bare
-			// pair is answered with BOTH spellings, since this verb serves both
-			// forges and suggesting one would name a ref it then refuses.
+			// A repository is named /<forge>/<a>/<b> and no other way, so a
+			// bare `acme/web` is REFUSED — with both spellings suggested, since
+			// this verb serves both forges and naming one would send the reader
+			// to a ref the other half of the time.
 			//
 			// A /gh/ ref is a GitHub upstream: Entire holds no repo record for
 			// it, only the mirrors of it, so it takes the directory lookup
