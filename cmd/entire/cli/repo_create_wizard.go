@@ -87,11 +87,10 @@ type repoCreateState struct {
 	// tests that need no duplicate check.
 	names *repoNameIndex
 
-	// projectNote is shown on the project page. conflict is the name a create
-	// was refused for (409) and the project it was refused in; the name page
-	// says so only while that project is the chosen one.
-	projectNote string
-	conflict    struct{ projectID, name, reason string }
+	// conflict is the name a create was refused for (409) and the project it
+	// was refused in; the name page says so only while that project is the
+	// chosen one.
+	conflict struct{ projectID, name, reason string }
 	// pickedProject is the accessible project select's binding; see
 	// projectGroup.
 	pickedProject string
@@ -102,10 +101,6 @@ type repoCreateState struct {
 	// nav keeps Shift+Tab working on a page that fails validation; nil
 	// outside the paged form.
 	nav *uiform.BackNav
-
-	// flagFormat is --object-format as given, which a declined "advanced"
-	// keeps; answers.objectFormat is only the format page's cursor.
-	flagFormat coreapi.CreateRepoInputBodyObjectFormat
 
 	answers   repoCreateAnswers
 	confirmed bool
@@ -138,46 +133,24 @@ func repoCreateProjects(projects []coreapi.Project) ([]repoProject, int) {
 	return rows, len(projects) - len(rows)
 }
 
-// newRepoCreateState assembles the wizard from the visible projects and what
-// the command line said. A --project naming nothing on offer is an error
-// rather than a silently different starting point.
-func newRepoCreateState(projects []coreapi.Project, req repoCreateRequest, projectRef, defaultName string) (*repoCreateState, error) {
+// newRepoCreateState assembles the wizard from the visible projects. The
+// positional name is the only thing the command line carries in (flags mean
+// the flag form; see newRepoCreateCmd); without it the name starts as
+// defaultName. Everything else starts at the wizard's own defaults: the first
+// project, private, the server's object format.
+func newRepoCreateState(projects []coreapi.Project, name, defaultName string) (*repoCreateState, error) {
 	rows, hidden := repoCreateProjects(projects)
 	if len(rows) == 0 {
 		return nil, errors.New("you have no project you can create repositories in; create one with `entire project create`")
 	}
-	s := &repoCreateState{projects: rows, hiddenProjects: hidden, flagFormat: req.objectFormat}
+	s := &repoCreateState{projects: rows, hiddenProjects: hidden}
 	s.answers = repoCreateAnswers{
 		projectID:    rows[0].id,
-		name:         cmp.Or(req.name, defaultName),
-		visibility:   cmp.Or(req.visibility, repoCreateDefaultVisibility),
-		advanced:     req.objectFormat != "",
-		objectFormat: cmp.Or(req.objectFormat, repoCreateDefaultObjectFormat),
-	}
-	if projectRef != "" {
-		p, ok := s.matchProject(projectRef)
-		if !ok {
-			return nil, fmt.Errorf("--project %q is not a project you can create repositories in", projectRef)
-		}
-		s.answers.projectID = p.id
+		name:         cmp.Or(name, defaultName),
+		visibility:   repoCreateDefaultVisibility,
+		objectFormat: repoCreateDefaultObjectFormat,
 	}
 	return s, nil
-}
-
-// matchProject finds the row a --project value names, mirroring the ref
-// resolvers: an id, else the name exactly, else case-folded. Project names are
-// unique, so at most one row matches.
-func (s *repoCreateState) matchProject(ref string) (repoProject, bool) {
-	for _, match := range []func(repoProject) bool{
-		func(p repoProject) bool { return p.id == ref },
-		func(p repoProject) bool { return p.name == ref },
-		func(p repoProject) bool { return strings.EqualFold(p.name, ref) },
-	} {
-		if i := slices.IndexFunc(s.projects, match); i >= 0 {
-			return s.projects[i], true
-		}
-	}
-	return repoProject{}, false
 }
 
 func (s *repoCreateState) project() repoProject {
@@ -224,12 +197,12 @@ func (s *repoCreateState) validateName(value string) error {
 
 func (s *repoCreateState) request() repoCreateRequest {
 	req := repoCreateRequest{
-		projectID:    s.answers.projectID,
-		projectName:  s.project().name,
-		name:         strings.TrimSpace(s.answers.name),
-		visibility:   s.answers.visibility,
-		objectFormat: s.flagFormat,
+		projectID:   s.answers.projectID,
+		projectName: s.project().name,
+		name:        strings.TrimSpace(s.answers.name),
+		visibility:  s.answers.visibility,
 	}
+	// A declined advanced step leaves the format to the server.
 	if s.answers.advanced {
 		req.objectFormat = s.answers.objectFormat
 	}
@@ -289,7 +262,7 @@ var repoCreatePrompt = runRepoCreateForms
 // --wait-timeout bounds the loading before the form and, separately, the
 // create and readiness wait after it: time spent answering is not the
 // server's to spend.
-func runRepoCreateWizard(cmd *cobra.Command, req repoCreateRequest, projectRef string, opts repoCreateOptions) error {
+func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions) error {
 	// The "Using context" notice would sit above the form; the wizard shows
 	// no login at all.
 	auth.SilenceContextNotice()
@@ -304,7 +277,7 @@ func runRepoCreateWizard(cmd *cobra.Command, req repoCreateRequest, projectRef s
 		if err != nil {
 			return fmt.Errorf("list projects: %w", err)
 		}
-		s, err := newRepoCreateState(projects, req, projectRef, currentFolderName(ctx))
+		s, err := newRepoCreateState(projects, name, currentFolderName(ctx))
 		if err != nil {
 			return err
 		}
@@ -435,9 +408,6 @@ func (s *repoCreateState) projectGroup(accessible bool) *huh.Group {
 		sel.Accessor(repoProjectAccessor{s: s})
 	}
 	var notes []string
-	if s.projectNote != "" {
-		notes = append(notes, s.projectNote)
-	}
 	switch s.hiddenProjects {
 	case 0:
 	case 1:
@@ -599,8 +569,7 @@ func (s *repoCreateState) visibilityGroup(dynamic bool) *huh.Group {
 }
 
 // advancedGroup gates the settings most people leave alone behind one
-// question. Declining keeps whatever is already chosen — a flag's value, or
-// the server default — rather than resetting it.
+// question. Declining leaves them to the server.
 func (s *repoCreateState) advancedGroup(dynamic bool) *huh.Group {
 	confirm := huh.NewConfirm().
 		Title("Customize advanced options?").
@@ -616,7 +585,7 @@ func (s *repoCreateState) advancedGroup(dynamic bool) *huh.Group {
 }
 
 // formatGroup offers the object format, only when advanced options were asked
-// for. It starts from the flag's value, else the server's default.
+// for. It starts at the server's default.
 func (s *repoCreateState) formatGroup(dynamic bool) *huh.Group {
 	sel := huh.NewSelect[coreapi.CreateRepoInputBodyObjectFormat]().
 		Title("Which git object format?").

@@ -125,10 +125,13 @@ default. Active means provisioning completed; later pushes or mirror
 creation can still fail for other reasons.
 
 With both a name and --project the repository is created directly.
-Otherwise, in an interactive terminal, a wizard asks for the project,
-name, visibility and advanced options, starting from whatever was given,
-and shows a summary before creating anything. With --json the prompts
-stay off stdout, which carries only the repository object.
+Run with at most a name and no create flags, in an interactive terminal,
+a wizard asks for the project, name, visibility and advanced options,
+starting from the given name (or the current folder's), and shows a
+summary before creating anything. With --json the prompts stay off
+stdout, which carries only the repository object. --project,
+--visibility and --object-format mean the flag form: with any of them,
+a name and --project are both required.
 
 --visibility sets the repository's visibility right after creation: public
 grants read-only (pull) access to any authenticated Entire user, private
@@ -186,15 +189,20 @@ and recovery instructions go to stderr.`,
 			opts := repoCreateOptions{noWait: noWait, waitTimeout: waitTimeout}
 			if req.name == "" || projectRef == "" {
 				// Settled from the command line alone, before any request: a
-				// run that cannot be prompted must not cost a lookup. --json
-				// still prompts in a terminal, as `grant add` does: the form
-				// renders on stderr or the controlling terminal and stdout
-				// carries only the result.
+				// run that cannot be prompted must not cost a lookup. Flags
+				// mean the flag form, so a create flag with an input missing
+				// is refused even in a terminal: the wizard takes only the
+				// positional name. --json still prompts, as `grant add` does:
+				// the form renders on stderr or the controlling terminal and
+				// stdout carries only the result.
+				cmd.SilenceUsage = true
+				if repoCreateFlagsGiven(cmd) {
+					return errRepoCreateFlagsNeedInput
+				}
 				if !interactive.CanPromptInteractively() {
-					cmd.SilenceUsage = true
 					return errRepoCreateNeedsInput
 				}
-				return runRepoCreateWizard(cmd, req, projectRef, opts)
+				return runRepoCreateWizard(cmd, req.name, opts)
 			}
 			return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
 				ctx, cancel := context.WithTimeout(ctx, waitTimeout)
@@ -214,9 +222,9 @@ and recovery instructions go to stderr.`,
 	}
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Return after creation without confirming provisioning readiness")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "Time limit for project resolution, creation, and provisioning readiness")
-	cmd.Flags().StringVar(&projectRef, "project", "", "Owning project (by name)")
-	cmd.Flags().StringVar(&objectFormat, "object-format", "", "Git object format for the repository: sha1 or sha256 (defaults to the server default)")
-	cmd.Flags().StringVar(&visibility, "visibility", "", "Visibility to set after creation: public or private (defaults to the server default)")
+	cmd.Flags().StringVar(&projectRef, repoCreateFlagProject, "", "Owning project (by name)")
+	cmd.Flags().StringVar(&objectFormat, repoCreateFlagObjectFormat, "", "Git object format for the repository: sha1 or sha256 (defaults to the server default)")
+	cmd.Flags().StringVar(&visibility, repoCreateFlagVisibility, "", "Visibility to set after creation: public or private (defaults to the server default)")
 	addJSONFlag(cmd)
 	return cmd
 }

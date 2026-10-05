@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,28 @@ type repoCreateOptions struct {
 // given everything a create needs, naming the flag form instead.
 var errRepoCreateNeedsInput = errors.New("a repository name and --project are required without an interactive terminal: " +
 	"entire repo create <name> --project <project>")
+
+// errRepoCreateFlagsNeedInput refuses a create flag given with an input
+// missing. The wizard takes only the positional name, so a flag would be
+// silently dropped; flags mean the flag form.
+var errRepoCreateFlagsNeedInput = errors.New("a repository name and --project are required when create flags are given: " +
+	"entire repo create <name> --project <project>; run `entire repo create [<name>]` without flags to be prompted")
+
+// The flags that describe the repo itself. Readiness and output flags
+// (--no-wait, --wait-timeout, --json) apply to the wizard too.
+const (
+	repoCreateFlagProject      = "project"
+	repoCreateFlagVisibility   = "visibility"
+	repoCreateFlagObjectFormat = "object-format"
+)
+
+var repoCreateFlags = []string{repoCreateFlagProject, repoCreateFlagVisibility, repoCreateFlagObjectFormat}
+
+// repoCreateFlagsGiven reports whether any create flag was passed, even with
+// an empty value.
+func repoCreateFlagsGiven(cmd *cobra.Command) bool {
+	return slices.ContainsFunc(repoCreateFlags, cmd.Flags().Changed)
+}
 
 // createRepo sends the create request and returns the created repo in the
 // shape the readiness wait and the report share.

@@ -304,13 +304,39 @@ func answerRepoCreatePrompts(t *testing.T, answers ...string) *bytes.Buffer {
 //
 // Not parallel: swaps the package-level activeCoreClient seam.
 func TestRepoCreate_MissingInputsWithoutTerminal(t *testing.T) {
-	for _, args := range [][]string{nil, {"web"}, {"--project", "acme"}} {
+	for _, args := range [][]string{nil, {"web"}, {"web", "--json"}} {
 		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
 		f.serve()
 		_, _, err := execRepoCreateArgs(t, args...)
 		require.ErrorContains(t, err, "a repository name and --project are required without an interactive terminal: entire repo create <name> --project <project>", args)
 		require.NotContains(t, err.Error(), "ULID")
 		require.Zero(t, f.requestCount(), "refused before any request")
+	}
+}
+
+// Flags mean the flag form: the wizard takes only the positional name, so a
+// create flag given with the name or --project missing is refused before any
+// request — even in a terminal — rather than silently dropped.
+//
+// Not parallel: sets env vars and swaps package-level seams.
+func TestRepoCreate_FlagsMeanTheFlagForm(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
+		t.Error("the wizard must not open when create flags are given")
+		return false, nil
+	})
+	for _, args := range [][]string{
+		{"--project", "acme"},
+		{"web", "--visibility", "public"},
+		{"--object-format", "sha256"},
+		{"web", "--project", ""},
+	} {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+		f.serve()
+		_, _, err := execRepoCreateArgs(t, args...)
+		require.ErrorIs(t, err, errRepoCreateFlagsNeedInput, args)
+		require.ErrorContains(t, err, "entire repo create <name> --project <project>")
+		require.Zero(t, f.requestCount(), "refused before any request: %v", args)
 	}
 }
 
@@ -476,7 +502,7 @@ func TestRepoProject_LabelsAlign(t *testing.T) {
 
 func TestNewRepoCreateState_Defaults(t *testing.T) {
 	t.Parallel()
-	s, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{}, "", "my-repo")
+	s, err := newRepoCreateState(wizardTestProjects(), "", "my-repo")
 	require.NoError(t, err)
 	require.Equal(t, "my-repo", s.answers.name, "the folder name is suggested when no name was given")
 	require.Equal(t, "Acme", s.project().name, "the first project is the starting one")
@@ -488,39 +514,23 @@ func TestNewRepoCreateState_Defaults(t *testing.T) {
 	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPrivate, req.visibility)
 }
 
-func TestNewRepoCreateState_PrefillsFromTheCommandLine(t *testing.T) {
+// The positional name is the only thing carried into the wizard.
+func TestNewRepoCreateState_TakesOnlyTheName(t *testing.T) {
 	t.Parallel()
-	req := repoCreateRequest{name: "web", visibility: "public", objectFormat: "sha256"}
-	s, err := newRepoCreateState(wizardTestProjects(), req, "beta", "my-repo")
+	s, err := newRepoCreateState(wizardTestProjects(), "web", "my-repo")
 	require.NoError(t, err)
 	require.Equal(t, "web", s.answers.name, "the argument beats the folder name")
-	require.Equal(t, "beta", s.project().name)
-	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPublic, s.answers.visibility)
-	require.True(t, s.answers.advanced, "a format flag opens the advanced step")
-	require.Equal(t, coreapi.CreateRepoInputBodyObjectFormatSHA256, s.answers.objectFormat)
+	require.Equal(t, "Acme", s.project().name)
+	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPrivate, s.answers.visibility)
+	require.False(t, s.answers.advanced)
 
-	s.answers.advanced = false
-	require.Equal(t, coreapi.CreateRepoInputBodyObjectFormatSHA256, s.request().objectFormat, "declining advanced keeps the flag's format")
-}
-
-func TestNewRepoCreateState_MatchesProject(t *testing.T) {
-	t.Parallel()
-	for _, ref := range []string{"Acme", "acme", testCreateProjectAcme} {
-		s, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{}, ref, "")
-		require.NoError(t, err, ref)
-		require.Equal(t, "Acme", s.project().name, ref)
-	}
-	for _, ref := range []string{"locked", "nope"} {
-		_, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{}, ref, "")
-		require.ErrorContains(t, err, fmt.Sprintf("--project %q is not a project you can create repositories in", ref))
-	}
-	_, err := newRepoCreateState(wizardTestProjects()[1:2], repoCreateRequest{}, "", "")
+	_, err = newRepoCreateState(wizardTestProjects()[1:2], "", "")
 	require.ErrorContains(t, err, "no project you can create repositories in")
 }
 
 func TestRepoCreateState_ValidateName(t *testing.T) {
 	t.Parallel()
-	s, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{}, "acme", "")
+	s, err := newRepoCreateState(wizardTestProjects(), "", "")
 	require.NoError(t, err)
 	s.names = fixedNames(t, map[string][]string{testCreateProjectAcme: {"web"}})
 
@@ -539,7 +549,7 @@ func TestRepoCreateState_ValidateName(t *testing.T) {
 
 func TestRepoCreateState_SummaryNamesNoIDs(t *testing.T) {
 	t.Parallel()
-	s, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{name: "my web"}, "acme", "")
+	s, err := newRepoCreateState(wizardTestProjects(), "my web", "")
 	require.NoError(t, err)
 	require.Equal(t, "Project        Acme\n"+
 		"Name           my web\n"+
@@ -558,7 +568,7 @@ func TestRepoCreateState_SummaryNamesNoIDs(t *testing.T) {
 // the heading, and follows a changed answer.
 func TestRepoCreateState_PageTitlesFollowAnswers(t *testing.T) {
 	t.Parallel()
-	s, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{name: "web"}, "acme", "")
+	s, err := newRepoCreateState(wizardTestProjects(), "web", "")
 	require.NoError(t, err)
 	s.nameGroup(true)
 	s.visibilityGroup(true)
@@ -585,7 +595,7 @@ func TestRepoCreateState_PageTitlesFollowAnswers(t *testing.T) {
 // value, so the pre-filled name has to validate as itself.
 func TestRepoCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
 	t.Parallel()
-	s, err := newRepoCreateState(wizardTestProjects(), repoCreateRequest{name: "tools"}, "acme", "")
+	s, err := newRepoCreateState(wizardTestProjects(), "tools", "")
 	require.NoError(t, err)
 	require.NoError(t, s.accessibleName(huh.NewInput()).RunAccessible(io.Discard, strings.NewReader("\n")))
 	require.Equal(t, "tools", s.answers.name)
@@ -710,20 +720,6 @@ func TestRepoCreateWizard_CancelledCreatesNothing(t *testing.T) {
 	require.Empty(t, f.createBodies)
 }
 
-// Not parallel: sets env vars and swaps package-level seams.
-func TestRepoCreateWizard_RejectsUnknownProjectBeforePrompting(t *testing.T) {
-	t.Setenv(interactive.EnvTestTTY, "1")
-	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
-	f.serve()
-	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
-		t.Error("the wizard must not open")
-		return false, nil
-	})
-	_, _, err := execRepoCreateArgs(t, "--project", "locked")
-	require.ErrorContains(t, err, `--project "locked" is not a project you can create repositories in`)
-	require.Empty(t, f.createBodies)
-}
-
 // A name taken between the check and the create reopens the wizard on the same
 // answers, saying why, instead of failing a run the user already answered.
 //
@@ -786,7 +782,7 @@ func TestRepoCreateWizard_AccessibleRun(t *testing.T) {
 }
 
 // huh's accessible Select keeps a default only for a plain pointer binding, so
-// a --project default must survive Enter on the picker — and Enter on every
+// the starting project must survive Enter on the picker — and Enter on every
 // later question keeps its own default too.
 //
 // Not parallel: sets env vars and swaps package-level seams.
@@ -794,14 +790,14 @@ func TestRepoCreateWizard_AccessibleEnterKeepsDefaults(t *testing.T) {
 	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
 	f.serve()
 	answerRepoCreatePrompts(t,
-		"",        // project: keep --project beta
+		"",        // project: keep the first (acme)
 		"web\n\n", // name, visibility (private), advanced (no)
 		"",        // create (default)
 	)
-	_, _, err := execRepoCreateArgs(t, "--project", "beta")
+	_, _, err := execRepoCreateArgs(t)
 	require.NoError(t, err)
 	require.Len(t, f.createBodies, 1)
-	require.Equal(t, testCreateProjectBeta, f.createBodies[0]["projectId"])
+	require.Equal(t, testCreateProjectAcme, f.createBodies[0]["projectId"])
 	require.Equal(t, "web", f.createBodies[0]["name"])
 	require.NotContains(t, f.createBodies[0], "objectFormat")
 	require.Equal(t, []string{`{"visibility":"private"}`}, f.visBodies)
@@ -899,7 +895,7 @@ func TestRepoCreate_NameArgumentIsTrimmed(t *testing.T) {
 	require.Len(t, f.createBodies, 1)
 	require.Equal(t, "web", f.createBodies[0]["name"])
 
-	_, _, err = execRepoCreateArgs(t, "   ", "--project", "acme")
+	_, _, err = execRepoCreateArgs(t, "   ")
 	require.ErrorIs(t, err, errRepoCreateNeedsInput, "a blank name is a missing one")
 	require.Len(t, f.createBodies, 1, "no second create")
 }

@@ -255,14 +255,17 @@ the commands are always runnable in every build.
   on one spelling is worth doing on its own; it is not this change.
   `repo create` takes no cluster at all: a repo's home cluster is the primary
   cell of its owning project's region. `create <name> --project <project>`
-  creates without prompting even in a terminal; missing either, a terminal
-  gets the same kind of paged wizard as `project create` (project → name →
-  visibility → advanced → object format → summary) seeded from whatever was
-  given, and no terminal is refused before any request (`--json` still
-  prompts, as `grant add` does: stdout carries only the result). Projects reporting
+  creates without prompting even in a terminal. With at most a name and no
+  create flags, a terminal gets the same kind of paged wizard as `project
+  create` (project → name → visibility → advanced → object format →
+  summary); only the positional name is carried in. Flags mean the flag
+  form: `--project`, `--visibility` or `--object-format` with an input
+  missing is refused before any request, even in a terminal, and so is a
+  missing input without one (`--json` still prompts, as `grant add` does:
+  stdout carries only the result). Projects reporting
   `canCreateRepository: false` are hidden (one reporting no capabilities is
-  offered and the server decides, as with `project create`'s orgs); a
-  `--project` naming none on offer fails before the form. The duplicate-name check reads each project's repo
+  offered and the server decides, as with `project create`'s orgs). The
+  duplicate-name check reads each project's repo
   names, loaded in the background when the project is picked, since huh
   validates on the UI loop; a check before they arrive passes, and a 409 at
   create reopens the wizard on the same answers. Client-side name validation
