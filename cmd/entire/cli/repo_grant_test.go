@@ -38,6 +38,7 @@ func grantActiveCoreServer(t *testing.T, paths *[]string, placements ...string) 
 		case strings.HasSuffix(r.URL.Path, "/grants"):
 			payload = &coreapi.ListRepoGrantsOutputBody{Grants: []coreapi.RepoGrant{{
 				GranteeId: "01ACCT", GranteeName: coreapi.NewOptString("github:alice"),
+				DisplayName: coreapi.NewOptString("Alice Smith"),
 				GranteeType: granteeTypeAccount, Role: "writer", Source: "repo",
 			}}}
 		case strings.HasSuffix(r.URL.Path, "/repos/resolve"):
@@ -216,7 +217,8 @@ func TestRepoGrantList_PlacementLookupIsAHint(t *testing.T) {
 
 // TestRepoGrantList_JSONNamesEachValueOnce pins the machine-readable contract:
 // one verb, one answer. A mirror row reads in the grant vocabulary, carries
-// nothing twice, and keeps out the one native key it cannot honestly fill.
+// nothing twice, and keeps out the native keys it cannot honestly fill
+// (granteeType, displayName).
 //
 // Not parallel: swaps the package-level core-client seams.
 func TestRepoGrantList_JSONNamesEachValueOnce(t *testing.T) {
@@ -242,6 +244,7 @@ func TestRepoGrantList_JSONNamesEachValueOnce(t *testing.T) {
 
 	native := decode(t, "/et/acme/web")
 	require.Equal(t, map[string]any{
+		"displayName": "Alice Smith",
 		"granteeId":   "01ACCT",
 		"granteeName": "github:alice",
 		"granteeType": granteeTypeAccount,

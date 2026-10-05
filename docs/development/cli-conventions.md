@@ -322,8 +322,8 @@ the commands are always runnable in every build.
   grants, a `/gh/` ref lists the placement's collaborators from
   `GET /mirrors/collaborators` (live GitHub-admin gated against the caller's own
   GitHub identity, so a service-account token cannot answer it). The mirror
-  branch renders `GRANTEE`/`ROLE` — `grantColumns` without the provenance the
-  mirror endpoint does not report — and its `--json` rewrites the
+  branch renders `GRANTEE`/`ROLE` — `grantColumns` without `NAME` and the
+  provenance columns, neither of which the mirror endpoint reports — and its `--json` rewrites the
   collaborator model into the grant vocabulary through `mergeSynthesizedFields`
   — `accountId` → `granteeId`, `handle` → `granteeName`, plus `source` =
   `github`, where a mirror's access does come from — so one script reads either

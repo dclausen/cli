@@ -99,12 +99,23 @@ func runStatus(ctx context.Context, w io.Writer, detailed, jsonOutput bool) erro
 	}
 
 	fmt.Fprintln(w, formatSettingsStatusShort(ctx, s, sty))
+	writeRefusedAgentHomes(w)
 	if s.Enabled {
 		writeActiveSessions(ctx, w, sty)
 	}
 	writeAgentHelpHint(w, sty)
 
 	return nil
+}
+
+// writeRefusedAgentHomes names every agent relocation variable Entire refuses.
+// Printed in the short output too, not only --detailed: the refusal breaks
+// resume and attach for that agent and silently drops it from transcript-owner
+// matching, and nothing else in a default run says so.
+func writeRefusedAgentHomes(w io.Writer) {
+	for _, err := range agent.RefusedRelocationEnvVars() {
+		fmt.Fprintf(w, "  ignoring agent home: %v\n", err)
+	}
 }
 
 // agentHelpCommand is the invocation a coding agent runs to get machine-readable
@@ -129,6 +140,7 @@ func runStatusDetailed(ctx context.Context, w io.Writer, sty statusStyles, setti
 		return fmt.Errorf("failed to load settings: %w", err)
 	}
 	fmt.Fprintln(w, formatSettingsStatusShort(ctx, effectiveSettings, sty))
+	writeRefusedAgentHomes(w)
 	fmt.Fprintln(w) // blank line
 
 	// Show project settings if it exists
@@ -1088,6 +1100,10 @@ type statusJSON struct {
 	// HooksOutdated lists agents whose installed hook config is out of date and
 	// should be refreshed with `entire enable --force`.
 	HooksOutdated []string `json:"hooks_outdated,omitempty"`
+	// RefusedAgentHomes lists agent relocation variables (CLAUDE_CONFIG_DIR,
+	// CODEX_HOME, ...) set to a value Entire refuses, one message per variable.
+	// Resume and attach fail for that agent until it is fixed.
+	RefusedAgentHomes []string `json:"refused_agent_homes,omitempty"`
 	// CodexHooks reports effective discovery/trust warnings separately from
 	// current-checkout installation and freshness semantics.
 	CodexHooks *codexHooksStatusJSON `json:"codex_hooks,omitempty"`
@@ -1214,6 +1230,9 @@ func runStatusJSON(ctx context.Context, w io.Writer) error {
 		Agents:         []string{},
 		ActiveSessions: []sessionBriefJSON{},
 		AgentHelp:      agentHelpCommand,
+	}
+	for _, refusal := range agent.RefusedRelocationEnvVars() {
+		result.RefusedAgentHomes = append(result.RefusedAgentHomes, refusal.Error())
 	}
 
 	if s.Enabled {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -235,7 +236,9 @@ func TestParseHookEvent_SubagentEnd(t *testing.T) {
 		"transcript_path": "/tmp/main.jsonl",
 		"tool_use_id":     "toolu_xyz789",
 		"tool_input":      json.RawMessage(`{"prompt": "task done"}`),
-		"tool_response": map[string]string{
+		"tool_response": map[string]any{
+			"status":  "async_launched",
+			"isAsync": true,
 			"agentId": "agent-subagent-001",
 		},
 	}
@@ -294,6 +297,57 @@ func TestParseHookEvent_SubagentEnd_NoAgentID(t *testing.T) {
 	}
 }
 
+// TestParseHookEvent_SubagentEnd_LaunchMode pins how a launch-time
+// PostToolUse payload is classified. Claude Code decides whether an Agent
+// call runs in the background, and the model's run_in_background argument is
+// usually absent (or sent as a string), so tool_response.status is the
+// authoritative signal. Payloads are trimmed from real Claude Code 2.1.288
+// hooks.
+func TestParseHookEvent_SubagentEnd_LaunchMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload string
+		want    agent.SubagentLaunchMode
+	}{
+		{
+			name:    "async launch without run_in_background",
+			payload: `{"session_id":"s","transcript_path":"/tmp/s.jsonl","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"Add count subcommand","prompt":"p","subagent_type":"general-purpose"},"tool_response":{"isAsync":true,"status":"async_launched","agentId":"aa6579c96e11a281b","description":"Add count subcommand","prompt":"p","outputFile":"/tmp/out","canReadOutputFile":true},"tool_use_id":"toolu_01A"}`,
+			want:    agent.SubagentLaunchBackground,
+		},
+		{
+			name:    "foreground completion",
+			payload: `{"session_id":"s","transcript_path":"/tmp/s.jsonl","hook_event_name":"PostToolUse","tool_name":"Agent","tool_input":{"description":"d","prompt":"p","subagent_type":"general-purpose","run_in_background":false},"tool_response":{"status":"completed","prompt":"p","agentId":"aa6579c96e11a281b","agentType":"general-purpose","content":[{"type":"text","text":"Done."}],"totalDurationMs":6060},"tool_use_id":"toolu_01A"}`,
+			want:    agent.SubagentLaunchForeground,
+		},
+		{
+			name:    "completed status wins over run_in_background true",
+			payload: `{"session_id":"s","transcript_path":"/tmp/s.jsonl","tool_input":{"run_in_background":true},"tool_response":{"status":"completed","agentId":"aa6579c96e11a281b"},"tool_use_id":"toolu_01A"}`,
+			want:    agent.SubagentLaunchForeground,
+		},
+		{
+			name:    "no status leaves the mode unknown",
+			payload: `{"session_id":"s","transcript_path":"/tmp/s.jsonl","tool_input":{},"tool_response":{"agentId":"aa6579c96e11a281b"},"tool_use_id":"toolu_01A"}`,
+			want:    agent.SubagentLaunchUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ag := &ClaudeCodeAgent{}
+			event, err := ag.ParseHookEvent(context.Background(), HookNamePostTask, strings.NewReader(tt.payload))
+			require.NoError(t, err)
+			require.NotNil(t, event)
+			assert.Equal(t, tt.want, event.SubagentLaunch)
+			assert.Equal(t, "toolu_01A", event.ToolUseID)
+			assert.Equal(t, "aa6579c96e11a281b", event.SubagentID)
+			assert.False(t, event.Final)
+		})
+	}
+}
+
 // TestParseHookEvent_SubagentStop covers the true-completion signal for
 // background subagents. Background subagents return a launch stub
 // immediately, so the launch-time post-task (PostToolUse) hook fires seconds
@@ -301,12 +355,15 @@ func TestParseHookEvent_SubagentEnd_NoAgentID(t *testing.T) {
 // never captured beyond the stub. SubagentStop fires at real completion, even
 // after the parent's turn ended, and must translate into the same
 // agent.SubagentEnd event, marked Final so lifecycle code can tell the two
-// apart and prefer the payload's own transcript path over resolution.
+// apart and prefer the payload's own transcript path over resolution. The
+// payload carries agent_id but no tool_use_id (observed through Claude Code
+// 2.1.288, foreground and background alike), so ToolUseID stays empty and the
+// lifecycle correlates on SubagentID.
 func TestParseHookEvent_SubagentStop(t *testing.T) {
 	t.Parallel()
 
 	ag := &ClaudeCodeAgent{}
-	input := `{"session_id":"parent-sess","transcript_path":"/tmp/parent.jsonl","hook_event_name":"SubagentStop","agent_id":"a123","agent_transcript_path":"/tmp/parent/subagents/agent-a123.jsonl","tool_use_id":"toolu_01X","cwd":"/repo"}`
+	input := `{"session_id":"parent-sess","transcript_path":"/tmp/parent.jsonl","hook_event_name":"SubagentStop","agent_id":"a123","agent_transcript_path":"/tmp/parent/subagents/agent-a123.jsonl","cwd":"/repo"}`
 
 	event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(input))
 
@@ -326,8 +383,8 @@ func TestParseHookEvent_SubagentStop(t *testing.T) {
 	if event.SubagentID != "a123" {
 		t.Errorf("expected subagent_id 'a123', got %q", event.SubagentID)
 	}
-	if event.ToolUseID != "toolu_01X" {
-		t.Errorf("expected tool_use_id 'toolu_01X', got %q", event.ToolUseID)
+	if event.ToolUseID != "" {
+		t.Errorf("expected empty tool_use_id, got %q", event.ToolUseID)
 	}
 	if event.SubagentTranscriptPath != "/tmp/parent/subagents/agent-a123.jsonl" {
 		t.Errorf("expected subagent_transcript '/tmp/parent/subagents/agent-a123.jsonl', got %q", event.SubagentTranscriptPath)
@@ -343,7 +400,7 @@ func TestParseHookEvent_SubagentStop(t *testing.T) {
 	t.Run("no transcript path", func(t *testing.T) {
 		t.Parallel()
 
-		input := `{"session_id":"parent-sess","transcript_path":"/tmp/parent.jsonl","hook_event_name":"SubagentStop","agent_id":"a123","tool_use_id":"toolu_01X","cwd":"/repo"}`
+		input := `{"session_id":"parent-sess","transcript_path":"/tmp/parent.jsonl","hook_event_name":"SubagentStop","agent_id":"a123","cwd":"/repo"}`
 
 		event, err := ag.ParseHookEvent(context.Background(), HookNameSubagentStop, strings.NewReader(input))
 
