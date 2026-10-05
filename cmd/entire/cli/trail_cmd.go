@@ -1929,7 +1929,7 @@ func parseTrailNumberArg(args []string) (int, error) {
 func newTrailDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "delete [<number>]",
-		Short:  "Removed: trails can no longer be deleted",
+		Short:  "Deprecated: Mark the trail as Closed instead",
 		Args:   cobra.MaximumNArgs(1),
 		Hidden: true,
 		RunE: func(*cobra.Command, []string) error {
