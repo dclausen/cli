@@ -104,7 +104,7 @@ func newHooksGitCmd() *cobra.Command {
 			ctx := cmd.Context()
 			// Entire's generated hook already ran this hook before sourcing the
 			// Husky wrapper that is now calling it again; see strategy.chainCall.
-			if os.Getenv(strategy.ChainedHookEnvVar) == cmd.Name() {
+			if strategy.ChainedHookAlreadyRan(ctx, os.Getenv(strategy.ChainedHookEnvVar), cmd.Name(), ".") {
 				logging.Debug(ctx, "git hook already run by Entire's chained hook; skipping",
 					slog.String("hook", cmd.Name()))
 				gitHooksDisabled = true

@@ -208,26 +208,43 @@ func TestHooksGitCmd_ExposesPostRewriteSubcommand(t *testing.T) {
 }
 
 // TestHooksGitCmd_SkipsChainedHook pins the other half of the Husky no-double-run
-// contract (strategy.TestHuskyChain_NoDoubleRun): Entire's generated hook has
+// contract (strategy.TestHuskyChain_Behaviour): Entire's generated hook has
 // already run `entire hooks git <hook>` when it sources the Husky wrapper with
-// ENTIRE_CHAINED_HOOK=<hook>, so the same call from the user's .husky/<hook>
-// must do nothing. A different hook name, e.g. a `git commit` run by a pre-push
-// script, still runs.
+// ENTIRE_CHAINED_HOOK=<hook>:<hooks dir>, so the same call from the user's
+// .husky/<hook> must do nothing. A different hook name, e.g. a `git commit` run
+// by a pre-push script, still runs, and so does the same hook in another repo:
+// a plain Entire hook there never clears the inherited marker.
 func TestHooksGitCmd_SkipsChainedHook(t *testing.T) {
+	// InitRepo creates no hooks directory; git would be running the hook from it.
+	mkHooksDir := func(repo string) string {
+		t.Helper()
+		dir := filepath.Join(repo, ".git", "hooks")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	otherRepo := t.TempDir()
+	testutil.InitRepo(t, otherRepo)
+	otherHooks := mkHooksDir(otherRepo)
 	for _, tc := range []struct {
-		marker   string
+		name     string
+		marker   func(ownHooks string) string
 		wantSkip bool
 	}{
-		{marker: "post-commit", wantSkip: true},
-		{marker: "pre-push", wantSkip: false},
+		{"this repo's hooks", func(own string) string { return "post-commit:" + own }, true},
+		{"another hook", func(own string) string { return "pre-push:" + own }, false},
+		{"another repo's hooks", func(string) string { return "post-commit:" + otherHooks }, false},
+		{"hook name alone", func(string) string { return "post-commit" }, false},
 	} {
-		t.Run(tc.marker, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			t.Chdir(tmpDir)
 			testutil.InitRepo(t, tmpDir)
 			clearCallerSessionEnv(t)
 			enableEntire(t, tmpDir)
-			t.Setenv(strategy.ChainedHookEnvVar, tc.marker)
+			marker := tc.marker(mkHooksDir(tmpDir))
+			t.Setenv(strategy.ChainedHookEnvVar, marker)
 			gitHooksDisabled = false
 			t.Cleanup(func() { gitHooksDisabled = false })
 
@@ -242,7 +259,7 @@ func TestHooksGitCmd_SkipsChainedHook(t *testing.T) {
 
 			skipped := postCommit.Context() == base && gitHooksDisabled
 			if skipped != tc.wantSkip {
-				t.Errorf("%s=%s: post-commit skipped = %v, want %v", strategy.ChainedHookEnvVar, tc.marker, skipped, tc.wantSkip)
+				t.Errorf("%s=%s: post-commit skipped = %v, want %v", strategy.ChainedHookEnvVar, marker, skipped, tc.wantSkip)
 			}
 		})
 	}

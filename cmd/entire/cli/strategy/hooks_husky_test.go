@@ -75,15 +75,18 @@ func writeExecutable(t *testing.T, path, content string) {
 }
 
 // chainRun installs Entire's chained hook over backup in <dir>/.husky/_, the
-// way InstallGitHook chains it, and runs it as git does.
+// way InstallGitHook chains it, and runs it as git does. With relCDPATH it runs
+// the hook by its relative path, as git does for a relative core.hooksPath,
+// with CDPATH naming <dir>.
 type chainRun struct {
 	hook, backup, h, userHook, stdin string
 	env, args                        []string
+	relCDPATH                        bool
 }
 
 type chainResult struct {
-	dir, out string
-	err      error
+	dir, hooksDir, out string
+	err                error
 }
 
 func (c chainRun) run(t *testing.T, shell string) chainResult {
@@ -112,23 +115,32 @@ func (c chainRun) run(t *testing.T, shell string) chainResult {
 		t.Fatal(err)
 	}
 
-	cmd := exec.CommandContext(context.Background(), shell, append([]string{hookPath}, c.args...)...)
+	invoked, cdpath := hookPath, ""
+	if c.relCDPATH {
+		invoked, cdpath = filepath.Join(".husky", "_", c.hook), dir
+	}
+	cmd := exec.CommandContext(context.Background(), shell, append([]string{invoked}, c.args...)...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(c.stdin)
 	cmd.Env = append(envWithPath(binDir+string(os.PathListSeparator)+os.Getenv("PATH")),
-		"TMPDIR="+filepath.Join(dir, "tmp"), "HUSKY=", ChainedHookEnvVar+"=")
+		"TMPDIR="+filepath.Join(dir, "tmp"), "HUSKY=", ChainedHookEnvVar+"=", "CDPATH="+cdpath)
 	cmd.Env = append(cmd.Env, c.env...)
 	out, err := cmd.CombinedOutput()
-	return chainResult{dir: dir, out: string(out), err: err}
+	resolved, evalErr := filepath.EvalSymlinks(hooksDir)
+	if evalErr != nil {
+		t.Fatal(evalErr)
+	}
+	return chainResult{dir: dir, hooksDir: resolved, out: string(out), err: err}
 }
 
+// read returns a log with the hooks directory the marker names shown as <hooks>.
 func (r chainResult) read(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(r.dir, name))
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	return string(data)
+	return strings.ReplaceAll(string(data), ":"+r.hooksDir+"|", ":<hooks>|")
 }
 
 // TestHuskyChain_UserHookDecides is the bug: executing the backed-up wrapper
@@ -153,7 +165,7 @@ func TestHuskyChain_UserHookDecides(t *testing.T) {
 				if r.err != nil {
 					t.Fatalf("hook failed: %v\n%s", r.err, r.out)
 				}
-				if got := r.read(t, "entire.log") + r.read(t, "user.log"); got != "|hooks git commit-msg MSG\ncommit-msg|MSG\n" {
+				if got := r.read(t, "entire.log") + r.read(t, "user.log"); got != "|hooks git commit-msg MSG\ncommit-msg:<hooks>|MSG\n" {
 					t.Errorf("Entire then the user's hook should run, got %q\n%s", got, r.out)
 				}
 
@@ -200,13 +212,22 @@ func TestHuskyChain_Behaviour(t *testing.T) {
 					t.Errorf("user hook ran: %q", got)
 				}
 			}},
+		// With CDPATH set, cd prints the directory it found; that must not end
+		// up in the marker.
+		{"marker names the hooks directory under CDPATH", chainRun{hook: "commit-msg", relCDPATH: true, args: []string{"MSG"}},
+			func(t *testing.T, r chainResult) {
+				t.Helper()
+				if got := r.read(t, "user.log"); got != "commit-msg:<hooks>|MSG\n" {
+					t.Errorf("user hook saw marker %q", got)
+				}
+			}},
 		// The user's own Entire call is skipped via the marker; a nested hook,
 		// e.g. a pre-push script running `git push`, must still run Entire.
 		{"only the user's direct Entire call is marked", chainRun{hook: "pre-push", env: []string{"NESTED="}, args: []string{"origin", "url"},
 			userHook: "entire hooks git pre-push \"$1\"\nif [ -z \"$NESTED\" ]; then NESTED=1 sh .husky/_/pre-push nested url; fi\n"},
 			func(t *testing.T, r chainResult) {
 				t.Helper()
-				want := "|hooks git pre-push origin\npre-push|hooks git pre-push origin\n|hooks git pre-push nested\npre-push|hooks git pre-push nested\n"
+				want := "|hooks git pre-push origin\npre-push:<hooks>|hooks git pre-push origin\n|hooks git pre-push nested\npre-push:<hooks>|hooks git pre-push nested\n"
 				if got := r.read(t, "entire.log"); got != want {
 					t.Errorf("entire calls = %q, want %q", got, want)
 				}
@@ -392,5 +413,71 @@ func TestInstallGitHook_UpgradesHuskyChain(t *testing.T) {
 		if err != nil || string(data) != chainedHook(t, hook, chainSourceHusky) {
 			t.Errorf("%s should source its Husky wrapper after reinstall (%v):\n%s", hook, err, data)
 		}
+	}
+}
+
+// TestChainedHookAlreadyRan: the marker skips Entire only in the hooks
+// directory that set it. A git operation the user's hook runs in another
+// Entire repo inherits the marker, and Entire must still run there.
+func TestChainedHookAlreadyRan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	repoA, repoB := t.TempDir(), t.TempDir()
+	for _, repo := range []string{repoA, repoB} {
+		testutil.InitRepo(t, repo)
+	}
+	testutil.WriteFile(t, repoA, "f.txt", "init")
+	testutil.GitAdd(t, repoA, "f.txt")
+	testutil.GitCommit(t, repoA, "init")
+
+	// Husky's layout: a relative core.hooksPath, which a linked worktree
+	// resolves against its own root.
+	worktree := filepath.Join(t.TempDir(), "wt")
+	git := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git(repoA, "config", "core.hooksPath", ".husky/_")
+	git(repoA, "worktree", "add", "-q", worktree)
+	// InitRepo creates no hooks directory; git would be running the hook from it.
+	for _, d := range []string{filepath.Join(repoA, ".husky", "_"), filepath.Join(worktree, ".husky", "_"), filepath.Join(worktree, "sub"), filepath.Join(repoB, ".git", "hooks")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved := func(path string) string {
+		t.Helper()
+		r, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	huskyA, huskyWT := resolved(filepath.Join(repoA, ".husky", "_")), resolved(filepath.Join(worktree, ".husky", "_"))
+
+	tests := []struct {
+		name, marker, dir string
+		want              bool
+	}{
+		{"same hooks directory", "pre-push:" + huskyA, repoA, true},
+		{"same directory through a symlink", "pre-push:" + filepath.Join(repoA, ".husky", "_"), repoA, true},
+		{"linked worktree, from a subdirectory", "pre-push:" + huskyWT, filepath.Join(worktree, "sub"), true},
+		{"another worktree's hooks directory", "pre-push:" + huskyA, worktree, false},
+		{"another repository", "pre-push:" + huskyA, repoB, false},
+		{"another hook", "post-commit:" + huskyA, repoA, false},
+		{"no directory", "pre-push:", repoA, false},
+		{"directory that does not exist", "pre-push:" + filepath.Join(repoA, "gone"), repoA, false},
+		{"hook name alone", "pre-push", repoA, false},
+		{"unset", "", repoA, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ChainedHookAlreadyRan(ctx, tt.marker, "pre-push", tt.dir); got != tt.want {
+				t.Errorf("ChainedHookAlreadyRan(%q, in %s) = %v, want %v", tt.marker, tt.dir, got, tt.want)
+			}
+		})
 	}
 }

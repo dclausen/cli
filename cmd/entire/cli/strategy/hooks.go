@@ -909,11 +909,44 @@ const (
 	chainSourceHusky
 )
 
-// ChainedHookEnvVar names the hook whose Husky wrapper is running inside
-// Entire's generated hook. `entire hooks git <hook>` exits at once when it
-// names its own hook: Entire already ran it, and the user's .husky/<hook> may
-// call it again as Entire's Husky warning suggests.
+// ChainedHookEnvVar is set to "<hook>:<hooks dir>" while Entire's generated
+// hook runs the Husky wrapper it chains. `entire hooks git <hook>` exits at once
+// when the marker names its own hook and hooks directory (ChainedHookAlreadyRan):
+// Entire already ran it, and the user's .husky/<hook> may call it again as
+// Entire's Husky warning suggests.
 const ChainedHookEnvVar = "ENTIRE_CHAINED_HOOK"
+
+// ChainedHookAlreadyRan reports whether marker, the value of ChainedHookEnvVar,
+// says Entire's generated hook for hook in the hooks directory of the repo at
+// dir already ran it.
+//
+// The directory is what keeps the marker from leaking: a git operation the
+// user's hook runs in another Entire repo inherits it, and a plain Entire hook
+// there never clears it, so a hook name alone would skip Entire's pre-push
+// (checkpoints and privacy filter included) in that repo. Any doubt, including
+// a failure to resolve either directory, runs Entire: twice is harmless, never
+// is not.
+func ChainedHookAlreadyRan(ctx context.Context, marker, hook, dir string) bool {
+	markedDir, ok := strings.CutPrefix(marker, hook+":")
+	if !ok || markedDir == "" {
+		return false
+	}
+	hooksDir, err := getHooksDirInPath(ctx, dir)
+	if err != nil {
+		return false
+	}
+	marked, err := os.Stat(markedDir)
+	if err != nil {
+		return false
+	}
+	own, err := os.Stat(hooksDir)
+	if err != nil {
+		return false
+	}
+	// SameFile, not a path comparison: the shell resolves symlinks with pwd -P
+	// and Windows paths with pwd -W, and case-insensitive filesystems differ again.
+	return os.SameFile(marked, own)
+}
 
 // huskyV9Wrappers are the whole files Husky v9 writes at .husky/_/<hook>: the
 // first in 9.0.1–9.1.0, the second in 9.1.1–9.1.7. Husky writes them with no
@@ -967,11 +1000,17 @@ func chainFormFor(root *os.Root, hookName string) chainForm {
 // replace post-rewrite's cleanup trap. Its status is h's, so a failing Husky
 // hook still fails the git operation. `.` gets no arguments (not portable);
 // the sourced file sees this hook's "$@".
+//
+// The marker's directory is resolved the way ChainedHookAlreadyRan compares it.
+// CDPATH is cleared because cd prints the directory it finds through CDPATH,
+// which would land in the marker. pwd -W is Git for Windows' sh, whose pwd -P
+// answers /c/...; elsewhere it fails silently and pwd -P answers.
 func chainCall(hookName string, form chainForm) string {
 	backup := fmt.Sprintf(`"$_entire_hook_dir/%s%s"`, hookName, backupSuffix)
 	call := backup + ` "$@"`
 	if form == chainSourceHusky {
-		call = fmt.Sprintf(`( %s=%s; export %s; . %s )`, ChainedHookEnvVar, hookName, ChainedHookEnvVar, backup)
+		call = fmt.Sprintf(`( %s="%s:$(CDPATH= cd -- "$_entire_hook_dir" && { pwd -W 2>/dev/null || pwd -P; })"; export %s; . %s )`,
+			ChainedHookEnvVar, hookName, ChainedHookEnvVar, backup)
 	}
 	if hookName == postRewriteHook {
 		call += ` < "$_entire_stdin"`
