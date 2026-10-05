@@ -133,6 +133,85 @@ func TestPrimaryPlacementStatus(t *testing.T) {
 // TestNativeRepoDetailRow pins what `repo view /et/...` shows: the primary
 // first, then every mirror, each labelled by role — because the difference
 // decides what a reader can do with it.
+// TestNativeRepoDetailRow_CatalogMissUsesTheRecord pins what a row says when
+// the cluster catalog cannot name the repo's own cluster — absent from
+// /clusters, or present with a publicUrl rejected as unsafe.
+//
+// `repo clone` resolves a native primary from the RECORD: nativePlacements
+// builds its home placement from ClusterHost/ClusterSlug/Jurisdiction and reads
+// the catalog only to enrich additional mirrors. So such a repo clones fine,
+// and every part of this view has to agree with that — the CLUSTER cell, the
+// CLONE URL, the jurisdiction, and the stderr note naming the same cluster.
+//
+// A MIRROR has no record behind it, so it degrades to the slug with no URL;
+// that is also what clone does, skipping mirrors it cannot resolve.
+func TestNativeRepoDetailRow_CatalogMissUsesTheRecord(t *testing.T) {
+	t.Parallel()
+	recorded := func() *coreapi.Repo {
+		r := nativeTestRepo()
+		r.ClusterSlug = coreapi.NewOptString("us-east")
+		r.ClusterHost = coreapi.NewOptString("aws-us-east-2.entire.io")
+		r.Jurisdiction = coreapi.NewOptString("us")
+		return r
+	}
+	for _, tc := range []struct {
+		name     string
+		clusters []coreapi.Cluster
+	}{
+		{name: "cluster absent from the catalog"},
+		{name: "catalog entry has an unsafe publicUrl", clusters: []coreapi.Cluster{
+			{Slug: "us-east", Jurisdiction: "us", PublicUrl: "https://aws-us-east-2.entire.io@evil.com"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			row := nativeRepoDetailRow("/et/acme/web", recorded(), nil, tc.clusters)
+			require.Len(t, row.Placements, 1)
+			p := row.Placements[0]
+			require.Equal(t, "aws-us-east-2.entire.io", p.Cluster,
+				"the CLUSTER cell takes the record's host, as the clone URL does")
+			require.Equal(t, "entire://aws-us-east-2.entire.io/et/acme/web", p.CloneURL)
+			require.Equal(t, "us", p.Jurisdiction,
+				"the record carries it, and clone's home placement already reads it")
+		})
+	}
+
+	t.Run("the stderr note names the cluster the table named", func(t *testing.T) {
+		t.Parallel()
+		failed := recorded()
+		failed.State = coreapi.NewOptString(repoStateFailed)
+		failed.ProvisionReason = coreapi.NewOptString("max retries exhausted")
+		row := nativeRepoDetailRow("/et/acme/web", failed, nil, nil)
+
+		var errW bytes.Buffer
+		reportNativeMirrorNotes(&errW, failed, nil, row)
+		require.Equal(t, "aws-us-east-2.entire.io: max retries exhausted\n", errW.String(),
+			"stderr saying us-east under a table saying the host is the same split, moved one line over")
+	})
+
+	t.Run("a mirror has no record, so it degrades whole", func(t *testing.T) {
+		t.Parallel()
+		row := nativeRepoDetailRow("/et/acme/web", recorded(),
+			[]coreapi.NativeMirrorPlacement{{ClusterSlug: "ghost", Status: coreapi.NativeMirrorPlacementStatusReady}}, nil)
+		require.Len(t, row.Placements, 2)
+		require.Equal(t, "ghost", row.Placements[1].Cluster)
+		require.Empty(t, row.Placements[1].CloneURL, "no host means no URL, never a guessed one")
+	})
+
+	t.Run("a mirror's lastError reaches --json", func(t *testing.T) {
+		t.Parallel()
+		row := nativeRepoDetailRow("/et/acme/web", recorded(),
+			[]coreapi.NativeMirrorPlacement{{
+				ClusterSlug: "aws-eu-central-1",
+				Status:      coreapi.NativeMirrorPlacementStatusFailed,
+				LastError:   coreapi.NewOptString("seed timed out"),
+			}}, nativeTestClusters)
+		require.Len(t, row.Placements, 2)
+		require.Equal(t, "seed timed out", row.Placements[1].LastError,
+			"a caller selecting .status==failed needs the reason the table already prints")
+	})
+}
+
 func TestNativeRepoDetailRow(t *testing.T) {
 	t.Parallel()
 

@@ -265,10 +265,6 @@ func newRepoListCmd() *cobra.Command {
 			return validatePageSize(cmd, pageSize)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Decide color against the real output writer before
-			// flushThroughPager swaps stdout for a buffer that never looks
-			// like a TTY; the buffered render passes the pre-styled cells
-			// through unchanged (see preStyleTable).
 			// The project's name is known only once the ref is resolved, which
 			// happens inside the core call below — but the row func has to be
 			// built out here, where the real writer decides color. The closure

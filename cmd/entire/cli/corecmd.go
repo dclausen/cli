@@ -515,33 +515,6 @@ func printTable[T any](w io.Writer, headers []string, items []T, row func(T) []s
 	return nil
 }
 
-// styleTableWith applies st's header and per-column styles to the headers and
-// row cells, matching how printTable colors a direct render.
-//
-// It exists for a render that goes through flushThroughPager, whose buffer
-// never looks like a TTY: styling against the real writer up front and letting
-// the buffered render pass the ANSI through unchanged is what keeps color.
-// Identity when st is disabled, so plain output stays byte-for-byte unchanged.
-// No command takes that path today — `repo list` was the last and now styles
-// the way `repo mirror list` does — so this is reached only by its own tests.
-func styleTableWith[T any](st tableStyles, headers []string, row func(T) []string) ([]string, func(T) []string) {
-	if !st.enabled {
-		return headers, row
-	}
-	styledHeaders := make([]string, len(headers))
-	for i, h := range headers {
-		styledHeaders[i] = st.style(st.header, h)
-	}
-	styledRow := func(t T) []string {
-		cells := row(t)
-		for i := range cells {
-			cells[i] = st.style(st.columnStyle(i), cells[i])
-		}
-		return cells
-	}
-	return styledHeaders, styledRow
-}
-
 // printFields writes a single record as aligned "FIELD  value" lines: the
 // label in header gray, the value in the same primary/secondary color the
 // list view would give that column.

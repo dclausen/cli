@@ -435,9 +435,15 @@ func TestRepoView_AuthoritativeRefusesAStatelessAnswer(t *testing.T) {
 	require.Contains(t, err.Error()+stderr, "readiness information")
 
 	srv, _ = serveRepoView(t, stateless, nil)
-	out, _, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
+	out, stderr, err := runCoreCmd(t, newRepoViewCmd, srv.URL, testNativeRepoPath)
 	require.NoError(t, err, "without the flag an unreadable state dashes the cell, it does not sink the view")
 	require.Contains(t, out, testNativeRepoPath)
+	// Dashed AND disclosed. A read that succeeds without answering leaves the
+	// same empty cell as one that fails, and is the harder of the two to
+	// diagnose precisely because nothing visibly went wrong — so it is not the
+	// one left silent.
+	require.Contains(t, stderr, "no provisioning state",
+		"the failing read explains its dash; the succeeding one must too")
 }
 
 // TestRepoView_ACancelledCommandDoesNotPrintAWonRace pins the half the error
