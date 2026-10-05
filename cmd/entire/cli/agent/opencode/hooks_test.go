@@ -492,10 +492,12 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		// the child is learned here too, so a subagent-start we never saw
 		// session.created for is still suppressed
 		`trackChild(part.state.metadata.sessionId, sessionID)`,
-		`callHookSync("subagent-start", {`,
+		`callHookSync("subagent-start", payload)`,
 		// nested: task parts in child sessions are announced before the child
 		// guard, and every task is reported on the top-level session
-		`if (event.type === "message.part.updated") announceTask(props?.part)`,
+		`announceTask(props?.part)`,
+		// an aborted or failed task never reaches tool.execute.after
+		`stopFailedTask(props?.part)`,
 		`session_id: topLevelSession(sessionID)`,
 		`session_id: topLevelSession(input.sessionID)`,
 		// stop: tool.execute.after for the task tool, synchronous
@@ -514,7 +516,7 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		// resumed child's export can be cut to this call
 		`"tool.execute.before": async (input) => {`,
 		`taskStartedAt.set(input.callID, Date.now())`,
-		`started_at: taskStartedAt.get(part.callID) ?? 0`,
+		`taskStartedAt.get(part.callID) ?? taskStartedAt.get(part.id) ?? 0`,
 		`started_at: startedAt`,
 		// a background result injected as a synthetic user part is not a prompt
 		`prompt: part.synthetic === true ? "" : (part.text ?? "")`,

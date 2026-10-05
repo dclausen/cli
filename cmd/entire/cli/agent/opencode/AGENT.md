@@ -130,9 +130,17 @@ top-level session.
 | Native signal | Entire EventType | Notes |
 |---------------|------------------|-------|
 | `session.created` / `session.updated` with `info.parentID` set, and any task-tool metadata naming a child | (suppressed plugin-side) | These populate `childSessions`. `session.idle` / `session.status` carry only `properties.sessionID` (no `info.parentID` to check) and are instead suppressed by membership in that same `childSessions` set; no `session-start`/`turn-start`/`turn-end` is ever fired for a child. |
-| `tool.execute.before` with `tool == "task"` | (plugin-side only) | Records `Date.now()` per `callID`, sent as `started_at` on both subagent hooks (see `task_id` resumption below). |
-| `message.part.updated`, task part `status: running` with `metadata.sessionId` | `SubagentStart` (`subagent-start` hook) | First moment the child ID is bound to the `callID`. `ToolUseID = callID`, `SessionID = top-level session` (the parent, or for a nested call the session the chain descends from), `SubagentID = metadata.sessionId`, `SubagentType`/`TaskDescription` from `args`. `DeferredCompletion: true`, since completion arrives separately from `subagent-stop`. |
-| `tool.execute.after` with `tool == "task"` | `SubagentEnd` (`subagent-stop` hook) | `SessionID = top-level session`, `ToolUseID = callID`, `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The event declares no transcript. The capture, after its skip checks, exports the child via `opencode export` (`FetchSubagentTranscript`) and declares it (`.entire/tmp/<childID>.<callID>.json`, cut to this call's messages; `<childID>.json` when `started_at` is unknown); files and token usage come from that export. A failed export completes the record transcript-unavailable, and condensation exports again. |
+| `tool.execute.before` with `tool == "task"` | (plugin-side only) | Records `Date.now()` per hook key, sent as `started_at` on both subagent hooks (see `task_id` resumption below). The hook key is the `callID`, except for a command subtask (below). |
+| `message.part.updated`, task part `status: running` with `metadata.sessionId` | `SubagentStart` (`subagent-start` hook) | First moment the child ID is bound to the `callID`. `ToolUseID = callID`, `SessionID = top-level session` (the parent, or for a nested call the session the chain descends from), `SubagentID = metadata.sessionId`, `SubagentType`/`TaskDescription` from `args`. `DeferredCompletion: true`, since completion arrives separately from `subagent-stop`. The plugin keeps this payload until the task stops; every stop path takes it, so a task stops at most once. |
+| `tool.execute.after` with `tool == "task"` | `SubagentEnd` (`subagent-stop` hook) | `SessionID = top-level session`, `ToolUseID = callID` (the announced one), `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The event declares no transcript. The capture, after its skip checks, exports the child via `opencode export` (`FetchSubagentTranscript`) and declares it (`.entire/tmp/<childID>.<callID>.json`, cut to this call's messages; `<childID>.json` when `started_at` is unknown); files and token usage come from that export. A failed export completes the record transcript-unavailable, and condensation exports again. If this hook runs before the running part was announced, the stop fires under the hook key and the late announcement is skipped, so no task is left open. |
+| `message.part.updated`, announced task part `status: error` | `SubagentEnd` (`subagent-stop` hook) | Same payload as above. OpenCode skips `tool.execute.after` when the call is aborted (Esc, `opencode run` teardown) or its execute throws, and marks the part `error` instead (`Tool execution aborted` / `Cancelled`). A call that failed before its child was bound was never announced and fires nothing. |
+
+**Command subtasks** (a command with `subtask: true`, `SessionPrompt.handleSubtask`)
+create the task part with a generated `callID` but fire
+`tool.execute.before`/`after` with the part's own `id` (`prt_…`). The plugin
+maps part id → `callID` when it announces the task, so start and stop use the
+same `ToolUseID`. On failure `tool.execute.after` fires with no output; the
+announced child ID is used instead.
 
 The suppression decision is made entirely on the plugin side, from the events
 and metadata it already observes — the Go side never sees a `session-start`,
@@ -190,6 +198,11 @@ lives in the child's.
   (condensation) is also bounded by the record's completion, since the child
   may have served a later call by then. A call whose start the plugin never
   saw (a restart mid-task) declares the full export.
+- **Abort cleanup can end a still-running call**: when the parent's stream
+  ends, OpenCode waits 250 ms for in-flight tool calls and then marks them
+  `error`. A task whose execute is still running at that point is stopped
+  from the error part; its later child messages are left out of the stop-time
+  export, and its real `tool.execute.after` is ignored.
 - **Model-specific `callID` format**: opaque and not globally unique; the child
   session ID is the safe cross-process key.
 - **Nested subagents** are off by default (`subagent_depth: 1`); when enabled,
