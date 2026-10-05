@@ -17,9 +17,8 @@ import (
 // flagOutputFormat selects the CLI's response encoding; modelHaiku is the
 // default model for Entire's own generation calls (fast and cheap).
 const (
-	flagOutputFormat   = "--output-format"
-	flagSettingSources = "--setting-sources"
-	modelHaiku         = "haiku"
+	flagOutputFormat = "--output-format"
+	modelHaiku       = "haiku"
 )
 
 // buildGenerateArgs assembles the claude CLI argv for a --print text-generation
@@ -51,7 +50,7 @@ func buildGenerateArgs(model, settingsPath string) []string {
 	args := []string{
 		"--print", flagOutputFormat, "json",
 		"--model", model,
-		flagSettingSources, "",
+		"--setting-sources", "",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -71,7 +70,7 @@ func buildStreamingGenerateArgs(model, settingsPath string) []string {
 		"--include-partial-messages",
 		"--verbose",
 		"--model", model,
-		flagSettingSources, "",
+		"--setting-sources", "",
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
