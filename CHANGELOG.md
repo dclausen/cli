@@ -23,7 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Attribution treats a prompt as a human-edit boundary only when the worktree is idle; while another session or a live background subagent is working, no human diff is recorded. Every shadow snapshot now captures the dirty worktree, including shell-written changes not named in the transcript. Note: human edits made during an agent-busy window can be credited to the agent ([#2651](https://github.com/entireio/cli/pull/2651))
 - Org names resolve against the caller's own org list instead of the server's global name lookup; when several of your orgs share a name, the CLI lists them and asks for the ULID ([#2601](https://github.com/entireio/cli/pull/2601))
 - Google handles printed as `google:<id>` by `entire auth status` are now accepted as grantees, and org member names are shown in grant output ([#2603](https://github.com/entireio/cli/pull/2603))
 
