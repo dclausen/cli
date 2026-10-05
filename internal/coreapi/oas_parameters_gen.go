@@ -36,6 +36,12 @@ type CreateOrgInvitationParams struct {
 	OrgId string
 }
 
+// CreatePluginInstallationParams is parameters of createPluginInstallation operation.
+type CreatePluginInstallationParams struct {
+	// Plugin installation profile.
+	Plugin string
+}
+
 // CreateRepoCIWebhookParams is parameters of createRepoCIWebhook operation.
 type CreateRepoCIWebhookParams struct {
 	RepoId string
@@ -78,6 +84,14 @@ type DeleteOrgCIBuildkiteClusterParams struct {
 type DeleteOrgCIBuildkiteCredentialParams struct {
 	OrgId string
 	BkOrg string
+}
+
+// DeletePluginInstallationParams is parameters of deletePluginInstallation operation.
+type DeletePluginInstallationParams struct {
+	// Plugin installation profile.
+	Plugin string
+	// Plugin installation id.
+	ID string
 }
 
 // DeleteProjectParams is parameters of deleteProject operation.
@@ -159,6 +173,9 @@ type GetRepoParams struct {
 	// jurisdiction redirects with 421. This core reports 503 when it cannot route the read. Provisioning
 	// and failed states still return 200.
 	Authoritative OptBool `json:",omitempty,omitzero"`
+	// Optional: opaque commit token from this repo's create, to read at a snapshot that contains that
+	// write. The lifecycle state, the placements, and a provisioning failure are always read fresh.
+	CommitToken OptString `json:",omitempty,omitzero"`
 }
 
 // GetRepoCIDeliveryParams is parameters of getRepoCIDelivery operation.
@@ -341,12 +358,23 @@ type ListOrgsParams struct {
 	PageSize OptInt32 `json:",omitempty,omitzero"`
 	// Opaque cursor from a previous response's nextPageToken.
 	PageToken OptString `json:",omitempty,omitzero"`
-	// Optional: exact-match org name (case-insensitive).
+	// Deprecated: exact org name among the caller's own orgs, case-insensitive. List orgs and match
+	// client-side instead.
 	Name        OptString `json:",omitempty,omitzero"`
 	IfNoneMatch OptString `json:",omitempty,omitzero"`
 	// Optional: opaque commit token from an org create or delete, to read at a snapshot that contains
 	// that write. Applies to both the name lookup and the page.
 	CommitToken OptString `json:",omitempty,omitzero"`
+}
+
+// ListPluginInstallationsParams is parameters of listPluginInstallations operation.
+type ListPluginInstallationsParams struct {
+	// Plugin installation profile.
+	Plugin string
+	// Entire org.
+	OrgID OptString `json:",omitempty,omitzero"`
+	// Entire project.
+	ProjectID OptString `json:",omitempty,omitzero"`
 }
 
 // ListProjectCollaboratorsParams is parameters of listProjectCollaborators operation.
@@ -401,6 +429,10 @@ type ListProjectReposParams struct {
 	ProjectId string
 	// Optional: exact-match repo name (case-insensitive).
 	Name OptString `json:",omitempty,omitzero"`
+	// Onboarded (default): the project's repos in Entire. all: also lists the GitHub owner's unmirrored
+	// repos that the caller can access on GitHub, after all published repos. Only a GitHub mirrors
+	// project has such repos. Ignored when name is set.
+	Scope OptListProjectReposScope `json:",omitempty,omitzero"`
 	// Optional: opaque commit token from a create, to read a snapshot that contains that write.
 	CommitToken OptString `json:",omitempty,omitzero"`
 }
@@ -612,6 +644,16 @@ type RemoveOrgMemberByMembershipIDParams struct {
 	MembershipId string
 }
 
+// RemovePluginInstallationRepositoryParams is parameters of removePluginInstallationRepository operation.
+type RemovePluginInstallationRepositoryParams struct {
+	// Plugin installation profile.
+	Plugin string
+	// Plugin installation id.
+	ID string
+	// Public repository id.
+	RepositoryID string
+}
+
 // ResolveHandleParams is parameters of resolveHandle operation.
 type ResolveHandleParams struct {
 	// IdP slug (e.g. "github").
@@ -685,6 +727,14 @@ type RotateOrgCIBuildkiteInboundSecretParams struct {
 // SetBranchProtectionParams is parameters of setBranchProtection operation.
 type SetBranchProtectionParams struct {
 	RepoId string
+}
+
+// SetPluginInstallationRepositoriesParams is parameters of setPluginInstallationRepositories operation.
+type SetPluginInstallationRepositoriesParams struct {
+	// Plugin installation profile.
+	Plugin string
+	// Installation (ins_<ULID>).
+	ID string
 }
 
 // SetRepoVisibilityParams is parameters of setRepoVisibility operation.

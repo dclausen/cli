@@ -198,81 +198,11 @@ func (s *AcceptedInvitationAdditional) init() AcceptedInvitationAdditional {
 	return m
 }
 
-// Ref: #/components/schemas/AccountHandle
-type AccountHandle struct {
-	Handle          string `json:"handle"`
-	IsPrimary       bool   `json:"isPrimary"`
-	Provider        string `json:"provider"`
-	ProviderUserId  string `json:"providerUserId"`
-	AdditionalProps AccountHandleAdditional
-}
-
-// GetHandle returns the value of Handle.
-func (s *AccountHandle) GetHandle() string {
-	return s.Handle
-}
-
-// GetIsPrimary returns the value of IsPrimary.
-func (s *AccountHandle) GetIsPrimary() bool {
-	return s.IsPrimary
-}
-
-// GetProvider returns the value of Provider.
-func (s *AccountHandle) GetProvider() string {
-	return s.Provider
-}
-
-// GetProviderUserId returns the value of ProviderUserId.
-func (s *AccountHandle) GetProviderUserId() string {
-	return s.ProviderUserId
-}
-
-// GetAdditionalProps returns the value of AdditionalProps.
-func (s *AccountHandle) GetAdditionalProps() AccountHandleAdditional {
-	return s.AdditionalProps
-}
-
-// SetHandle sets the value of Handle.
-func (s *AccountHandle) SetHandle(val string) {
-	s.Handle = val
-}
-
-// SetIsPrimary sets the value of IsPrimary.
-func (s *AccountHandle) SetIsPrimary(val bool) {
-	s.IsPrimary = val
-}
-
-// SetProvider sets the value of Provider.
-func (s *AccountHandle) SetProvider(val string) {
-	s.Provider = val
-}
-
-// SetProviderUserId sets the value of ProviderUserId.
-func (s *AccountHandle) SetProviderUserId(val string) {
-	s.ProviderUserId = val
-}
-
-// SetAdditionalProps sets the value of AdditionalProps.
-func (s *AccountHandle) SetAdditionalProps(val AccountHandleAdditional) {
-	s.AdditionalProps = val
-}
-
-type AccountHandleAdditional map[string]jx.Raw
-
-func (s *AccountHandleAdditional) init() AccountHandleAdditional {
-	m := *s
-	if m == nil {
-		m = map[string]jx.Raw{}
-		*s = m
-	}
-	return m
-}
-
 // Ref: #/components/schemas/AccountIdentity
 type AccountIdentity struct {
-	AvatarUrl       OptString       `json:"avatarUrl"`
-	DisplayName     OptString       `json:"displayName"`
-	Handles         []AccountHandle `json:"handles"`
+	AvatarUrl       OptString              `json:"avatarUrl"`
+	DisplayName     OptString              `json:"displayName"`
+	Handles         []AccountProfileHandle `json:"handles"`
 	AdditionalProps AccountIdentityAdditional
 }
 
@@ -287,7 +217,7 @@ func (s *AccountIdentity) GetDisplayName() OptString {
 }
 
 // GetHandles returns the value of Handles.
-func (s *AccountIdentity) GetHandles() []AccountHandle {
+func (s *AccountIdentity) GetHandles() []AccountProfileHandle {
 	return s.Handles
 }
 
@@ -307,7 +237,7 @@ func (s *AccountIdentity) SetDisplayName(val OptString) {
 }
 
 // SetHandles sets the value of Handles.
-func (s *AccountIdentity) SetHandles(val []AccountHandle) {
+func (s *AccountIdentity) SetHandles(val []AccountProfileHandle) {
 	s.Handles = val
 }
 
@@ -3737,6 +3667,158 @@ type CreateOrgInvitationOK Invitation
 
 func (*CreateOrgInvitationOK) createOrgInvitationRes() {}
 
+// Ref: #/components/schemas/CreatePluginInstallationInputBody
+type CreatePluginInstallationInputBody struct {
+	// A URL to the JSON Schema for this object.
+	Schema OptURI `json:"$schema"`
+	// Existing installation (ins_<ULID>) to retry.
+	InstallationID OptString `json:"installation_id"`
+	// Entire org the installation belongs to. Deprecated: use project_id.
+	OrgID OptString `json:"org_id"`
+	// Entire project the installation belongs to.
+	ProjectID OptString `json:"project_id"`
+	// Public repository ids (repo_<ULID>) when repository_selection is selected.
+	RepositoryIds []string `json:"repository_ids"`
+	// Project installations: all repositories in the project, or only repository_ids.
+	RepositorySelection OptCreatePluginInstallationInputBodyRepositorySelection `json:"repository_selection"`
+	// Opaque state interpreted by the selected plugin profile.
+	State           OptString `json:"state"`
+	AdditionalProps CreatePluginInstallationInputBodyAdditional
+}
+
+// GetSchema returns the value of Schema.
+func (s *CreatePluginInstallationInputBody) GetSchema() OptURI {
+	return s.Schema
+}
+
+// GetInstallationID returns the value of InstallationID.
+func (s *CreatePluginInstallationInputBody) GetInstallationID() OptString {
+	return s.InstallationID
+}
+
+// GetOrgID returns the value of OrgID.
+func (s *CreatePluginInstallationInputBody) GetOrgID() OptString {
+	return s.OrgID
+}
+
+// GetProjectID returns the value of ProjectID.
+func (s *CreatePluginInstallationInputBody) GetProjectID() OptString {
+	return s.ProjectID
+}
+
+// GetRepositoryIds returns the value of RepositoryIds.
+func (s *CreatePluginInstallationInputBody) GetRepositoryIds() []string {
+	return s.RepositoryIds
+}
+
+// GetRepositorySelection returns the value of RepositorySelection.
+func (s *CreatePluginInstallationInputBody) GetRepositorySelection() OptCreatePluginInstallationInputBodyRepositorySelection {
+	return s.RepositorySelection
+}
+
+// GetState returns the value of State.
+func (s *CreatePluginInstallationInputBody) GetState() OptString {
+	return s.State
+}
+
+// GetAdditionalProps returns the value of AdditionalProps.
+func (s *CreatePluginInstallationInputBody) GetAdditionalProps() CreatePluginInstallationInputBodyAdditional {
+	return s.AdditionalProps
+}
+
+// SetSchema sets the value of Schema.
+func (s *CreatePluginInstallationInputBody) SetSchema(val OptURI) {
+	s.Schema = val
+}
+
+// SetInstallationID sets the value of InstallationID.
+func (s *CreatePluginInstallationInputBody) SetInstallationID(val OptString) {
+	s.InstallationID = val
+}
+
+// SetOrgID sets the value of OrgID.
+func (s *CreatePluginInstallationInputBody) SetOrgID(val OptString) {
+	s.OrgID = val
+}
+
+// SetProjectID sets the value of ProjectID.
+func (s *CreatePluginInstallationInputBody) SetProjectID(val OptString) {
+	s.ProjectID = val
+}
+
+// SetRepositoryIds sets the value of RepositoryIds.
+func (s *CreatePluginInstallationInputBody) SetRepositoryIds(val []string) {
+	s.RepositoryIds = val
+}
+
+// SetRepositorySelection sets the value of RepositorySelection.
+func (s *CreatePluginInstallationInputBody) SetRepositorySelection(val OptCreatePluginInstallationInputBodyRepositorySelection) {
+	s.RepositorySelection = val
+}
+
+// SetState sets the value of State.
+func (s *CreatePluginInstallationInputBody) SetState(val OptString) {
+	s.State = val
+}
+
+// SetAdditionalProps sets the value of AdditionalProps.
+func (s *CreatePluginInstallationInputBody) SetAdditionalProps(val CreatePluginInstallationInputBodyAdditional) {
+	s.AdditionalProps = val
+}
+
+type CreatePluginInstallationInputBodyAdditional map[string]jx.Raw
+
+func (s *CreatePluginInstallationInputBodyAdditional) init() CreatePluginInstallationInputBodyAdditional {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// Project installations: all repositories in the project, or only repository_ids.
+type CreatePluginInstallationInputBodyRepositorySelection string
+
+const (
+	CreatePluginInstallationInputBodyRepositorySelectionAll      CreatePluginInstallationInputBodyRepositorySelection = "all"
+	CreatePluginInstallationInputBodyRepositorySelectionSelected CreatePluginInstallationInputBodyRepositorySelection = "selected"
+)
+
+// AllValues returns all CreatePluginInstallationInputBodyRepositorySelection values.
+func (CreatePluginInstallationInputBodyRepositorySelection) AllValues() []CreatePluginInstallationInputBodyRepositorySelection {
+	return []CreatePluginInstallationInputBodyRepositorySelection{
+		CreatePluginInstallationInputBodyRepositorySelectionAll,
+		CreatePluginInstallationInputBodyRepositorySelectionSelected,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s CreatePluginInstallationInputBodyRepositorySelection) MarshalText() ([]byte, error) {
+	switch s {
+	case CreatePluginInstallationInputBodyRepositorySelectionAll:
+		return []byte(s), nil
+	case CreatePluginInstallationInputBodyRepositorySelectionSelected:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *CreatePluginInstallationInputBodyRepositorySelection) UnmarshalText(data []byte) error {
+	switch CreatePluginInstallationInputBodyRepositorySelection(data) {
+	case CreatePluginInstallationInputBodyRepositorySelectionAll:
+		*s = CreatePluginInstallationInputBodyRepositorySelectionAll
+		return nil
+	case CreatePluginInstallationInputBodyRepositorySelectionSelected:
+		*s = CreatePluginInstallationInputBodyRepositorySelectionSelected
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
 // Ref: #/components/schemas/CreateProjectInputBody
 type CreateProjectInputBody struct {
 	// A URL to the JSON Schema for this object.
@@ -4914,6 +4996,7 @@ func (s *CreatedProjectOwnerType) UnmarshalText(data []byte) error {
 type CreatedRepo struct {
 	// A URL to the JSON Schema for this object.
 	Schema       OptURI              `json:"$schema"`
+	Candidate    OptRepoCandidate    `json:"candidate"`
 	Capabilities OptRepoCapabilities `json:"capabilities"`
 	ClusterHost  OptString           `json:"clusterHost"`
 	ClusterSlug  OptString           `json:"clusterSlug"`
@@ -4946,6 +5029,11 @@ type CreatedRepo struct {
 // GetSchema returns the value of Schema.
 func (s *CreatedRepo) GetSchema() OptURI {
 	return s.Schema
+}
+
+// GetCandidate returns the value of Candidate.
+func (s *CreatedRepo) GetCandidate() OptRepoCandidate {
+	return s.Candidate
 }
 
 // GetCapabilities returns the value of Capabilities.
@@ -5066,6 +5154,11 @@ func (s *CreatedRepo) GetAdditionalProps() CreatedRepoAdditional {
 // SetSchema sets the value of Schema.
 func (s *CreatedRepo) SetSchema(val OptURI) {
 	s.Schema = val
+}
+
+// SetCandidate sets the value of Candidate.
+func (s *CreatedRepo) SetCandidate(val OptRepoCandidate) {
+	s.Candidate = val
 }
 
 // SetCapabilities sets the value of Capabilities.
@@ -5294,6 +5387,9 @@ func (s *DeleteOrgNoContent) GetXEntireCommitToken() OptString {
 func (s *DeleteOrgNoContent) SetXEntireCommitToken(val OptString) {
 	s.XEntireCommitToken = val
 }
+
+// DeletePluginInstallationNoContent is response for DeletePluginInstallation operation.
+type DeletePluginInstallationNoContent struct{}
 
 // DeleteProjectNoContent is response for DeleteProject operation.
 type DeleteProjectNoContent struct {
@@ -8998,6 +9094,55 @@ func (s *ListOrgsOutputBodyHeaders) SetResponse(val ListOrgsOutputBody) {
 	s.Response = val
 }
 
+// Ref: #/components/schemas/ListPluginInstallationsOutputBody
+type ListPluginInstallationsOutputBody struct {
+	// A URL to the JSON Schema for this object.
+	Schema          OptURI                   `json:"$schema"`
+	Items           []PluginInstallationView `json:"items"`
+	AdditionalProps ListPluginInstallationsOutputBodyAdditional
+}
+
+// GetSchema returns the value of Schema.
+func (s *ListPluginInstallationsOutputBody) GetSchema() OptURI {
+	return s.Schema
+}
+
+// GetItems returns the value of Items.
+func (s *ListPluginInstallationsOutputBody) GetItems() []PluginInstallationView {
+	return s.Items
+}
+
+// GetAdditionalProps returns the value of AdditionalProps.
+func (s *ListPluginInstallationsOutputBody) GetAdditionalProps() ListPluginInstallationsOutputBodyAdditional {
+	return s.AdditionalProps
+}
+
+// SetSchema sets the value of Schema.
+func (s *ListPluginInstallationsOutputBody) SetSchema(val OptURI) {
+	s.Schema = val
+}
+
+// SetItems sets the value of Items.
+func (s *ListPluginInstallationsOutputBody) SetItems(val []PluginInstallationView) {
+	s.Items = val
+}
+
+// SetAdditionalProps sets the value of AdditionalProps.
+func (s *ListPluginInstallationsOutputBody) SetAdditionalProps(val ListPluginInstallationsOutputBodyAdditional) {
+	s.AdditionalProps = val
+}
+
+type ListPluginInstallationsOutputBodyAdditional map[string]jx.Raw
+
+func (s *ListPluginInstallationsOutputBodyAdditional) init() ListPluginInstallationsOutputBodyAdditional {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
 // Ref: #/components/schemas/ListProjectCollaboratorsOutputBody
 type ListProjectCollaboratorsOutputBody struct {
 	// A URL to the JSON Schema for this object.
@@ -9320,7 +9465,8 @@ func (s *ListProjectPeopleSort) UnmarshalText(data []byte) error {
 // Ref: #/components/schemas/ListProjectReposOutputBody
 type ListProjectReposOutputBody struct {
 	// A URL to the JSON Schema for this object.
-	Schema OptURI `json:"$schema"`
+	Schema               OptURI  `json:"$schema"`
+	CandidatesIncomplete OptBool `json:"candidatesIncomplete"`
 	// Pass back to fetch the next page; empty when no more entries.
 	NextPageToken   OptString `json:"nextPageToken"`
 	Repo            OptRepo   `json:"repo"`
@@ -9331,6 +9477,11 @@ type ListProjectReposOutputBody struct {
 // GetSchema returns the value of Schema.
 func (s *ListProjectReposOutputBody) GetSchema() OptURI {
 	return s.Schema
+}
+
+// GetCandidatesIncomplete returns the value of CandidatesIncomplete.
+func (s *ListProjectReposOutputBody) GetCandidatesIncomplete() OptBool {
+	return s.CandidatesIncomplete
 }
 
 // GetNextPageToken returns the value of NextPageToken.
@@ -9356,6 +9507,11 @@ func (s *ListProjectReposOutputBody) GetAdditionalProps() ListProjectReposOutput
 // SetSchema sets the value of Schema.
 func (s *ListProjectReposOutputBody) SetSchema(val OptURI) {
 	s.Schema = val
+}
+
+// SetCandidatesIncomplete sets the value of CandidatesIncomplete.
+func (s *ListProjectReposOutputBody) SetCandidatesIncomplete(val OptBool) {
+	s.CandidatesIncomplete = val
 }
 
 // SetNextPageToken sets the value of NextPageToken.
@@ -9387,6 +9543,50 @@ func (s *ListProjectReposOutputBodyAdditional) init() ListProjectReposOutputBody
 		*s = m
 	}
 	return m
+}
+
+// Onboarded (default): the project's repos in Entire. all: also lists the GitHub owner's unmirrored
+// repos that the caller can access on GitHub, after all published repos. Only a GitHub mirrors
+// project has such repos. Ignored when name is set.
+type ListProjectReposScope string
+
+const (
+	ListProjectReposScopeOnboarded ListProjectReposScope = "onboarded"
+	ListProjectReposScopeAll       ListProjectReposScope = "all"
+)
+
+// AllValues returns all ListProjectReposScope values.
+func (ListProjectReposScope) AllValues() []ListProjectReposScope {
+	return []ListProjectReposScope{
+		ListProjectReposScopeOnboarded,
+		ListProjectReposScopeAll,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ListProjectReposScope) MarshalText() ([]byte, error) {
+	switch s {
+	case ListProjectReposScopeOnboarded:
+		return []byte(s), nil
+	case ListProjectReposScopeAll:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ListProjectReposScope) UnmarshalText(data []byte) error {
+	switch ListProjectReposScope(data) {
+	case ListProjectReposScopeOnboarded:
+		*s = ListProjectReposScopeOnboarded
+		return nil
+	case ListProjectReposScopeAll:
+		*s = ListProjectReposScopeAll
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/ListProjectsOutputBody
@@ -12605,6 +12805,52 @@ func (o OptCIWebhookAuditEventViewMetadata) Or(d CIWebhookAuditEventViewMetadata
 	return d
 }
 
+// NewOptCreatePluginInstallationInputBodyRepositorySelection returns new OptCreatePluginInstallationInputBodyRepositorySelection with value set to v.
+func NewOptCreatePluginInstallationInputBodyRepositorySelection(v CreatePluginInstallationInputBodyRepositorySelection) OptCreatePluginInstallationInputBodyRepositorySelection {
+	return OptCreatePluginInstallationInputBodyRepositorySelection{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptCreatePluginInstallationInputBodyRepositorySelection is optional CreatePluginInstallationInputBodyRepositorySelection.
+type OptCreatePluginInstallationInputBodyRepositorySelection struct {
+	Value CreatePluginInstallationInputBodyRepositorySelection
+	Set   bool
+}
+
+// IsSet returns true if OptCreatePluginInstallationInputBodyRepositorySelection was set.
+func (o OptCreatePluginInstallationInputBodyRepositorySelection) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptCreatePluginInstallationInputBodyRepositorySelection) Reset() {
+	var v CreatePluginInstallationInputBodyRepositorySelection
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptCreatePluginInstallationInputBodyRepositorySelection) SetTo(v CreatePluginInstallationInputBodyRepositorySelection) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptCreatePluginInstallationInputBodyRepositorySelection) Get() (v CreatePluginInstallationInputBodyRepositorySelection, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptCreatePluginInstallationInputBodyRepositorySelection) Or(d CreatePluginInstallationInputBodyRepositorySelection) CreatePluginInstallationInputBodyRepositorySelection {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptCreateRepoCIWebhookInputBodyConfig returns new OptCreateRepoCIWebhookInputBodyConfig with value set to v.
 func NewOptCreateRepoCIWebhookInputBodyConfig(v CreateRepoCIWebhookInputBodyConfig) OptCreateRepoCIWebhookInputBodyConfig {
 	return OptCreateRepoCIWebhookInputBodyConfig{
@@ -13611,6 +13857,52 @@ func (o OptListProjectPeopleSort) Get() (v ListProjectPeopleSort, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptListProjectPeopleSort) Or(d ListProjectPeopleSort) ListProjectPeopleSort {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptListProjectReposScope returns new OptListProjectReposScope with value set to v.
+func NewOptListProjectReposScope(v ListProjectReposScope) OptListProjectReposScope {
+	return OptListProjectReposScope{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptListProjectReposScope is optional ListProjectReposScope.
+type OptListProjectReposScope struct {
+	Value ListProjectReposScope
+	Set   bool
+}
+
+// IsSet returns true if OptListProjectReposScope was set.
+func (o OptListProjectReposScope) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptListProjectReposScope) Reset() {
+	var v ListProjectReposScope
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptListProjectReposScope) SetTo(v ListProjectReposScope) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptListProjectReposScope) Get() (v ListProjectReposScope, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptListProjectReposScope) Or(d ListProjectReposScope) ListProjectReposScope {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -16536,6 +16828,232 @@ func (s *PatchRepoCIWebhookInputBodyAdditional) init() PatchRepoCIWebhookInputBo
 	return m
 }
 
+// Ref: #/components/schemas/PluginInstallation
+type PluginInstallation struct {
+	// A URL to the JSON Schema for this object.
+	Schema OptURI `json:"$schema"`
+	// Provider account for this installation (ins-<ulid>).
+	Account string `json:"account"`
+	// Installation id (ins_<ULID>) the plugin stores.
+	InstallationID string `json:"installation_id"`
+	// Entire org that owns the installation, or the project's owning org.
+	OrgID OptString `json:"org_id"`
+	// Opaque output from the selected static plugin profile.
+	Profile PluginInstallationProfile `json:"profile"`
+	// Entire project the installation belongs to.
+	ProjectID OptString `json:"project_id"`
+	// All or selected; empty for an org installation.
+	RepositorySelection OptString `json:"repository_selection"`
+	AdditionalProps     PluginInstallationAdditional
+}
+
+// GetSchema returns the value of Schema.
+func (s *PluginInstallation) GetSchema() OptURI {
+	return s.Schema
+}
+
+// GetAccount returns the value of Account.
+func (s *PluginInstallation) GetAccount() string {
+	return s.Account
+}
+
+// GetInstallationID returns the value of InstallationID.
+func (s *PluginInstallation) GetInstallationID() string {
+	return s.InstallationID
+}
+
+// GetOrgID returns the value of OrgID.
+func (s *PluginInstallation) GetOrgID() OptString {
+	return s.OrgID
+}
+
+// GetProfile returns the value of Profile.
+func (s *PluginInstallation) GetProfile() PluginInstallationProfile {
+	return s.Profile
+}
+
+// GetProjectID returns the value of ProjectID.
+func (s *PluginInstallation) GetProjectID() OptString {
+	return s.ProjectID
+}
+
+// GetRepositorySelection returns the value of RepositorySelection.
+func (s *PluginInstallation) GetRepositorySelection() OptString {
+	return s.RepositorySelection
+}
+
+// GetAdditionalProps returns the value of AdditionalProps.
+func (s *PluginInstallation) GetAdditionalProps() PluginInstallationAdditional {
+	return s.AdditionalProps
+}
+
+// SetSchema sets the value of Schema.
+func (s *PluginInstallation) SetSchema(val OptURI) {
+	s.Schema = val
+}
+
+// SetAccount sets the value of Account.
+func (s *PluginInstallation) SetAccount(val string) {
+	s.Account = val
+}
+
+// SetInstallationID sets the value of InstallationID.
+func (s *PluginInstallation) SetInstallationID(val string) {
+	s.InstallationID = val
+}
+
+// SetOrgID sets the value of OrgID.
+func (s *PluginInstallation) SetOrgID(val OptString) {
+	s.OrgID = val
+}
+
+// SetProfile sets the value of Profile.
+func (s *PluginInstallation) SetProfile(val PluginInstallationProfile) {
+	s.Profile = val
+}
+
+// SetProjectID sets the value of ProjectID.
+func (s *PluginInstallation) SetProjectID(val OptString) {
+	s.ProjectID = val
+}
+
+// SetRepositorySelection sets the value of RepositorySelection.
+func (s *PluginInstallation) SetRepositorySelection(val OptString) {
+	s.RepositorySelection = val
+}
+
+// SetAdditionalProps sets the value of AdditionalProps.
+func (s *PluginInstallation) SetAdditionalProps(val PluginInstallationAdditional) {
+	s.AdditionalProps = val
+}
+
+type PluginInstallationAdditional map[string]jx.Raw
+
+func (s *PluginInstallationAdditional) init() PluginInstallationAdditional {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// Opaque output from the selected static plugin profile.
+type PluginInstallationProfile map[string]jx.Raw
+
+func (s *PluginInstallationProfile) init() PluginInstallationProfile {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// Ref: #/components/schemas/PluginInstallationView
+type PluginInstallationView struct {
+	// A URL to the JSON Schema for this object.
+	Schema              OptURI    `json:"$schema"`
+	Account             string    `json:"account"`
+	CreatedAt           time.Time `json:"created_at"`
+	InstallationID      string    `json:"installation_id"`
+	OrgID               OptString `json:"org_id"`
+	ProjectID           OptString `json:"project_id"`
+	RepositorySelection OptString `json:"repository_selection"`
+	AdditionalProps     PluginInstallationViewAdditional
+}
+
+// GetSchema returns the value of Schema.
+func (s *PluginInstallationView) GetSchema() OptURI {
+	return s.Schema
+}
+
+// GetAccount returns the value of Account.
+func (s *PluginInstallationView) GetAccount() string {
+	return s.Account
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *PluginInstallationView) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetInstallationID returns the value of InstallationID.
+func (s *PluginInstallationView) GetInstallationID() string {
+	return s.InstallationID
+}
+
+// GetOrgID returns the value of OrgID.
+func (s *PluginInstallationView) GetOrgID() OptString {
+	return s.OrgID
+}
+
+// GetProjectID returns the value of ProjectID.
+func (s *PluginInstallationView) GetProjectID() OptString {
+	return s.ProjectID
+}
+
+// GetRepositorySelection returns the value of RepositorySelection.
+func (s *PluginInstallationView) GetRepositorySelection() OptString {
+	return s.RepositorySelection
+}
+
+// GetAdditionalProps returns the value of AdditionalProps.
+func (s *PluginInstallationView) GetAdditionalProps() PluginInstallationViewAdditional {
+	return s.AdditionalProps
+}
+
+// SetSchema sets the value of Schema.
+func (s *PluginInstallationView) SetSchema(val OptURI) {
+	s.Schema = val
+}
+
+// SetAccount sets the value of Account.
+func (s *PluginInstallationView) SetAccount(val string) {
+	s.Account = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *PluginInstallationView) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetInstallationID sets the value of InstallationID.
+func (s *PluginInstallationView) SetInstallationID(val string) {
+	s.InstallationID = val
+}
+
+// SetOrgID sets the value of OrgID.
+func (s *PluginInstallationView) SetOrgID(val OptString) {
+	s.OrgID = val
+}
+
+// SetProjectID sets the value of ProjectID.
+func (s *PluginInstallationView) SetProjectID(val OptString) {
+	s.ProjectID = val
+}
+
+// SetRepositorySelection sets the value of RepositorySelection.
+func (s *PluginInstallationView) SetRepositorySelection(val OptString) {
+	s.RepositorySelection = val
+}
+
+// SetAdditionalProps sets the value of AdditionalProps.
+func (s *PluginInstallationView) SetAdditionalProps(val PluginInstallationViewAdditional) {
+	s.AdditionalProps = val
+}
+
+type PluginInstallationViewAdditional map[string]jx.Raw
+
+func (s *PluginInstallationViewAdditional) init() PluginInstallationViewAdditional {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
 // Ref: #/components/schemas/PreviewInvitationInputBody
 type PreviewInvitationInputBody struct {
 	// A URL to the JSON Schema for this object.
@@ -17023,12 +17541,19 @@ func (s *ProjectCollaboratorAdditional) init() ProjectCollaboratorAdditional {
 
 // Ref: #/components/schemas/ProjectGrant
 type ProjectGrant struct {
+	// The account's public display name, when it has one. Absent for non-account grantees.
+	DisplayName     OptString `json:"displayName"`
 	GranteeId       string    `json:"granteeId"`
 	GranteeName     OptString `json:"granteeName"`
 	GranteeType     string    `json:"granteeType"`
 	Role            string    `json:"role"`
 	Source          string    `json:"source"`
 	AdditionalProps ProjectGrantAdditional
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *ProjectGrant) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetGranteeId returns the value of GranteeId.
@@ -17059,6 +17584,11 @@ func (s *ProjectGrant) GetSource() string {
 // GetAdditionalProps returns the value of AdditionalProps.
 func (s *ProjectGrant) GetAdditionalProps() ProjectGrantAdditional {
 	return s.AdditionalProps
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *ProjectGrant) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetGranteeId sets the value of GranteeId.
@@ -17320,10 +17850,14 @@ type RemoveOrgMemberByMembershipIDNoContent struct{}
 // RemoveOrgMemberNoContent is response for RemoveOrgMember operation.
 type RemoveOrgMemberNoContent struct{}
 
+// RemovePluginInstallationRepositoryNoContent is response for RemovePluginInstallationRepository operation.
+type RemovePluginInstallationRepositoryNoContent struct{}
+
 // Ref: #/components/schemas/Repo
 type Repo struct {
 	// A URL to the JSON Schema for this object.
 	Schema            OptURI              `json:"$schema"`
+	Candidate         OptRepoCandidate    `json:"candidate"`
 	Capabilities      OptRepoCapabilities `json:"capabilities"`
 	ClusterHost       OptString           `json:"clusterHost"`
 	ClusterSlug       OptString           `json:"clusterSlug"`
@@ -17352,6 +17886,11 @@ type Repo struct {
 // GetSchema returns the value of Schema.
 func (s *Repo) GetSchema() OptURI {
 	return s.Schema
+}
+
+// GetCandidate returns the value of Candidate.
+func (s *Repo) GetCandidate() OptRepoCandidate {
+	return s.Candidate
 }
 
 // GetCapabilities returns the value of Capabilities.
@@ -17467,6 +18006,11 @@ func (s *Repo) GetAdditionalProps() RepoAdditional {
 // SetSchema sets the value of Schema.
 func (s *Repo) SetSchema(val OptURI) {
 	s.Schema = val
+}
+
+// SetCandidate sets the value of Candidate.
+func (s *Repo) SetCandidate(val OptRepoCandidate) {
+	s.Candidate = val
 }
 
 // SetCapabilities sets the value of Capabilities.
@@ -17919,12 +18463,19 @@ func (s *RepoFacetPageAdditional) init() RepoFacetPageAdditional {
 
 // Ref: #/components/schemas/RepoGrant
 type RepoGrant struct {
+	// The account's public display name, when it has one. Absent for non-account grantees.
+	DisplayName     OptString `json:"displayName"`
 	GranteeId       string    `json:"granteeId"`
 	GranteeName     OptString `json:"granteeName"`
 	GranteeType     string    `json:"granteeType"`
 	Role            string    `json:"role"`
 	Source          string    `json:"source"`
 	AdditionalProps RepoGrantAdditional
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *RepoGrant) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetGranteeId returns the value of GranteeId.
@@ -17955,6 +18506,11 @@ func (s *RepoGrant) GetSource() string {
 // GetAdditionalProps returns the value of AdditionalProps.
 func (s *RepoGrant) GetAdditionalProps() RepoGrantAdditional {
 	return s.AdditionalProps
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *RepoGrant) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetGranteeId sets the value of GranteeId.
@@ -20330,6 +20886,110 @@ func (s *SessionAuth) SetAPIKey(val string) {
 // SetRoles sets the value of Roles.
 func (s *SessionAuth) SetRoles(val []string) {
 	s.Roles = val
+}
+
+// Ref: #/components/schemas/SetPluginInstallationRepositoriesInputBody
+type SetPluginInstallationRepositoriesInputBody struct {
+	// A URL to the JSON Schema for this object.
+	Schema OptURI `json:"$schema"`
+	// Public repository ids (repo_<ULID>) when selected.
+	RepositoryIds []string `json:"repository_ids"`
+	// All repositories in the project, or only repository_ids.
+	RepositorySelection SetPluginInstallationRepositoriesInputBodyRepositorySelection `json:"repository_selection"`
+	AdditionalProps     SetPluginInstallationRepositoriesInputBodyAdditional
+}
+
+// GetSchema returns the value of Schema.
+func (s *SetPluginInstallationRepositoriesInputBody) GetSchema() OptURI {
+	return s.Schema
+}
+
+// GetRepositoryIds returns the value of RepositoryIds.
+func (s *SetPluginInstallationRepositoriesInputBody) GetRepositoryIds() []string {
+	return s.RepositoryIds
+}
+
+// GetRepositorySelection returns the value of RepositorySelection.
+func (s *SetPluginInstallationRepositoriesInputBody) GetRepositorySelection() SetPluginInstallationRepositoriesInputBodyRepositorySelection {
+	return s.RepositorySelection
+}
+
+// GetAdditionalProps returns the value of AdditionalProps.
+func (s *SetPluginInstallationRepositoriesInputBody) GetAdditionalProps() SetPluginInstallationRepositoriesInputBodyAdditional {
+	return s.AdditionalProps
+}
+
+// SetSchema sets the value of Schema.
+func (s *SetPluginInstallationRepositoriesInputBody) SetSchema(val OptURI) {
+	s.Schema = val
+}
+
+// SetRepositoryIds sets the value of RepositoryIds.
+func (s *SetPluginInstallationRepositoriesInputBody) SetRepositoryIds(val []string) {
+	s.RepositoryIds = val
+}
+
+// SetRepositorySelection sets the value of RepositorySelection.
+func (s *SetPluginInstallationRepositoriesInputBody) SetRepositorySelection(val SetPluginInstallationRepositoriesInputBodyRepositorySelection) {
+	s.RepositorySelection = val
+}
+
+// SetAdditionalProps sets the value of AdditionalProps.
+func (s *SetPluginInstallationRepositoriesInputBody) SetAdditionalProps(val SetPluginInstallationRepositoriesInputBodyAdditional) {
+	s.AdditionalProps = val
+}
+
+type SetPluginInstallationRepositoriesInputBodyAdditional map[string]jx.Raw
+
+func (s *SetPluginInstallationRepositoriesInputBodyAdditional) init() SetPluginInstallationRepositoriesInputBodyAdditional {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
+// All repositories in the project, or only repository_ids.
+type SetPluginInstallationRepositoriesInputBodyRepositorySelection string
+
+const (
+	SetPluginInstallationRepositoriesInputBodyRepositorySelectionAll      SetPluginInstallationRepositoriesInputBodyRepositorySelection = "all"
+	SetPluginInstallationRepositoriesInputBodyRepositorySelectionSelected SetPluginInstallationRepositoriesInputBodyRepositorySelection = "selected"
+)
+
+// AllValues returns all SetPluginInstallationRepositoriesInputBodyRepositorySelection values.
+func (SetPluginInstallationRepositoriesInputBodyRepositorySelection) AllValues() []SetPluginInstallationRepositoriesInputBodyRepositorySelection {
+	return []SetPluginInstallationRepositoriesInputBodyRepositorySelection{
+		SetPluginInstallationRepositoriesInputBodyRepositorySelectionAll,
+		SetPluginInstallationRepositoriesInputBodyRepositorySelectionSelected,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SetPluginInstallationRepositoriesInputBodyRepositorySelection) MarshalText() ([]byte, error) {
+	switch s {
+	case SetPluginInstallationRepositoriesInputBodyRepositorySelectionAll:
+		return []byte(s), nil
+	case SetPluginInstallationRepositoriesInputBodyRepositorySelectionSelected:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SetPluginInstallationRepositoriesInputBodyRepositorySelection) UnmarshalText(data []byte) error {
+	switch SetPluginInstallationRepositoriesInputBodyRepositorySelection(data) {
+	case SetPluginInstallationRepositoriesInputBodyRepositorySelectionAll:
+		*s = SetPluginInstallationRepositoriesInputBodyRepositorySelectionAll
+		return nil
+	case SetPluginInstallationRepositoriesInputBodyRepositorySelectionSelected:
+		*s = SetPluginInstallationRepositoriesInputBodyRepositorySelectionSelected
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/SetRepoVisibilityInputBody
