@@ -522,6 +522,36 @@ func TestGetRepoDetach_UnknownStatusPassesThrough(t *testing.T) {
 	}
 }
 
+// TestListRepoPeople_NullDirectGrantDecodes pins the shape production sends for
+// a mirror's GitHub collaborators: no direct grant is JSON null.
+func TestListRepoPeople_NullDirectGrantDecodes(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"items":[{"accountId":"01H0000000000000000000000A","handle":"github:alice","provider":"github","displayName":"Alice","role":"mirror_source_admin","directGrant":null,"sources":[{"source":"github","role":"mirror_source_admin"}]}],"totalCount":1}`)); err != nil {
+			t.Errorf("writing test response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewClient(srv.URL, bearerOnlySource{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	out, err := c.ListRepoPeople(context.Background(), ListRepoPeopleParams{RepoId: "01H0000000000000000000000R"})
+	if err != nil {
+		t.Fatalf("ListRepoPeople with a null directGrant must decode, got: %v", err)
+	}
+	if len(out.Items) != 1 || out.Items[0].Handle.Or("") != "github:alice" {
+		t.Fatalf("Items = %+v, want github:alice", out.Items)
+	}
+	if !out.Items[0].DirectGrant.IsNull() {
+		t.Errorf("DirectGrant = %+v, want null", out.Items[0].DirectGrant)
+	}
+}
+
 // TestListOrgMembers_UnknownEnumValuesPassThrough is the same contract for
 // Membership, which `entire org grant list` prints the same way.
 func TestListOrgMembers_UnknownEnumValuesPassThrough(t *testing.T) {

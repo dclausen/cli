@@ -13164,6 +13164,51 @@ func (s *NativeMirrorPlacementStatus) UnmarshalText(data []byte) error {
 	}
 }
 
+// NewNilResourcePersonDirectGrant returns new NilResourcePersonDirectGrant with value set to v.
+func NewNilResourcePersonDirectGrant(v ResourcePersonDirectGrant) NilResourcePersonDirectGrant {
+	return NilResourcePersonDirectGrant{
+		Value: v,
+	}
+}
+
+// NilResourcePersonDirectGrant is nullable ResourcePersonDirectGrant.
+type NilResourcePersonDirectGrant struct {
+	Value ResourcePersonDirectGrant
+	Null  bool
+}
+
+// SetTo sets value to v.
+func (o *NilResourcePersonDirectGrant) SetTo(v ResourcePersonDirectGrant) {
+	o.Null = false
+	o.Value = v
+}
+
+// IsNull returns true if value is Null.
+func (o NilResourcePersonDirectGrant) IsNull() bool { return o.Null }
+
+// SetToNull sets value to null.
+func (o *NilResourcePersonDirectGrant) SetToNull() {
+	o.Null = true
+	var v ResourcePersonDirectGrant
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o NilResourcePersonDirectGrant) Get() (v ResourcePersonDirectGrant, ok bool) {
+	if o.Null {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o NilResourcePersonDirectGrant) Or(d ResourcePersonDirectGrant) ResourcePersonDirectGrant {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // Ref: #/components/schemas/OIDCProvider
 type OIDCProvider struct {
 	Description     OptString `json:"description"`
@@ -21131,11 +21176,11 @@ func (s *ResourcePeopleOutputBodyAdditional) init() ResourcePeopleOutputBodyAddi
 
 // Ref: #/components/schemas/ResourcePerson
 type ResourcePerson struct {
-	AccountId   string                    `json:"accountId"`
-	AvatarUrl   OptString                 `json:"avatarUrl"`
-	DirectGrant ResourcePersonDirectGrant `json:"directGrant"`
-	DisplayName OptString                 `json:"displayName"`
-	Handle      OptString                 `json:"handle"`
+	AccountId   string                       `json:"accountId"`
+	AvatarUrl   OptString                    `json:"avatarUrl"`
+	DirectGrant NilResourcePersonDirectGrant `json:"directGrant"`
+	DisplayName OptString                    `json:"displayName"`
+	Handle      OptString                    `json:"handle"`
 	// Earliest known effective-access time for the selected project. Organization-derived dates use
 	// membership activation, not invitation creation. Omitted for repositories and access without a
 	// known timestamp.
@@ -21157,7 +21202,7 @@ func (s *ResourcePerson) GetAvatarUrl() OptString {
 }
 
 // GetDirectGrant returns the value of DirectGrant.
-func (s *ResourcePerson) GetDirectGrant() ResourcePersonDirectGrant {
+func (s *ResourcePerson) GetDirectGrant() NilResourcePersonDirectGrant {
 	return s.DirectGrant
 }
 
@@ -21207,7 +21252,7 @@ func (s *ResourcePerson) SetAvatarUrl(val OptString) {
 }
 
 // SetDirectGrant sets the value of DirectGrant.
-func (s *ResourcePerson) SetDirectGrant(val ResourcePersonDirectGrant) {
+func (s *ResourcePerson) SetDirectGrant(val NilResourcePersonDirectGrant) {
 	s.DirectGrant = val
 }
 

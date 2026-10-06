@@ -292,7 +292,11 @@ the commands are always runnable in every build.
   it turns the mirror's sole placement into a native repo of the project. It is
   keyed by the placement ID from `/mirrors/placements`, and with several
   placements it sends the first so the server's `single-placement`
-  precondition explains the refusal. Every run asks for the dry-run plan first;
+  precondition explains the refusal. Every run asks for the dry-run plan first,
+  and tables show its access split into who loses and who keeps it, accounts
+  named by handle and display name from one best-effort `GET
+  /repos/{repoId}/people` read before the write (the API names subjects by ID
+  only; `--json` keeps the IDs and skips the read);
   an ineligible plan stops before the write with the failed precondition slugs
   (under `--json`, after printing the plan). A real detach is confirmed through
   `runPromptFormAfter`, which writes the plan on the prompt's own writer ahead

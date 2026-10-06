@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/internal/coreapi"
 )
 
@@ -125,8 +127,15 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 			return fmt.Errorf("plan the detach of %s: %w", ref.qualified(), err)
 		}
 		target := nativeRepoPath(projectName + "/" + plan.Name)
+		// Names are for people reading tables: the plan, the prompt's copy of
+		// it, and the removed-access list. Read them now, while the repo's
+		// people still include everyone the detach is about to remove.
+		var names detachNames
+		if !jsonRequested(cmd) || (!opts.dryRun && plan.Eligible && !yes) {
+			names = lookupDetachNames(ctx, c, repoID)
+		}
 		if opts.dryRun || !plan.Eligible {
-			if err := renderDetachPlan(cmd, ref, target, plan); err != nil {
+			if err := renderDetachPlan(cmd, ref, target, plan, names); err != nil {
 				return err
 			}
 			if !plan.Eligible && !opts.dryRun {
@@ -136,7 +145,7 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 		}
 
 		if !yes {
-			proceed, err := detachConfirmed(cmd, ref, target, plan)
+			proceed, err := detachConfirmed(cmd, ref, target, plan, names)
 			if err != nil || !proceed {
 				return err
 			}
@@ -153,7 +162,7 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 			}
 			return fmt.Errorf("detach %s: %w", ref.qualified(), err)
 		}
-		return finishDetach(cmd, c, ref, repoID, projectID, res, opts)
+		return finishDetach(cmd, c, ref, repoID, projectID, res, names, opts)
 	})
 }
 
@@ -162,7 +171,7 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 // every way out that leaves the repository frozen says how to follow it up:
 // the /gh/ ref this command takes answers "moved" from here on, so re-running
 // it cannot reach the detach again.
-func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, repoID, projectID string, res *coreapi.DetachRepoResult, opts mirrorDetachOptions) error {
+func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, repoID, projectID string, res *coreapi.DetachRepoResult, names detachNames, opts mirrorDetachOptions) error {
 	errW := cmd.ErrOrStderr()
 	var (
 		state   *coreapi.RepoDetachState
@@ -191,7 +200,7 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 	if jsonRequested(cmd) {
 		err = printJSON(cmd.OutOrStdout(), res)
 	} else {
-		err = renderDetachResult(cmd.OutOrStdout(), ref, res, resumable)
+		err = renderDetachResult(cmd.OutOrStdout(), ref, res, names, resumable)
 	}
 	if err != nil {
 		return err
@@ -350,14 +359,14 @@ var detachCanPrompt = interactive.CanPromptInteractively
 // what the question asks about, so it follows the prompt, and a redirected
 // stdout keeps only what the command did. The consequences also go in the
 // Title, not a Description: huh's accessible mode renders only the title.
-var detachConfirmed = func(cmd *cobra.Command, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult) (bool, error) {
+var detachConfirmed = func(cmd *cobra.Command, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult, names detachNames) (bool, error) {
 	if err := detachInterrupted(cmd); err != nil {
 		return false, err
 	}
 	confirmed := false
 	prompt := huh.NewConfirm().Title(detachConfirmTitle(ref, target, plan)).Value(&confirmed)
 	render, err := runPromptFormAfter(cmd, NewAccessibleForm(huh.NewGroup(prompt)), func(w io.Writer) error {
-		if err := writeDetachPlan(w, ref, target, plan); err != nil {
+		if err := writeDetachPlan(w, ref, target, plan, names); err != nil {
 			return err
 		}
 		fmt.Fprintln(w)
@@ -411,6 +420,16 @@ func failedDetachPreconditions(plan *coreapi.DetachRepoResult) []string {
 	return failed
 }
 
+func detachKeptAccess(access []coreapi.DetachAccessEntry) []coreapi.DetachAccessEntry {
+	var kept []coreapi.DetachAccessEntry
+	for _, a := range access {
+		if a.CoveredByTargetProject {
+			kept = append(kept, a)
+		}
+	}
+	return kept
+}
+
 func detachLostAccess(access []coreapi.DetachAccessEntry) []coreapi.DetachAccessEntry {
 	var lost []coreapi.DetachAccessEntry
 	for _, a := range access {
@@ -423,8 +442,7 @@ func detachLostAccess(access []coreapi.DetachAccessEntry) []coreapi.DetachAccess
 
 var (
 	detachPreconditionColumns = []string{"PRECONDITION", "RESULT", "DETAIL"}
-	detachLostAccessColumns   = []string{"SUBJECT", colHeaderType, colHeaderRole, colHeaderSource}
-	detachAccessColumns       = append(slices.Clone(detachLostAccessColumns), "AFTER DETACH")
+	detachAccessColumns       = []string{"SUBJECT", colHeaderName, colHeaderRole, colHeaderSource}
 )
 
 func detachPreconditionRow(p coreapi.DetachPrecondition) []string {
@@ -435,28 +453,93 @@ func detachPreconditionRow(p coreapi.DetachPrecondition) []string {
 	return []string{p.Precondition, result, p.Detail.Or("")}
 }
 
-func detachAccessRow(a coreapi.DetachAccessEntry) []string {
-	after := "removed"
-	if a.CoveredByTargetProject {
-		after = "kept"
+// detachNames maps an account ID to the repo's people entry for it. The
+// detach API names every subject by ID only, and a column of ULIDs is not
+// something a reader can check before removing access.
+type detachNames map[string]coreapi.ResourcePerson
+
+// lookupDetachNames reads the repo's people once. It is best-effort: a failed
+// or truncated read leaves the subjects it missed shown by ID, which is less
+// readable but never wrong.
+func lookupDetachNames(ctx context.Context, c *coreapi.Client, repoID string) detachNames {
+	people, _, err := fetchPagesBounded(ctx, coreListFetchBudget, func(ctx context.Context, cursor string) ([]coreapi.ResourcePerson, string, error) {
+		params := coreapi.ListRepoPeopleParams{RepoId: repoID, PageSize: coreapi.NewOptInt32(500)}
+		if cursor != "" {
+			params.PageToken = coreapi.NewOptString(cursor)
+		}
+		out, err := c.ListRepoPeople(ctx, params)
+		if err != nil {
+			return nil, "", fmt.Errorf("list repo people: %w", err)
+		}
+		return out.Items, out.NextPageToken.Or(""), nil
+	})
+	if err != nil {
+		logging.Debug(ctx, "repo mirror detach: people lookup failed; showing subject IDs", "error", err)
 	}
-	return append(detachLostAccessRow(a), after)
+	names := make(detachNames, len(people))
+	for _, p := range people {
+		names[p.AccountId] = p
+	}
+	return names
 }
 
-func detachLostAccessRow(a coreapi.DetachAccessEntry) []string {
-	return []string{a.SubjectId, a.SubjectType, a.Role, a.Source}
+// subject names an access entry the way the grant commands name a grantee:
+// an account by its provider:handle, anything else (or an account the people
+// listing did not return) by type and ID.
+func (n detachNames) subject(a coreapi.DetachAccessEntry) string {
+	if p, ok := n[a.SubjectId]; ok && a.SubjectType == granteeTypeAccount {
+		if handle := p.Handle.Or(""); handle != "" {
+			return handle
+		}
+	}
+	return a.SubjectType + ":" + a.SubjectId
+}
+
+func (n detachNames) row(a coreapi.DetachAccessEntry) []string {
+	name := "-"
+	if p, ok := n[a.SubjectId]; ok && a.SubjectType == granteeTypeAccount {
+		name = cmp.Or(p.DisplayName.Or(""), "-")
+	}
+	return []string{n.subject(a), name, a.Role, a.Source}
+}
+
+// sorted orders entries by how they read, so a long list can be scanned for
+// a name.
+func (n detachNames) sorted(entries []coreapi.DetachAccessEntry) []coreapi.DetachAccessEntry {
+	out := slices.Clone(entries)
+	slices.SortStableFunc(out, func(a, b coreapi.DetachAccessEntry) int {
+		return cmp.Compare(strings.ToLower(n.subject(a)), strings.ToLower(n.subject(b)))
+	})
+	return out
+}
+
+// writeDetachAccess prints one titled group of access entries; an empty group
+// prints nothing.
+func writeDetachAccess(w io.Writer, title string, names detachNames, entries []coreapi.DetachAccessEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "%s (%d):\n", title, len(entries))
+	if err := printTable(w, detachAccessColumns, names.sorted(entries), names.row); err != nil {
+		return err
+	}
+	fmt.Fprintln(w)
+	return nil
 }
 
 // renderDetachPlan prints the plan as the command's output: --json as the
 // wire result, the human view as the two tables a reader decides on.
-func renderDetachPlan(cmd *cobra.Command, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult) error {
+func renderDetachPlan(cmd *cobra.Command, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult, names detachNames) error {
 	if jsonRequested(cmd) {
 		return printJSON(cmd.OutOrStdout(), plan)
 	}
-	return writeDetachPlan(cmd.OutOrStdout(), ref, target, plan)
+	return writeDetachPlan(cmd.OutOrStdout(), ref, target, plan, names)
 }
 
-func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult) error {
+// writeDetachPlan prints the preconditions, then the access split by what the
+// detach does to it: who loses access is what a reader has to check, so it
+// comes first and is not interleaved with who keeps it.
+func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult, names detachNames) error {
 	fmt.Fprintf(w, "Detach plan: %s → %s\n\n", ref.qualified(), target)
 	if err := printTable(w, detachPreconditionColumns, plan.Preconditions, detachPreconditionRow); err != nil {
 		return err
@@ -464,13 +547,17 @@ func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreap
 	fmt.Fprintln(w)
 	if len(plan.Access) == 0 {
 		fmt.Fprintln(w, "No access sources.")
-	} else if err := printTable(w, detachAccessColumns, plan.Access, detachAccessRow); err != nil {
+		fmt.Fprintln(w)
+	}
+	lost := detachLostAccess(plan.Access)
+	if err := writeDetachAccess(w, "Loses access", names, lost); err != nil {
 		return err
 	}
-	fmt.Fprintln(w)
+	if err := writeDetachAccess(w, "Keeps access", names, detachKeptAccess(plan.Access)); err != nil {
+		return err
+	}
 	if plan.Eligible {
-		lost := len(detachLostAccess(plan.Access))
-		fmt.Fprintf(w, "Eligible. %d access %s would be removed.\n", lost, pluralize("source", lost))
+		fmt.Fprintf(w, "Eligible. %d access %s would be removed.\n", len(lost), pluralize("source", len(lost)))
 		return nil
 	}
 	failed := failedDetachPreconditions(plan)
@@ -482,7 +569,7 @@ func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreap
 // leaves the repository frozen, so each says so and what happens next.
 //
 // resumable is what a state read said about a stall, nil when none was made.
-func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoResult, resumable *bool) error {
+func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoResult, names detachNames, resumable *bool) error {
 	native := ref.qualified()
 	if name := res.NativeName.Or(""); name != "" {
 		native = "/" + strings.TrimPrefix(name, "/")
@@ -518,8 +605,8 @@ func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoR
 		if len(res.LostAccess) == 0 {
 			fmt.Fprintln(w, "No access was removed.")
 		} else {
-			fmt.Fprintln(w, "\nRemoved access:")
-			if err := printTable(w, detachLostAccessColumns, res.LostAccess, detachLostAccessRow); err != nil {
+			fmt.Fprintln(w)
+			if err := writeDetachAccess(w, "Removed access", names, res.LostAccess); err != nil {
 				return err
 			}
 		}

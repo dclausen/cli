@@ -42,6 +42,11 @@
 // default — so a server that does not send them yet must not fail the whole
 // request.
 //
+// Transform 2c (read-model fields sent as null): wrap selected $ref fields in
+// anyOf [$ref, null] (see readModelNullableFields). The server sends JSON null
+// for an absent object the spec types as the object alone, and ogen's
+// decoder then rejects the whole response.
+//
 // Transform 3 (unsupported security schemes): drop the interactive login
 // schemes (oauth2, oidc) the spec lists on every operation. The CLI never
 // drives them through the generated client, and ogen has no generator for
@@ -97,6 +102,7 @@ func run() error {
 	ops := foldErrorResponses(doc)
 	loosened := loosenReadModelEnums(doc)
 	optional := loosenReadModelRequired(doc)
+	nullable := allowReadModelNulls(doc)
 	schemes, err := dropInteractiveSecurity(doc)
 	if err != nil {
 		return err
@@ -113,7 +119,7 @@ func run() error {
 		return fmt.Errorf("write spec: %w", err)
 	}
 
-	fmt.Printf("normalize: folded error responses on %d operation(s), loosened %d read-model enum field(s), made %d read-model field(s) optional, dropped %d interactive security scheme(s) → %s\n", ops, loosened, optional, schemes, outPath)
+	fmt.Printf("normalize: folded error responses on %d operation(s), loosened %d read-model enum field(s), made %d read-model field(s) optional, made %d read-model field(s) nullable, dropped %d interactive security scheme(s) → %s\n", ops, loosened, optional, nullable, schemes, outPath)
 	return nil
 }
 
@@ -272,6 +278,59 @@ var readModelOptionalFields = map[string][]string{
 	"Project":             {"capabilities"},
 	"Repo":                {"capabilities", "provider"},
 	"RepoIndexEntry":      {"org", "provider"},
+}
+
+// readModelNullableFields lists response read-model $ref fields the server
+// sends as JSON null, keyed by component schema name.
+//
+// ResourcePerson.directGrant is null for anyone without a direct grant (every
+// GitHub-synced collaborator), so without this no repo or project people
+// listing decodes; `repo mirror detach` reads one to name the accounts it
+// shows.
+var readModelNullableFields = map[string][]string{
+	"ResourcePerson": {"directGrant"},
+}
+
+// allowReadModelNulls rewrites each field named in readModelNullableFields
+// from {"$ref": X} to {"anyOf": [{"$ref": X}, {"type": "null"}]}. A field that
+// is already nullable upstream no longer has a bare $ref and is left alone.
+// Returns the number of fields rewritten.
+func allowReadModelNulls(doc map[string]any) int {
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	schemas, ok := components["schemas"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	count := 0
+	for schemaName, fields := range readModelNullableFields {
+		schema, ok := schemas[schemaName].(map[string]any)
+		if !ok {
+			continue
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, field := range fields {
+			prop, ok := props[field].(map[string]any)
+			if !ok {
+				continue
+			}
+			ref, ok := prop["$ref"].(string)
+			if !ok || len(prop) != 1 {
+				continue
+			}
+			props[field] = map[string]any{"anyOf": []any{
+				map[string]any{"$ref": ref},
+				map[string]any{"type": "null"},
+			}}
+			count++
+		}
+	}
+	return count
 }
 
 // loosenReadModelRequired removes each field named in readModelOptionalFields

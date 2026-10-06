@@ -5854,7 +5854,14 @@
             "type": "string"
           },
           "directGrant": {
-            "$ref": "#/components/schemas/ResourcePersonDirectGrant"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResourcePersonDirectGrant"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "displayName": {
             "type": "string"

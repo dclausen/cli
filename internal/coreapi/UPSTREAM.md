@@ -101,6 +101,22 @@ and what `search`, `repo mirror` and the dispatch wizard page through, so a
 decode failure there takes out cell routing and search together rather than
 one command.
 
+## 2c. Nullable objects are typed as the object alone
+
+**Symptom:** `ResourcePerson.directGrant` is a `$ref` to
+`ResourcePersonDirectGrant`, but the server sends `"directGrant": null` for
+everyone without a direct grant, which is every GitHub-synced collaborator.
+ogen's decoder then rejects the whole `GET /repos/{repoId}/people` (and
+`/projects/{projectId}/people`) response.
+
+**Fix upstream:** declare the field nullable (`anyOf: [$ref, {type: null}]`),
+or omit it instead of sending null.
+
+**Workaround:** `spec/normalize.go` (`allowReadModelNulls`, allowlist
+`readModelNullableFields`) rewrites the listed `$ref` fields into that
+`anyOf`, so ogen generates a `Nil…` wrapper. Locked in by
+`TestListRepoPeople_NullDirectGrantDecodes`.
+
 ## 3. Every operation advertises the interactive login schemes
 
 **Symptom:** the spec lists four security alternatives on every operation

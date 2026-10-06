@@ -34,6 +34,8 @@ type fakeDetachCore struct {
 	states     []string // GET /detach answers in order, raw JSON; the last repeats
 	stateGets  int
 	stateFails bool // GET /detach answers 503
+	peopleGets int
+	peopleFail bool // GET /people answers 503
 	realFails  int  // the real (non-dry-run) POST answers this status
 }
 
@@ -73,6 +75,23 @@ func (f *fakeDetachCore) handler(t *testing.T) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, err = io.WriteString(w, answer)
+			assert.NoError(t, err)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/"+testDetachMirrorULID+"/people":
+			f.mu.Lock()
+			f.peopleGets++
+			fails := f.peopleFail
+			f.mu.Unlock()
+			if fails {
+				writeCoreProblem(t, w, http.StatusServiceUnavailable, "people unavailable")
+				return
+			}
+			// The shape production answers with for a mirror's GitHub collaborators.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, err := io.WriteString(w, `{"items":[
+				{"accountId":"01ALICE","handle":"github:alice","provider":"github","displayName":"Alice Smith","role":"writer","directGrant":null,"sources":[{"source":"github","role":"writer"}]},
+				{"accountId":"01BOB","handle":"github:bob","provider":"github","role":"reader","directGrant":null,"sources":[{"source":"github","role":"reader"}]}],
+				"totalCount":2}`)
 			assert.NoError(t, err)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/"+testDetachMirrorULID+"/detach":
 			f.mu.Lock()
@@ -222,7 +241,7 @@ func stubDetachPrompt(t *testing.T, answer bool) *bool {
 	asked := false
 	prevCan, prevConfirm := detachCanPrompt, detachConfirmed
 	detachCanPrompt = func() bool { return true }
-	detachConfirmed = func(*cobra.Command, mirrorRepoRef, string, *coreapi.DetachRepoResult) (bool, error) {
+	detachConfirmed = func(*cobra.Command, mirrorRepoRef, string, *coreapi.DetachRepoResult, detachNames) (bool, error) {
 		asked = true
 		return answer, nil
 	}
@@ -248,8 +267,14 @@ func TestRepoMirrorDetach_DryRun(t *testing.T) {
 
 	assert.Contains(t, stdout, "/gh/octocat/hello-world → /et/acme/hello-world")
 	assert.Contains(t, stdout, "single-placement")
-	assert.Contains(t, stdout, "01TEAM")
-	assert.Contains(t, stdout, "removed")
+	assert.Equal(t, 1, fake.peopleGets)
+	lost, kept, ok := strings.Cut(stdout, "Keeps access (1):")
+	require.True(t, ok, "who keeps access is its own section: %s", stdout)
+	assert.Contains(t, lost, "Loses access (1):")
+	assert.Contains(t, lost, "team:01TEAM", "a team has no handle and keeps its ID")
+	assert.Contains(t, kept, "github:alice")
+	assert.Contains(t, kept, "Alice Smith")
+	assert.NotContains(t, stdout, "01ALICE", "an account the people listing names is shown by handle")
 	assert.Contains(t, stdout, "Eligible. 1 access source would be removed.")
 }
 
@@ -300,7 +325,7 @@ func TestRepoMirrorDetach_Confirmed(t *testing.T) {
 
 	assert.Contains(t, stdout, "✓ Detached /gh/octocat/hello-world into /et/acme/hello-world")
 	assert.Contains(t, stdout, "Released: /gh/octocat/hello-world")
-	assert.Contains(t, stdout, "Removed access:")
+	assert.Contains(t, stdout, "Removed access (1):")
 	assert.Contains(t, stdout, "Note: The GitHub repository stays live.")
 }
 
@@ -372,14 +397,14 @@ func TestRenderDetachResult_Stalled(t *testing.T) {
 	var b strings.Builder
 	ref := mirrorRepoRef{forge: mirrorCloneForge, owner: "o", repo: "web"}
 	resumable := true
-	require.NoError(t, renderDetachResult(&b, ref, &res, &resumable))
+	require.NoError(t, renderDetachResult(&b, ref, &res, nil, &resumable))
 	assert.Contains(t, b.String(), "until the server's sweep resumes the rewire")
 	assert.Contains(t, b.String(), "/et/acme/web")
 	assert.NotContains(t, b.String(), "No access was removed", "a resume does not know who lost access")
 
 	// Without a state read (--no-wait) nothing says who resumes it.
 	b.Reset()
-	require.NoError(t, renderDetachResult(&b, ref, &res, nil))
+	require.NoError(t, renderDetachResult(&b, ref, &res, nil, nil))
 	assert.Contains(t, b.String(), "until the rewire is resumed.")
 	assert.NotContains(t, b.String(), "sweep")
 }
@@ -489,10 +514,12 @@ func TestDetachConfirmed_PlanFollowsThePrompt(t *testing.T) {
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr) // not a terminal, so the prompt falls back to the stub
 
-	proceed, err := detachConfirmed(cmd, mirrorRepoRef{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world"}, "/et/acme/hello-world", &plan)
+	names := detachNames{"01ALICE": {AccountId: "01ALICE", Handle: coreapi.NewOptString("github:alice")}}
+	proceed, err := detachConfirmed(cmd, mirrorRepoRef{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world"}, "/et/acme/hello-world", &plan, names)
 	require.NoError(t, err)
 	assert.True(t, proceed)
-	assert.Contains(t, terminal.String(), "01TEAM", "the plan is shown where the question is asked")
+	assert.Contains(t, terminal.String(), "team:01TEAM", "the plan is shown where the question is asked")
+	assert.Contains(t, terminal.String(), "github:alice")
 	assert.Contains(t, terminal.String(), "1 access source the project does not cover will be removed")
 	assert.Empty(t, stdout.String())
 }
@@ -508,7 +535,7 @@ func TestDetachConfirmed_ACancelledContextIsNotADecline(t *testing.T) {
 	var render bytes.Buffer
 	cmd.SetErr(&render)
 
-	proceed, err := detachConfirmed(cmd, mirrorRepoRef{forge: mirrorCloneForge, owner: "o", repo: "r"}, "/et/p/r", &coreapi.DetachRepoResult{})
+	proceed, err := detachConfirmed(cmd, mirrorRepoRef{forge: mirrorCloneForge, owner: "o", repo: "r"}, "/et/p/r", &coreapi.DetachRepoResult{}, nil)
 	require.False(t, proceed)
 	require.ErrorIs(t, err, context.Canceled)
 	require.Empty(t, render.String())
@@ -544,4 +571,26 @@ func TestRepoMirrorDetach_ConfirmFlags(t *testing.T) {
 	assert.Equal(t, "y", yes.Shorthand)
 	assert.Nil(t, cmd.Flags().Lookup("force"))
 	assert.Nil(t, cmd.Flags().ShorthandLookup("f"))
+}
+
+// Names are cosmetic: a failed people lookup leaves subjects shown by ID and
+// the plan still renders.
+//
+// Not parallel: swaps the package-level core-client seam.
+func TestRepoMirrorDetach_NamesAreBestEffort(t *testing.T) {
+	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
+	fake.peopleFail = true
+	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "account:01ALICE")
+}
+
+// --json is the wire plan, which names subjects by ID, so it skips the lookup.
+//
+// Not parallel: swaps the package-level core-client seam.
+func TestRepoMirrorDetach_JSONSkipsTheNameLookup(t *testing.T) {
+	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
+	_, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run", "--json")
+	require.NoError(t, err)
+	assert.Zero(t, fake.peopleGets)
 }

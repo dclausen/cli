@@ -5280,8 +5280,15 @@ func (s *ResourcePerson) Validate() error {
 
 	var failures []validate.FieldError
 	if err := func() error {
-		if err := s.DirectGrant.Validate(); err != nil {
-			return err
+		if value, ok := s.DirectGrant.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
 		}
 		return nil
 	}(); err != nil {
