@@ -120,6 +120,20 @@ the only failure mode here that would not announce itself (a requirement
 mixing `oauth2` with `bearerAuth` survives whole and makes ogen abort at
 generate time on the now-dangling scheme).
 
+## 4. Hand-edited ahead of upstream: COR-1361 cascade delete
+
+**Symptom:** `entire repo delete --cascade` ships before the server's spec
+does. `core.openapi.json` carries the COR-1361 contract by hand: a boolean
+`cascade` query parameter and a `202` response on `deleteRepo`, and
+`deleting` in the `Repo.state` enum.
+
+**Fix upstream:** entiredb publishes the same shape once the server
+deploys. A plain `curl` refresh then carries it, and this entry goes.
+
+**Workaround:** none in `normalize.go`. Do not refresh the spec from a core
+that predates the server change: the `DeleteRepoRes` sum type disappears
+and `entire repo delete` stops compiling.
+
 <!-- Resolved upstream and removed:
   - Nullable arrays (`"type": ["array","null"]`) — entiredb now emits
     non-nullable arrays (`"type": "array"`, absent ⇒ `[]`), so the

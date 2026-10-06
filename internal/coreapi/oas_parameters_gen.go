@@ -102,6 +102,9 @@ type DeleteProjectParams struct {
 // DeleteRepoParams is parameters of deleteRepo operation.
 type DeleteRepoParams struct {
 	RepoId string
+	// Also delete the repo's native mirrors. With one or more native-mirror rows the delete is
+	// asynchronous and answers 202; poll GET until it returns 404.
+	Cascade OptBool `json:",omitempty,omitzero"`
 }
 
 // DeleteRepoCIWebhookParams is parameters of deleteRepoCIWebhook operation.
