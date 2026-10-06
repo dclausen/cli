@@ -139,14 +139,14 @@ func TestRepoMirrorDetach_WaitsForCompletion(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON, stateStalledResumableJSON, stateCompleteJSON}
 
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force")
+	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
 	require.NoError(t, err)
 	assert.Equal(t, 3, fake.stateGets, "a resumable stall keeps the wait going")
 	assert.Contains(t, stderr, "Waiting for the detach")
 	assert.Contains(t, stdout, "✓ Detached /gh/octocat/hello-world into /et/acme/hello-world")
 
 	fake.stateGets = 0
-	stdout, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force", "--json")
+	stdout, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--json")
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &got), "stdout must be one JSON document: %s", stdout)
@@ -162,7 +162,7 @@ func TestRepoMirrorDetach_StallNeedingAnAdmin(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON, stateStalledNeedsAdminJSON}
 
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force")
+	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
 	require.ErrorContains(t, err, "needs an admin of the target project")
 	assert.Equal(t, 2, fake.stateGets)
 	assert.Contains(t, stdout, "until an admin of the target project resumes the rewire")
@@ -175,14 +175,14 @@ func TestRepoMirrorDetach_StallNeedingAnAdmin(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_NoWait(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force", "--no-wait")
+	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--no-wait")
 	require.NoError(t, err)
 	assert.Zero(t, fake.stateGets)
 	assert.Contains(t, stdout, "is in progress")
 	assert.Contains(t, stderr, "Follow the detach with: entire api /api/v1/repos/"+testDetachMirrorULID+"/detach")
 
 	fake.result = strings.Replace(inProgressResultJSON, `"in_progress"`, `"stalled"`, 1)
-	stdout, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force", "--no-wait")
+	stdout, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--no-wait")
 	require.NoError(t, err, "a stall the caller chose not to wait on is not a failure")
 	assert.Contains(t, stdout, "stalled")
 }
@@ -196,7 +196,7 @@ func TestRepoMirrorDetach_WaitTimesOut(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON}
 
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force", "--timeout", "20ms")
+	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--timeout", "20ms")
 	require.ErrorContains(t, err, "timed out waiting for the detach")
 	require.ErrorContains(t, err, "carries on on the server")
 	assert.Contains(t, stdout, "is in progress")
@@ -317,12 +317,12 @@ func TestRepoMirrorDetach_Declined(t *testing.T) {
 	assert.True(t, fake.bodies[0].DryRun)
 }
 
-// --force skips the prompt; --json then prints only the real result.
+// --yes skips the prompt; --json then prints only the real result.
 //
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_ForceJSON(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force", "--json")
+	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--json")
 	require.NoError(t, err)
 	require.Len(t, fake.bodies, 2)
 
@@ -331,18 +331,18 @@ func TestRepoMirrorDetach_ForceJSON(t *testing.T) {
 	assert.Equal(t, "complete", got["status"])
 }
 
-// Without a terminal and without --force the command refuses before any
+// Without a terminal and without --yes the command refuses before any
 // request: an unanswerable prompt must not cost a lookup.
 //
 // Not parallel: swaps the package-level core-client seam.
-func TestRepoMirrorDetach_NonInteractiveNeedsForce(t *testing.T) {
+func TestRepoMirrorDetach_NonInteractiveNeedsYes(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
 	prev := detachCanPrompt
 	detachCanPrompt = func() bool { return false }
 	t.Cleanup(func() { detachCanPrompt = prev })
 
 	_, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme")
-	require.ErrorContains(t, err, "pass --force")
+	require.ErrorContains(t, err, "pass --yes")
 	assert.Empty(t, fake.bodies)
 }
 
@@ -401,7 +401,7 @@ func TestRepoMirrorDetach_PollFailureKeepsTheContext(t *testing.T) {
 	fake.states = []string{stateInProgressJSON}
 	fake.stateFails = true
 
-	_, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force")
+	_, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
 	require.ErrorContains(t, err, "detach state unavailable")
 	require.ErrorContains(t, err, "carries on on the server")
 	assert.Equal(t, maxConsecutivePollErrors, fake.stateGets)
@@ -417,12 +417,12 @@ func TestRepoMirrorDetach_UnexpectedStatuses(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{`{"status":"none","releasedAddresses":[],"resumable":false,"frozen":false}`}
 
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force")
+	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
 	require.ErrorContains(t, err, "no detach recorded")
 	assert.Contains(t, stdout, "is in progress", "a none state is not merged over the detach's own answer")
 
 	fake.result = strings.Replace(completeResultJSON, `"complete"`, `"queued"`, 1)
-	_, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force")
+	_, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
 	require.ErrorContains(t, err, `unexpected status "queued"`)
 }
 
@@ -432,7 +432,7 @@ func TestRepoMirrorDetach_UnexpectedStatuses(t *testing.T) {
 func TestRepoMirrorDetach_RealCallRefused(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
 	fake.realFails = true
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force")
+	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
 	require.ErrorContains(t, err, "another detach of this repo is running")
 	assert.Empty(t, stdout)
 	require.Len(t, fake.bodies, 2)
@@ -444,7 +444,7 @@ func TestRepoMirrorDetach_RealCallRefused(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_IneligibleJSON(t *testing.T) {
 	_, url := newDetachFixture(t, ineligiblePlanJSON, completeResultJSON)
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--force", "--json")
+	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--json")
 	require.ErrorContains(t, err, "failed: single-placement")
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &got), "stdout must be one JSON document: %s", stdout)
@@ -515,4 +515,16 @@ type detachStateFunc func(context.Context, coreapi.GetRepoDetachParams) (*coreap
 
 func (f detachStateFunc) GetRepoDetach(ctx context.Context, p coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error) {
 	return f(ctx, p)
+}
+
+// The confirmation is skipped with --yes/-y only: there is no --force, since
+// nothing overrides an ineligible plan.
+func TestRepoMirrorDetach_ConfirmFlags(t *testing.T) {
+	t.Parallel()
+	cmd := newRepoMirrorDetachCmd()
+	yes := cmd.Flags().Lookup("yes")
+	require.NotNil(t, yes)
+	assert.Equal(t, "y", yes.Shorthand)
+	assert.Nil(t, cmd.Flags().Lookup("force"))
+	assert.Nil(t, cmd.Flags().ShorthandLookup("f"))
 }

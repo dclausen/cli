@@ -296,7 +296,8 @@ the commands are always runnable in every build.
   an ineligible plan stops before the write with the failed precondition slugs
   (under `--json`, after printing the plan). A real detach is confirmed through
   `runPromptFormAfter`, which writes the plan on the prompt's own writer ahead
-  of the form; `--force`/`--yes` skips it, and without a terminal the command
+  of the form; `--yes`/`-y` skips it (there is no `--force`: nothing
+  overrides an ineligible plan), and without a terminal the command
   refuses before any request. `--json` prints the plan on `--dry-run` or a
   refusal, and the result otherwise. An `in_progress` or `stalled` answer is
   waited on through `GET /repos/{repoId}/detach` (`--no-wait`, `--timeout`,

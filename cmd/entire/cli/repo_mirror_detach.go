@@ -50,7 +50,7 @@ func newRepoMirrorDetachCmd() *cobra.Command {
 			"plan and changes nothing.\n\n" +
 			"A real detach freezes writes, waits for the mirror to match GitHub, " +
 			"and rewires the repository. It asks for confirmation first; pass " +
-			"--force (or --yes) to skip it, which a non-interactive run must. When the rewire " +
+			"--yes to skip it, which a non-interactive run must. When the rewire " +
 			"cannot finish in one call the repository stays frozen, and the command " +
 			"waits for it to complete — through a stall the server resumes on its " +
 			"own — up to --timeout. Pass --no-wait to return as soon as the " +
@@ -59,7 +59,7 @@ func newRepoMirrorDetachCmd() *cobra.Command {
 			"`entire repo mirror remove` first.",
 		Example: "  entire repo mirror detach /gh/octocat/hello-world --project acme --dry-run\n" +
 			"  entire repo mirror detach /gh/octocat/hello-world --project acme\n" +
-			"  entire repo mirror detach /gh/octocat/hello-world --project acme --name hello --force",
+			"  entire repo mirror detach /gh/octocat/hello-world --project acme --name hello --yes",
 		Args: cobra.ExactArgs(1),
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			// Zero is an unbounded wait, matching `mirror add`.
@@ -78,7 +78,9 @@ func newRepoMirrorDetachCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "Return once the repository is native, without waiting for the rewire to complete")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 30*time.Minute, "How long to wait for the rewire to complete (0 waits indefinitely)")
 	markRequired(cmd, projectFlagName)
-	addForceFlag(cmd)
+	// Only --yes: --force/-f reads as overriding a refusal, and an ineligible
+	// plan cannot be overridden — the flag only answers the prompt.
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
 	addJSONFlag(cmd)
 	return cmd
 }
@@ -96,11 +98,11 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 	if err != nil {
 		return err
 	}
-	force := forceRequested(cmd)
+	yes, _ := cmd.Flags().GetBool("yes") //nolint:errcheck // registered above
 	// An unanswerable prompt must not cost a request: settle it from the
 	// command line before anything is resolved.
-	if !opts.dryRun && !force && !detachCanPrompt() {
-		return fmt.Errorf("refusing to detach %s without confirmation; pass --force, or --dry-run to only see the plan", ref.qualified())
+	if !opts.dryRun && !yes && !detachCanPrompt() {
+		return fmt.Errorf("refusing to detach %s without confirmation; pass --yes, or --dry-run to only see the plan", ref.qualified())
 	}
 
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
@@ -133,7 +135,7 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 			return nil
 		}
 
-		if !force {
+		if !yes {
 			proceed, err := detachConfirmed(cmd, ref, target, plan)
 			if err != nil || !proceed {
 				return err
