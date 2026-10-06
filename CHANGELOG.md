@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `entire checkpoint explain` exposes subagent task records and the full session token breakdown (`subagent_tokens`, `subagent_tokens_complete`, `api_call_count`) ([#2649](https://github.com/entireio/cli/pull/2649))
+- Hidden `entire checkpoint create [session-id]` writes a checkpoint from a session that changed no files (research, planning, review), which previously never produced one ([#2632](https://github.com/entireio/cli/pull/2632))
 - `entire agent-help <plugin>` delegates to an installed `entire-<plugin>` command's own `agent-help` ([#2599](https://github.com/entireio/cli/pull/2599))
 - `entire trail create --repo` creates a trail through the API alone, without a local clone; `--title`, `--base` and `--branch` (or `--no-branch`) are required and the branch must already exist on the repo ([#2622](https://github.com/entireio/cli/pull/2622))
 - Project and repo grant lists show account display names, as org member lists already did ([#2614](https://github.com/entireio/cli/pull/2614))
@@ -23,9 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Attribution treats a prompt as a human-edit boundary only when the worktree is idle; while another session or a live background subagent is working, no human diff is recorded. Every shadow snapshot now captures the dirty worktree, including shell-written changes not named in the transcript. Note: human edits made during an agent-busy window can be credited to the agent ([#2651](https://github.com/entireio/cli/pull/2651))
 - Org names resolve against the caller's own org list instead of the server's global name lookup; when several of your orgs share a name, the CLI lists them and asks for the ULID ([#2601](https://github.com/entireio/cli/pull/2601))
 - Google handles printed as `google:<id>` by `entire auth status` are now accepted as grantees, and org member names are shown in grant output ([#2603](https://github.com/entireio/cli/pull/2603))
+- `entire trail delete` now fails with a pointer to `entire trail update --status closed`, since the server no longer allows deleting trails. The command is hidden but stays registered so existing scripts get the guidance ([#2666](https://github.com/entireio/cli/pull/2666))
 
 ### Fixed
 
@@ -43,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Missing-checkpoint errors name the refs where the checkpoint can actually live under the configured backend, instead of always suggesting a fetch of `entire/checkpoints/v1` ([#2620](https://github.com/entireio/cli/pull/2620))
 - `entire import` derives ULID checkpoint IDs under the git-refs backend ([#2609](https://github.com/entireio/cli/pull/2609))
 - On Windows, `entire status` and `entire doctor` no longer report approved Codex hooks as needing approval ([#2607](https://github.com/entireio/cli/pull/2607))
+- `entire search` works from an Entire-native clone; with `--repo`, `repo:` or `--all-repos` it no longer requires a readable origin, and the default scope keeps the forge prefix so a native repo and a same-named GitHub mirror stay distinct ([#2639](https://github.com/entireio/cli/pull/2639))
+- `entire session adopt` validates declared subagent transcript paths against the agent's session directory and clears paths it cannot verify, instead of copying them unchecked into checkpoints ([#2655](https://github.com/entireio/cli/pull/2655))
 
 ### Housekeeping
 
