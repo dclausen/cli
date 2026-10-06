@@ -1878,56 +1878,28 @@ func parseTrailNumberArg(args []string) (int, error) {
 	return n, nil
 }
 
-// deleteTrailByNumberAtPath deletes a trail; entire-api answers 204 No Content,
-// so any 2xx is a successful delete and the body is not read.
-func deleteTrailByNumberAtPath(ctx context.Context, client *api.Client, basePath string, number int) error {
-	resp, err := client.Delete(ctx, trailNumberPathForBase(basePath, number))
-	if err != nil {
-		return fmt.Errorf("failed to delete trail: %w", err)
+// Trail deletion was removed server-side (owned trails always 409). The command
+// stays registered but hidden so existing scripts get a clear error pointing at
+// the close workflow instead of "unknown command".
+func newTrailDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "delete [<number>]",
+		Short:  "Deprecated: Mark the trail as Closed instead",
+		Args:   cobra.MaximumNArgs(1),
+		Hidden: true,
+		RunE: func(*cobra.Command, []string) error {
+			return errTrailDeleteRemoved
+		},
 	}
-	defer resp.Body.Close()
-	return checkTrailResponse(resp)
+
+	cmd.Flags().String("branch", "", "Unused; trail deletion was removed")
+	cmd.Flags().BoolP("force", "f", false, "Unused; trail deletion was removed")
+
+	return cmd
 }
 
-// confirmTrailDeletion decides whether a trail delete should proceed. With
-// force it proceeds silently. Otherwise it requires an interactive terminal:
-// when none is available it refuses (returns an error) rather than deleting
-// unprompted; when one is, it shows a confirmation form. canPrompt is passed in
-// (rather than queried) so the decision is unit-testable without a TTY.
-func confirmTrailDeletion(ctx context.Context, w io.Writer, number int, title string, force, canPrompt bool) (bool, error) {
-	if force {
-		return true, nil
-	}
-	if !canPrompt {
-		return false, fmt.Errorf("refusing to delete trail #%d without confirmation; pass --force", number)
-	}
-	// huh opens the TTY during form startup regardless of context state, so
-	// guard explicitly to honor an already-cancelled command context.
-	if ctx.Err() != nil {
-		return false, nil //nolint:nilerr // cancelled context is a clean skip, not an error
-	}
-	prompt := fmt.Sprintf("Delete trail #%d?", number)
-	if title != "" {
-		prompt = fmt.Sprintf("Delete trail #%d (%s)?", number, title)
-	}
-	confirmed := false
-	form := NewAccessibleForm(
-		huh.NewGroup(huh.NewConfirm().Title(prompt).Value(&confirmed)),
-	)
-	if err := form.RunWithContext(ctx); err != nil {
-		// A user abort (Esc) or context cancel (Ctrl+C) is a clean cancel, not
-		// an error — mirror confirmDoctorFix / uiform.PromptYN.
-		if errors.Is(err, huh.ErrUserAborted) || errors.Is(err, context.Canceled) {
-			return false, nil
-		}
-		return false, fmt.Errorf("trail deletion prompt: %w", err)
-	}
-	if !confirmed {
-		fmt.Fprintln(w, "Trail deletion cancelled.")
-		return false, nil
-	}
-	return true, nil
-}
+var errTrailDeleteRemoved = errors.New(
+	"trails can no longer be deleted; close the trail instead: entire trail update --status closed")
 
 // defaultBaseBranch is the fallback base branch name when it cannot be determined.
 const defaultBaseBranch = "main"
