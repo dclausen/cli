@@ -212,10 +212,10 @@ func newDetachFixture(t *testing.T, plan, result string) (*fakeDetachCore, strin
 	return fake, srv.URL
 }
 
-// execDetach runs the command on /gh/octocat/hello-world into project acme.
+// execDetach runs the command on /gh/octocat/hello-world into /et/acme/hello-world.
 func execDetach(t *testing.T, srvURL string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	return runCoreCmd(t, newRepoMirrorDetachCmd, srvURL, append([]string{"/gh/octocat/hello-world", "--project", "acme"}, args...)...)
+	return runCoreCmd(t, newRepoMirrorDetachCmd, srvURL, append([]string{"/gh/octocat/hello-world", "--into", "/et/acme/hello-world"}, args...)...)
 }
 
 // stubDetachPrompt makes the confirmation reachable and answers it, recording
@@ -239,7 +239,7 @@ func stubDetachPrompt(t *testing.T, answer bool) *bool {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_DryRun(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
-	stdout, _, err := execDetach(t, url, "--dry-run", "--name", "hello-world")
+	stdout, _, err := execDetach(t, url, "--dry-run")
 	require.NoError(t, err)
 
 	require.Len(t, fake.bodies, 1)
@@ -353,18 +353,26 @@ func TestRepoMirrorDetach_NonInteractiveNeedsYes(t *testing.T) {
 	assert.Empty(t, fake.bodies)
 }
 
-// The verb acts on GitHub mirrors only, and refuses a native ref or an
-// unmirrored repo with a reason rather than a server error.
+// The verb detaches a GitHub mirror into a native path, and refuses either
+// the wrong way round, a missing --into, or an unmirrored repo with a reason
+// rather than a server error — the grammar ones before any request.
 //
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_Refusals(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
+	run := func(args ...string) error {
+		_, _, err := runCoreCmd(t, newRepoMirrorDetachCmd, url, args...)
+		return err
+	}
 
-	_, _, err := runCoreCmd(t, newRepoMirrorDetachCmd, url, "/et/acme/web", "--project", "acme", "--dry-run")
-	require.ErrorContains(t, err, "supports GitHub mirrors only")
+	require.ErrorContains(t, run("/et/acme/web", "--into", "/et/acme/web", "--dry-run"), "supports GitHub mirrors only")
+	require.ErrorContains(t, run("/gh/octocat/hello-world", "--into", "/gh/acme/web", "--dry-run"), "invalid --into")
+	require.ErrorContains(t, run("/gh/octocat/hello-world", "--into", "/et/acme", "--dry-run"), "invalid --into")
+	require.ErrorContains(t, run("/gh/octocat/hello-world", "--dry-run"), `required flag(s) "into" not set`)
+	assert.Empty(t, fake.bodies)
 
 	fake.placements = nil
-	_, _, err = execDetach(t, url, "--dry-run")
+	_, _, err := execDetach(t, url, "--dry-run")
 	require.ErrorContains(t, err, "not mirrored on any cluster you can read")
 	assert.Empty(t, fake.bodies)
 }
@@ -576,4 +584,17 @@ func TestRepoMirrorDetach_JSONSkipsTheNameLookup(t *testing.T) {
 	_, _, err := execDetach(t, url, "--dry-run", "--json")
 	require.NoError(t, err)
 	assert.Zero(t, fake.peopleGets)
+}
+
+// --into names both halves of the target: its project is resolved by name and
+// its repo is the native name the detach is asked to use.
+//
+// Not parallel: swaps the package-level core-client seam.
+func TestRepoMirrorDetach_IntoNamesTheTarget(t *testing.T) {
+	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
+	_, _, err := runCoreCmd(t, newRepoMirrorDetachCmd, url, "/gh/octocat/hello-world", "--into", "/et/acme/capricciosa", "--dry-run")
+	require.NoError(t, err)
+	require.Len(t, fake.bodies, 1)
+	assert.Equal(t, testProjectULID, fake.bodies[0].TargetProject)
+	assert.Equal(t, "capricciosa", fake.bodies[0].Name.Or(""))
 }

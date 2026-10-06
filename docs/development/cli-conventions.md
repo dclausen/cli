@@ -287,9 +287,11 @@ the commands are always runnable in every build.
   native-mirror routes are home-core-scoped and answer 421 for a repo in another
   jurisdiction, which `coreapi`'s transport follows and re-authenticates on its
   own, so they run on the plain active-context client with no cluster-fronting
-  detour. `mirror detach <repo> --project` serves
+  detour. `mirror detach <repo> --into /et/<project>/<repo>` serves
   `/gh/` refs only and is the one mirror verb that converts rather than places:
-  it turns the mirror's sole placement into a native repo of the project. It is
+  it turns the mirror's sole placement into the native repo `--into` names
+  (one native ref instead of `--project`/`--name`: its project is resolved
+  by name, its repo is the name the detach is asked to use). It is
   keyed by the placement ID from `/mirrors/placements`, and with several
   placements it sends the first so the server's `single-placement`
   precondition explains the refusal. Every run asks for the dry-run plan first,

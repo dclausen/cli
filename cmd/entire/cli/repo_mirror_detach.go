@@ -29,8 +29,7 @@ const (
 )
 
 type mirrorDetachOptions struct {
-	project string
-	name    string
+	into    string
 	dryRun  bool
 	noWait  bool
 	timeout time.Duration
@@ -39,15 +38,15 @@ type mirrorDetachOptions struct {
 func newRepoMirrorDetachCmd() *cobra.Command {
 	var opts mirrorDetachOptions
 	cmd := &cobra.Command{
-		Use:   "detach <repo>",
+		Use:   "detach <repo> --into /et/<project>/<repo>",
 		Short: "Convert a GitHub mirror into a native Entire repository",
-		Long: "Converts a GitHub mirror into an Entire-native repository owned by " +
-			"--project. The repository keeps its history and its cluster; its " +
+		Long: "Converts a GitHub mirror into the Entire-native repository named by " +
+			"--into. The repository keeps its history and its cluster; its " +
 			"/gh/<owner>/<repo> address is released and answers \"moved\" from then on, " +
 			"and the GitHub repository itself stays live and is no longer synced.\n\n" +
 			"Every run first asks the server for a plan: each precondition the " +
 			"detach needs, and every account, team, automation and project with " +
-			"access today, marked by whether --project still grants it. Access the " +
+			"access today, marked by whether the --into project still grants it. Access the " +
 			"project does not cover is removed by the detach. --dry-run prints the " +
 			"plan and changes nothing.\n\n" +
 			"A real detach freezes writes, waits for the mirror to match GitHub, " +
@@ -59,9 +58,9 @@ func newRepoMirrorDetachCmd() *cobra.Command {
 			"repository is native.\n\n" +
 			"The mirror must have exactly one placement: remove the others with " +
 			"`entire repo mirror remove` first.",
-		Example: "  entire repo mirror detach /gh/octocat/hello-world --project acme --dry-run\n" +
-			"  entire repo mirror detach /gh/octocat/hello-world --project acme\n" +
-			"  entire repo mirror detach /gh/octocat/hello-world --project acme --name hello --yes",
+		Example: "  entire repo mirror detach /gh/octocat/hello-world --into /et/acme/hello-world --dry-run\n" +
+			"  entire repo mirror detach /gh/octocat/hello-world --into /et/acme/hello-world\n" +
+			"  entire repo mirror detach /gh/octocat/hello-world --into /et/acme/hello --yes",
 		Args: cobra.ExactArgs(1),
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			// Zero is an unbounded wait, matching `mirror add`.
@@ -74,12 +73,11 @@ func newRepoMirrorDetachCmd() *cobra.Command {
 			return runMirrorDetach(cmd, args[0], opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.project, projectFlagName, "", "Project that owns the repository after the detach (name or ULID) (required)")
-	cmd.Flags().StringVar(&opts.name, "name", "", "Name of the native repository (defaults to the GitHub repository name)")
+	cmd.Flags().StringVar(&opts.into, "into", "", "Native repository to detach into, as /et/<project>/<repo> (required)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print the preconditions and the access changes, and change nothing")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "Return once the repository is native, without waiting for the rewire to complete")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 30*time.Minute, "How long to wait for the rewire to complete (0 waits indefinitely)")
-	markRequired(cmd, projectFlagName)
+	markRequired(cmd, "into")
 	// No --force: nothing overrides an ineligible plan, so the flag only
 	// answers the prompt.
 	addYesFlag(cmd)
@@ -96,6 +94,11 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 	if err != nil {
 		return err
 	}
+	// owner is the project and repo the native name, as for any /et/ ref.
+	into, err := parseMirrorRepoRef(opts.into, nativeCloneForge)
+	if err != nil {
+		return fmt.Errorf("invalid --into: %w", err)
+	}
 	yes := forceRequested(cmd)
 	// An unanswerable prompt must not cost a request.
 	if !opts.dryRun && !yes && !interactive.CanPromptInteractively() {
@@ -111,7 +114,9 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 		// Independent lookups. No shared context, so one failing does not
 		// cancel the other into a misleading error; the project's error wins.
 		g.Go(func() error {
-			projectID, projectName, projectErr = resolveProjectRefNamed(ctx, c, opts.project)
+			var project resolvedRef
+			project, projectErr = resolveProjectByName(ctx, c, into.owner)
+			projectID, projectName = project.ID, project.Name
 			return nil
 		})
 		g.Go(func() error {
@@ -126,10 +131,7 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 			return repoErr
 		}
 
-		body := coreapi.DetachRepoBody{TargetProject: projectID, DryRun: true}
-		if opts.name != "" {
-			body.Name = coreapi.NewOptString(opts.name)
-		}
+		body := coreapi.DetachRepoBody{TargetProject: projectID, Name: coreapi.NewOptString(into.repo), DryRun: true}
 		params := coreapi.DetachRepoParams{RepoId: repoID}
 		plan, err := c.DetachRepo(ctx, &body, params)
 		if err != nil {
