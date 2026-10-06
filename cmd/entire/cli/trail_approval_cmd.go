@@ -50,47 +50,45 @@ func selectorFromArgs(args []string) string {
 	return ""
 }
 
-func newTrailApproveCmd() *cobra.Command {
+func newTrailApproveCmd(mode *trailMode) *cobra.Command {
 	var message, branch string
 	cmd := &cobra.Command{
 		Use:   "approve [<trail>]",
 		Short: "Approve a trail",
-		Long: `Approve a trail.
-
-<trail> is a project trail number or ID. Without one, follow the current branch's
+		Long: "Approve a trail.\n\n" + mode.help(`If <trail> is omitted, approves the trail for the current branch (or --branch).
+The trail must be open and have a linked branch.`, `<trail> is a project trail number or ID. Without one, follow the current branch's
 parent. --repo and --branch select a working context. Only that branch is approved,
-not every repository on the trail. The branch work must be open.`,
+not every repository on the trail. The branch work must be open.`),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return submitWorkingTrailApproval(cmd, selectorFromArgs(args), branch, "approve", message, "Approved")
+			return submitWorkingTrailApproval(cmd, mode, selectorFromArgs(args), branch, "approve", message, "Approved")
 		},
 	}
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Optional approval comment")
-	cmd.Flags().StringVar(&branch, "branch", "", "Select a repository branch within the trail")
+	cmd.Flags().StringVar(&branch, "branch", "", mode.help("Branch of the trail (defaults to current); cannot be combined with a trail selector", "Select a repository branch within the trail"))
 	return cmd
 }
 
-func newTrailRequestChangesCmd() *cobra.Command {
+func newTrailRequestChangesCmd(mode *trailMode) *cobra.Command {
 	var message, branch string
 	cmd := &cobra.Command{
 		Use:   "request-changes [<trail>]",
 		Short: "Request changes on a trail",
-		Long: `Request changes on a trail.
-
-<trail> is a project trail number or ID. Without one, follow the current branch's
+		Long: "Request changes on a trail.\n\n" + mode.help(`If <trail> is omitted, targets the trail for the current branch (or --branch).
+A reason (--message) is required. The trail must be open and have a linked branch.`, `<trail> is a project trail number or ID. Without one, follow the current branch's
 parent. --repo and --branch select a working context. A reason (--message) is
-required. The decision applies only to the selected branch.`,
+required. The decision applies only to the selected branch.`),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return submitWorkingTrailApproval(cmd, selectorFromArgs(args), branch, "request_changes", message, "Requested changes on")
+			return submitWorkingTrailApproval(cmd, mode, selectorFromArgs(args), branch, "request_changes", message, "Requested changes on")
 		},
 	}
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Reason for requesting changes (required)")
-	cmd.Flags().StringVar(&branch, "branch", "", "Select a repository branch within the trail")
+	cmd.Flags().StringVar(&branch, "branch", "", mode.help("Branch of the trail (defaults to current); cannot be combined with a trail selector", "Select a repository branch within the trail"))
 	return cmd
 }
 
-func newTrailApprovalsCmd() *cobra.Command {
+func newTrailApprovalsCmd(mode *trailMode) *cobra.Command {
 	var branch string
 	var jsonOut bool
 	cmd := &cobra.Command{
@@ -98,10 +96,10 @@ func newTrailApprovalsCmd() *cobra.Command {
 		Short: "List approval decisions on a trail",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return listWorkingTrailApprovals(cmd, selectorFromArgs(args), branch, jsonOut)
+			return listWorkingTrailApprovals(cmd, mode, selectorFromArgs(args), branch, jsonOut)
 		},
 	}
-	cmd.Flags().StringVar(&branch, "branch", "", "Select a repository branch within the trail")
+	cmd.Flags().StringVar(&branch, "branch", "", mode.help("Branch of the trail (defaults to current); cannot be combined with a trail selector", "Select a repository branch within the trail"))
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 	return cmd
 }

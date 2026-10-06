@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -145,5 +146,43 @@ func TestProjectResumeCommandsKeepOptIn(t *testing.T) {
 	for _, command := range ctx.Commands {
 		require.Contains(t, command, "ENTIRE_PROJECT_TRAILS=1 entire trail")
 		require.Contains(t, command, "42 --project gh/acme --repo gh/acme/widget --branch feature/work")
+	}
+}
+
+// Legacy checkout and resume act on the local clone and, as on main, accept a
+// trail that has no number yet; only number-keyed subresources (approvals)
+// require one. Serial: changes CWD and replaces global clients.
+func TestLegacyLocalContextAcceptsUnnumberedTrail(t *testing.T) {
+	repoDir := t.TempDir()
+	testutil.InitRepo(t, repoDir)
+	testutil.IsolateGitConfigEnv(t)
+	testutil.RunGit(t, repoDir, "remote", "add", "origin", "git@github.com:acme/widget.git")
+	t.Chdir(repoDir)
+	setupWorkingRepoClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		item := api.TrailResource{ID: projectTrailTestChange, Branch: "feature/work", Title: "Unnumbered", Status: "open"}
+		assert.NoError(t, json.NewEncoder(w).Encode(api.TrailListResponse{Trails: []api.TrailResource{item}}))
+	})
+
+	root := newTrailCmdForMode(false)
+	for _, tc := range []struct {
+		command   string
+		localOnly bool
+		wantErr   string
+	}{
+		{"checkout", true, ""},
+		{"resume", true, ""},
+		{"approvals", false, "trail has no number yet"},
+	} {
+		cmd, _, err := root.Find([]string{tc.command})
+		require.NoError(t, err)
+		cmd.SetContext(t.Context())
+		selected, err := legacyTrailMode.workingContext(cmd, "", "feature/work", tc.localOnly)
+		if tc.wantErr != "" {
+			require.ErrorContains(t, err, tc.wantErr, tc.command)
+			continue
+		}
+		require.NoError(t, err, tc.command)
+		require.Equal(t, "feature/work", selected.Work.Branch, tc.command)
+		require.Nil(t, selected.Target, tc.command)
 	}
 }

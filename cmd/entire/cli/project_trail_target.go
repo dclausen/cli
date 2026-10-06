@@ -230,7 +230,7 @@ func resolveProjectTrail(cmd *cobra.Command, selector string) (*projectTrailTarg
 	case branch == "":
 		return resolveProjectTrailBySelector(cmd, selector)
 	default:
-		selected, err := resolveTrailWorkingContext(cmd, selector, branch, false)
+		selected, err := resolveProjectTrailWorkingContext(cmd, selector, branch, false)
 		if err != nil {
 			return nil, err
 		}

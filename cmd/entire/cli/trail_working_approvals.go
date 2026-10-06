@@ -8,12 +8,12 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/api"
 )
 
-func submitWorkingTrailApproval(cmd *cobra.Command, selector, branch, event, message, verb string) error {
+func submitWorkingTrailApproval(cmd *cobra.Command, mode *trailMode, selector, branch, event, message, verb string) error {
 	request, err := buildApprovalRequest(event, message)
 	if err != nil {
 		return err
 	}
-	selected, err := resolveTrailWorkingContext(cmd, selector, branch, false)
+	selected, err := mode.workingContext(cmd, selector, branch, false)
 	if err != nil {
 		return err
 	}
@@ -29,8 +29,8 @@ func submitWorkingTrailApproval(cmd *cobra.Command, selector, branch, event, mes
 	return nil
 }
 
-func listWorkingTrailApprovals(cmd *cobra.Command, selector, branch string, jsonOut bool) error {
-	selected, err := resolveTrailWorkingContext(cmd, selector, branch, false)
+func listWorkingTrailApprovals(cmd *cobra.Command, mode *trailMode, selector, branch string, jsonOut bool) error {
+	selected, err := mode.workingContext(cmd, selector, branch, false)
 	if err != nil {
 		return err
 	}

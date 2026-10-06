@@ -84,7 +84,7 @@ func newTrailUnlinkCmd() *cobra.Command {
 		Long: "Remove the selected repository/branch from a trail. The branch, code, reviews, and sessions are preserved. Ambiguous branch selections require --branch.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			selected, err := resolveTrailWorkingContext(cmd, projectTrailSelector(args), branch, false)
+			selected, err := resolveProjectTrailWorkingContext(cmd, projectTrailSelector(args), branch, false)
 			if err != nil {
 				return err
 			}

@@ -30,7 +30,7 @@ import (
 func TestTrailResumeCmdRejectsConflictingSelectors(t *testing.T) {
 	t.Parallel()
 
-	cmd := newTrailResumeCmd()
+	cmd := newTrailResumeCmd(legacyTrailMode)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"575", "--trail", "feature/a"})

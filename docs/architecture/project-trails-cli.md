@@ -4,6 +4,24 @@ Legacy repository-scoped commands remain the default. Set
 `ENTIRE_PROJECT_TRAILS=1` (exact value) to enable project trails; unset it to
 return to legacy. Help and agent-help reflect the selected mode.
 
+## Code layout
+
+The model is chosen in one place, `newTrailCmdForMode` (`trail_cmd.go`), and
+by the first-turn injection, both through `projectTrailsEnabled`.
+
+- Commands whose meaning differs are separate trees: legacy `show`, `list`,
+  `create`, `update`, `delete`, `comment` in `trail_*.go`; project `show`,
+  `list`, `create`, `update`, `link`, `unlink`, `comment` in
+  `project_trail_*.go`.
+- Commands that act on one repository branch in both models (`checkout`,
+  `resume`, `finding`, `watch`, `approve`, `request-changes`, `approvals`) are
+  shared. Each receives a `trailMode` (`trail_mode.go`) that resolves the
+  selector to that branch and supplies the model's help text.
+
+Shared command bodies do not check the mode. Retiring legacy means deleting
+`legacyTrailMode`, the legacy tree, and the legacy argument of each
+`trailMode.help` call, then renaming `project_trail_*.go` to `trail_*.go`.
+
 ## Usage
 
 ```sh

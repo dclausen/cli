@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
 	"reflect"
 	"strconv"
@@ -45,36 +44,33 @@ func trailContextBlurb() string {
 	return "A trail captures project intent across repositories and branches. Manage intent and discussions on the whole trail; use --repo and --branch to select context for checkout, sessions, findings, and approvals."
 }
 
-const projectTrailsEnv = "ENTIRE_PROJECT_TRAILS"
-const projectTrailsAnnotation = "entire_project_trails"
+func legacyTrailContextBlurb() string {
+	return "A trail ties together the context for a branch. Use `entire trail` to view, create, update, or watch it; use `entire trail finding` to manage agent findings."
+}
 
 func newTrailCmd() *cobra.Command {
-	return newTrailCmdForMode(os.Getenv(projectTrailsEnv) == "1")
+	return newTrailCmdForMode(projectTrailsEnabled())
 }
 
-// Use the mode chosen at construction, not the current environment.
-func usesProjectTrails(cmd *cobra.Command) bool {
-	for c := cmd; c != nil; c = c.Parent() {
-		if c.Annotations[projectTrailsAnnotation] == agentHelpAnnotationEnabled {
-			return true
-		}
-	}
-	return false
-}
-
+// newTrailCmdForMode is where the trail model is chosen: each model registers
+// its own intent-level commands, and the shared branch-level commands receive
+// the model's trailMode.
 func newTrailCmdForMode(project bool) *cobra.Command {
+	mode := trailModeFor(project)
 	var insecureHTTPAuth bool
 	var repoOverride string
 
 	cmd := &cobra.Command{
 		Use:    cmdTrail,
-		Short:  "Manage trails across repositories and branches",
+		Short:  mode.help("Manage trails for your branches", "Manage trails across repositories and branches"),
 		Hidden: true,
+		// Hidden from root help while the surface matures, but advertised to
+		// coding agents through `entire agent-help`.
 		Annotations: map[string]string{
 			agentHelpAnnotation: agentHelpAnnotationEnabled,
 		},
 		Args: cobra.NoArgs,
-		Long: trailContextBlurb(),
+		Long: mode.help(legacyTrailContextBlurb(), trailContextBlurb()),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -86,30 +82,30 @@ func newTrailCmdForMode(project bool) *cobra.Command {
 		panic(fmt.Sprintf("hide insecure-http-auth flag: %v", err))
 	}
 
-	cmd.PersistentFlags().StringVar(&repoOverride, "repo", "",
-		"Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project")
+	// Target an explicit repository instead of the origin remote, so the trail
+	// commands can drive a repo the caller is not checked out in (e.g. a GUI
+	// backend). Commands that mutate the local clone (checkout, finding apply)
+	// reject it via ensureNoTrailRepoOverride; create accepts it in a
+	// remote-only mode that never touches the clone (runTrailCreateForRepo).
+	cmd.PersistentFlags().StringVar(&repoOverride, "repo", "", mode.help(
+		"Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; defaults to the origin remote",
+		"Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project"))
 
-	if !project {
-		cmd.Short = "Manage trails for your branches"
-		cmd.Long = "A trail ties together the context for a branch. Set ENTIRE_PROJECT_TRAILS=1 to opt into project-scoped trails."
-		cmd.Annotations[agentHelpRequiresTrailsAnnotation] = agentHelpAnnotationEnabled
-		cmd.PersistentFlags().Lookup("repo").Usage = "Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; defaults to the origin remote"
-		cmd.AddCommand(newTrailShowCmd(), newTrailListCmd(), newTrailCreateCmd(), newTrailUpdateCmd(), newTrailDeleteCmd(), newTrailCommentCmd())
-	} else {
+	if project {
+		// Project intent can exist without any repository or repo-trails
+		// toggle, so the project tree stays discoverable regardless.
 		cmd.Annotations[projectTrailsAnnotation] = agentHelpAnnotationEnabled
 		cmd.PersistentFlags().String("project", "", "Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace")
-		cmd.AddCommand(newProjectTrailShowCmd())
-		cmd.AddCommand(newProjectTrailListCmd())
-		cmd.AddCommand(newProjectTrailCreateCmd())
-		cmd.AddCommand(newProjectTrailUpdateCmd())
-		cmd.AddCommand(newTrailLinkCmd(), newTrailUnlinkCmd())
-		cmd.AddCommand(newProjectTrailCommentCmd())
+		cmd.AddCommand(newProjectTrailShowCmd(), newProjectTrailListCmd(), newProjectTrailCreateCmd(), newProjectTrailUpdateCmd())
+		cmd.AddCommand(newTrailLinkCmd(), newTrailUnlinkCmd(), newProjectTrailCommentCmd())
+	} else {
+		// Advertised to agents only when trails are enabled for the repo, so
+		// we never point agents at trails they can't use.
+		cmd.Annotations[agentHelpRequiresTrailsAnnotation] = agentHelpAnnotationEnabled
+		cmd.AddCommand(newTrailShowCmd(), newTrailListCmd(), newTrailCreateCmd(), newTrailUpdateCmd(), newTrailDeleteCmd(), newTrailCommentCmd())
 	}
-	cmd.AddCommand(newTrailCheckoutCmd(), newTrailResumeCmd(), newTrailFindingCmd(), newTrailWatchCmd())
-	cmd.AddCommand(newTrailApproveCmd(), newTrailRequestChangesCmd(), newTrailApprovalsCmd())
-	if !project {
-		configureLegacyTrailHelp(cmd)
-	}
+	cmd.AddCommand(newTrailCheckoutCmd(mode), newTrailResumeCmd(mode), newTrailFindingCmd(mode), newTrailWatchCmd(mode))
+	cmd.AddCommand(newTrailApproveCmd(mode), newTrailRequestChangesCmd(mode), newTrailApprovalsCmd(mode))
 
 	return cmd
 }
@@ -322,7 +318,7 @@ func resolveTrailBySelectorAtPath(ctx context.Context, client *api.Client, baseP
 	if selector == "" {
 		branch, err := resolveTrailBranch(ctx, branchOverride)
 		if err != nil {
-			return nil, fmt.Errorf("no branch context given and current branch is unknown: %w\nhint: run 'entire trail list' or select --branch", err)
+			return nil, fmt.Errorf("no trail selector given and current branch is unknown: %w\nhint: run 'entire trail list --status any' or pass a trail number, id, or branch", err)
 		}
 		found, err := findTrailByBranchAtPath(ctx, client, basePath, branch)
 		if err != nil {
@@ -338,7 +334,7 @@ func resolveTrailBySelectorAtPath(ctx context.Context, client *api.Client, baseP
 		return nil, err
 	}
 	if found == nil {
-		return nil, fmt.Errorf("no branch work %q found in %s/%s/%s (run 'entire trail list')", selector, forge, owner, repo)
+		return nil, fmt.Errorf("no trail %q found in %s/%s/%s (run 'entire trail list --status any')", selector, forge, owner, repo)
 	}
 	return found, nil
 }
@@ -1766,7 +1762,7 @@ func sendTrailBody(ctx context.Context, client *api.Client, path, body, ifMatch 
 	if err := checkTrailResponse(resp); err != nil {
 		switch {
 		case api.IsHTTPErrorStatus(err, http.StatusPreconditionFailed):
-			return fmt.Errorf("%w — trail body changed since it was read; read the current branch description before retrying and merge it in, then re-run — or pass --overwrite to discard it", err)
+			return fmt.Errorf("%w — trail body changed since it was read; run 'entire trail show' to see the current text and merge it in, then re-run — or pass --overwrite to discard it", err)
 		case api.IsHTTPErrorStatus(err, http.StatusConflict):
 			return fmt.Errorf("%w — trail body is not empty; pass --overwrite to replace it", err)
 		default:
@@ -1783,7 +1779,7 @@ func sendTrailBody(ctx context.Context, client *api.Client, path, body, ifMatch 
 	return nil
 }
 
-func newTrailCheckoutCmd() *cobra.Command {
+func newTrailCheckoutCmd(mode *trailMode) *cobra.Command {
 	var trailSelector string
 	var force bool
 	var worktree bool
@@ -1792,12 +1788,12 @@ func newTrailCheckoutCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "checkout [<trail>]",
 		Short: "Check out a trail's branch",
-		Long: `Check out the branch of a trail.
-
-The trail may be given as the first argument or via --trail, as a project number
+		Long: "Check out the branch of a trail.\n\n" + mode.help(`The trail may be given as the first argument or via --trail, as a number, id, or
+branch. Without one, the trail for the current branch is used. The trail's branch
+is checked out, fetching it from origin first when it only exists there.`, `The trail may be given as the first argument or via --trail, as a project number
 or ID. Without one, the current branch's parent is used. --branch selects the
 working branch; otherwise the current branch or sole branch in this repository
-is selected. Ambiguity requires --branch. Remote-only branches are fetched.
+is selected. Ambiguity requires --branch. Remote-only branches are fetched.`) + `
 
 With --worktree, the branch is checked out into a git worktree under
 .entire/worktrees at the repo root instead of switching this checkout, and the
@@ -1820,7 +1816,7 @@ trail is looked up against that repository's origin remote.`,
 			if err := ensureNoTrailRepoOverride(cmd, "trail checkout"); err != nil {
 				return err
 			}
-			selected, err := resolveTrailWorkingContext(cmd, selector, branch, true)
+			selected, err := mode.workingContext(cmd, selector, branch, true)
 			if err != nil {
 				return err
 			}
@@ -1828,8 +1824,12 @@ trail is looked up against that repository's origin remote.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&trailSelector, "trail", "", "Project trail number or ID (defaults to the current branch's trail)")
-	cmd.Flags().StringVar(&branch, "branch", "", "Select a branch within the trail in this repository")
+	cmd.Flags().StringVar(&trailSelector, "trail", "", mode.help(
+		"Trail to check out (number, id, or branch; defaults to the current branch's trail)",
+		"Project trail number or ID (defaults to the current branch's trail)"))
+	cmd.Flags().StringVar(&branch, "branch", "", mode.help(
+		"Resolve the trail for this branch instead of the current branch",
+		"Select a branch within the trail in this repository"))
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip the prompt before fetching a remote-only branch")
 	cmd.Flags().BoolVar(&worktree, "worktree", false, "Check out the trail branch in a worktree under .entire/worktrees instead of switching this checkout")
 

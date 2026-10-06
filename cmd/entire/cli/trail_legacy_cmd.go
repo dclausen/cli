@@ -26,6 +26,8 @@ func newTrailListCmd() *cobra.Command {
 	return cmd
 }
 
+// resolveLegacyTrailContext is legacyTrailMode.workingContext: selectors are
+// repository-local numbers, IDs, or branches.
 func resolveLegacyTrailContext(cmd *cobra.Command, selector, branch string, localOnly bool) (*trailWorkingContext, error) {
 	if selector != "" && strings.TrimSpace(branch) != "" && !localOnly {
 		return nil, errors.New("pass a trail selector or --branch, not both")
@@ -47,7 +49,13 @@ func resolveLegacyTrailContext(cmd *cobra.Command, selector, branch string, loca
 		if err != nil {
 			return err
 		}
-		found, err := resolveNumberedTrailAtPath(ctx, client, base, forge, owner, repo, selector, branch)
+		// Number-keyed subresources (approvals) need a numbered trail; the
+		// local checkout/resume paths never did.
+		resolve := resolveNumberedTrailAtPath
+		if localOnly {
+			resolve = resolveTrailBySelectorAtPath
+		}
+		found, err := resolve(ctx, client, base, forge, owner, repo, selector, branch)
 		if err != nil {
 			return err
 		}
@@ -59,6 +67,7 @@ func resolveLegacyTrailContext(cmd *cobra.Command, selector, branch string, loca
 	return selected, err
 }
 
+// authenticatedLegacyTrailReviewTarget is legacyTrailMode.reviewTarget.
 func authenticatedLegacyTrailReviewTarget(cmd *cobra.Command, selector string) (*api.Client, trailReviewTarget, error) {
 	repo, branch := trailRepoFlag(cmd), trailBranchFlag(cmd)
 	if selector != "" && branch != "" {
@@ -77,48 +86,4 @@ func authenticatedLegacyTrailReviewTarget(cmd *cobra.Command, selector string) (
 		return err
 	})
 	return client, target, err
-}
-
-func configureLegacyTrailHelp(root *cobra.Command) {
-	const findingCommand = "finding"
-	for _, name := range []string{"checkout", "resume", findingCommand, "watch", "approve", "request-changes", "approvals"} {
-		cmd, _, err := root.Find([]string{name})
-		if err != nil {
-			panic(err)
-		}
-		start, end := strings.Index(cmd.Long, "The trail may be given"), -1
-		if start >= 0 {
-			end = strings.Index(cmd.Long[start:], "\n\n")
-		}
-		if start < 0 {
-			start = strings.Index(cmd.Long, "<trail> is a project")
-			if start >= 0 {
-				end = strings.Index(cmd.Long[start:], "\n\n")
-			}
-		}
-		if start >= 0 {
-			if end < 0 {
-				end = len(cmd.Long) - start
-			}
-			cmd.Long = cmd.Long[:start] + "The trail may be a repository-local number, ID, or branch. Without a selector,\nthe current branch (or --branch) is used." + cmd.Long[start+end:]
-		}
-		if name == findingCommand {
-			cmd.Long = "Manage a trail's agent-native findings. Pass a repository-local number, ID, or branch, or omit the selector for the current branch. Use 'entire trail list --status any' to discover trails."
-		}
-		if name == "watch" {
-			cmd.Short = "Tail a trail's events live"
-		}
-		if f := cmd.Flags().Lookup("branch"); f != nil && name != "resume" {
-			f.Usage = "Resolve the trail for this branch instead of the current branch"
-		}
-		if f := cmd.Flags().Lookup("trail"); f != nil {
-			f.Usage = "Trail selector (number, ID, or branch); defaults to the current branch's trail"
-		}
-		if f := cmd.PersistentFlags().Lookup("trail"); f != nil {
-			f.Usage = "Trail selector (number, ID, or branch); defaults to the current branch's trail"
-		}
-		if f := cmd.PersistentFlags().Lookup("branch"); f != nil {
-			f.Usage = "Resolve the trail for this branch instead of the current branch; cannot be combined with a trail selector"
-		}
-	}
 }

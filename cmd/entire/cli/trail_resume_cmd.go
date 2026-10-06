@@ -131,17 +131,16 @@ type trailResumeFindingCounts struct {
 	Stale      int `json:"stale"`
 }
 
-func newTrailResumeCmd() *cobra.Command {
+func newTrailResumeCmd(mode *trailMode) *cobra.Command {
 	var opts trailResumeOptions
 
 	cmd := &cobra.Command{
 		Use:   "resume [<trail>]",
 		Short: "Resume a trail's agent session",
-		Long: `Resume an agent session for a trail.
-
-The trail may be given as the first argument or via --trail, as a project number
+		Long: "Resume an agent session for a trail.\n\n" + mode.help(`The trail may be given as the first argument or via --trail, as a number, id, or
+branch. Without one, the trail for the current branch is used.`, `The trail may be given as the first argument or via --trail, as a project number
 or ID. Without one, the current branch's parent is used. --branch selects its
-working branch in this repository. Multiple matches require an explicit branch.
+working branch in this repository. Multiple matches require an explicit branch.`) + `
 
 By default, interactive terminals show the trail context, restore the checkpoint
 sessions on the trail branch, and ask whether Entire should start the agent. If
@@ -165,11 +164,13 @@ resume stops before checking anything out.`,
 				return err
 			}
 			external.DiscoverAndRegister(cmd.Context())
-			return runTrailResume(cmd, opts)
+			return runTrailResume(cmd, mode, opts)
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Selector, "trail", "", "Project trail number or ID (defaults to the current branch's parent)")
+	cmd.Flags().StringVar(&opts.Selector, "trail", "", mode.help(
+		"Trail to resume (number, id, or branch; defaults to the current branch's trail)",
+		"Project trail number or ID (defaults to the current branch's parent)"))
 	cmd.Flags().StringVar(&opts.ExpectedRepo, "repo", "", "Expected GitHub repository (owner/name); fails if the current checkout points elsewhere")
 	cmd.Flags().StringVar(&opts.ExpectedBranch, "branch", "", "Expected trail branch; fails if the trail is attached to a different branch")
 	cmd.Flags().StringVar(&opts.SessionID, "session", "", "Resume a specific known local session on the trail branch")
@@ -202,7 +203,7 @@ func validateTrailResumeOptions(opts trailResumeOptions) error {
 	return nil
 }
 
-func runTrailResume(cmd *cobra.Command, opts trailResumeOptions) error {
+func runTrailResume(cmd *cobra.Command, mode *trailMode, opts trailResumeOptions) error {
 	// Restores and looks up agent transcripts from the user's shell, where a
 	// home an agent reads from its own settings is invisible to the environment.
 	agent.EnableHomeProbes()
@@ -218,7 +219,7 @@ func runTrailResume(cmd *cobra.Command, opts trailResumeOptions) error {
 	if err := validateTrailResumeExpectedRepo(trailResumeRepository{Forge: forge, Owner: owner, Repo: repo}, expectedRepo); err != nil {
 		return err
 	}
-	selected, err := resolveTrailWorkingContext(cmd, opts.Selector, opts.ExpectedBranch, true)
+	selected, err := mode.workingContext(cmd, opts.Selector, opts.ExpectedBranch, true)
 	if err != nil {
 		return err
 	}

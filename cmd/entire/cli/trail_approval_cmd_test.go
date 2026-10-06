@@ -45,13 +45,13 @@ func TestTrailApprovalsPath(t *testing.T) {
 
 func TestTrailApprovalCmdsHaveExpectedFlags(t *testing.T) {
 	t.Parallel()
-	if newTrailApproveCmd().Flags().Lookup("message") == nil {
+	if newTrailApproveCmd(legacyTrailMode).Flags().Lookup("message") == nil {
 		t.Error("approve missing --message")
 	}
-	if newTrailRequestChangesCmd().Flags().Lookup("message") == nil {
+	if newTrailRequestChangesCmd(legacyTrailMode).Flags().Lookup("message") == nil {
 		t.Error("request-changes missing --message")
 	}
-	if newTrailApprovalsCmd().Flags().Lookup("json") == nil {
+	if newTrailApprovalsCmd(legacyTrailMode).Flags().Lookup("json") == nil {
 		t.Error("approvals missing --json")
 	}
 }

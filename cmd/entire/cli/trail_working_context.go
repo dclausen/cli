@@ -32,12 +32,10 @@ func (t *trailWorkingContext) description() string {
 	return fmt.Sprintf("trail #%d (%s/%s/%s / %s)", t.Parent.Number, t.Host, t.Owner, t.Repo, tuiutil.SanitizeTerminalLabel(t.Work.Branch))
 }
 
+// resolveProjectTrailWorkingContext is projectTrailMode.workingContext.
 // localOnly is used by checkout/resume: --repo may assert a local repository,
 // but must never cause these commands to check out a foreign branch here.
-func resolveTrailWorkingContext(cmd *cobra.Command, selector, branch string, localOnly bool) (*trailWorkingContext, error) {
-	if !usesProjectTrails(cmd) {
-		return resolveLegacyTrailContext(cmd, selector, branch, localOnly)
-	}
+func resolveProjectTrailWorkingContext(cmd *cobra.Command, selector, branch string, localOnly bool) (*trailWorkingContext, error) {
 	ctx := cmd.Context()
 	if selector != "" {
 		if err := validateProjectTrailSelector(selector); err != nil {

@@ -112,7 +112,7 @@ func TestDescribeTrailRef(t *testing.T) {
 func TestTrailCheckoutRejectsArgWithTrailFlag(t *testing.T) {
 	t.Parallel()
 
-	cmd := newTrailCheckoutCmd()
+	cmd := newTrailCheckoutCmd(legacyTrailMode)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"feature/b", "--trail", "575"})
@@ -129,7 +129,7 @@ func TestTrailCheckoutRejectsArgWithTrailFlag(t *testing.T) {
 func TestTrailCheckoutHasWorktreeFlag(t *testing.T) {
 	t.Parallel()
 
-	cmd := newTrailCheckoutCmd()
+	cmd := newTrailCheckoutCmd(legacyTrailMode)
 	flag := cmd.Flags().Lookup("worktree")
 	if flag == nil {
 		t.Fatal("worktree flag not registered")
