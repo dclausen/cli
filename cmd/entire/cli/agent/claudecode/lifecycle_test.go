@@ -3,7 +3,6 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -677,26 +676,6 @@ func TestWaitForTranscriptFlush_StaleFile_SkipsWait(t *testing.T) {
 
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("expected fast return for stale transcript, but took %v", elapsed)
-	}
-}
-
-// TestCheckStopSentinel_MatchesBothTurnEndHooks pins that the flush sentinel
-// recognizes the StopFailure hook as well as Stop. Tightening the match to the
-// exact stop command would make API-error turns fall back to the slower
-// size-stability wait.
-func TestCheckStopSentinel_MatchesBothTurnEndHooks(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now()
-	for _, verb := range []string{HookNameStop, HookNameStopFailure} {
-		t.Run(verb, func(t *testing.T) {
-			t.Parallel()
-			transcriptFile := filepath.Join(t.TempDir(), "transcript.jsonl")
-			line := fmt.Sprintf(`{"type":"progress","data":{"type":"hook_progress","command":"entire hooks claude-code %s"},"timestamp":%q}`,
-				verb, now.UTC().Format(time.RFC3339Nano))
-			require.NoError(t, os.WriteFile(transcriptFile, []byte(line+"\n"), 0o600))
-			require.True(t, checkStopSentinel(transcriptFile, 4096, now, 2*time.Second))
-		})
 	}
 }
 

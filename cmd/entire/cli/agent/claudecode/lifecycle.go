@@ -271,10 +271,10 @@ func (c *ClaudeCodeAgent) parseSubagentStop(ctx context.Context, stdin io.Reader
 
 // --- Transcript flush sentinel ---
 
-// stopHookSentinel is the string that appears in Claude Code's hook_progress
-// entry when the stop hook has been invoked, indicating the transcript is fully flushed.
-// It is a prefix of "hooks claude-code stop-failure" on purpose: a turn ending
-// on an API error flushes the same way, so both turn-end verbs must match.
+// stopHookSentinel is the string that appeared in Claude Code's hook_progress
+// entry when the stop hook had been invoked, indicating the transcript was fully
+// flushed. Current Claude Code releases no longer write hook_progress entries,
+// so this is a legacy fast path; see waitForTranscriptFlush.
 const stopHookSentinel = "hooks claude-code stop"
 
 // waitForTranscriptFlush waits until Claude Code's async transcript writes have
@@ -282,16 +282,16 @@ const stopHookSentinel = "hooks claude-code stop"
 // hook sentinel appears OR the file size has held steady for a full quiet
 // window, and gives up after maxWait as a safety bound.
 //
-// The stop-hook sentinel ("hooks claude-code stop" hook_progress entry) is the
-// authoritative completion signal and the primary fast-path — when present it
-// means the transcript is fully flushed and we return at once. But it is not
-// reliably present while this hook runs: Claude persists it around the hook
-// boundary, so a poll loop inside the stop hook often never observes it and
-// would otherwise burn the full maxWait on every healthy turn-end.
+// The stop-hook sentinel ("hooks claude-code stop" hook_progress entry) is a
+// legacy fast path: when present it means the transcript is fully flushed and we
+// return at once. Older Claude Code persisted it only around the hook boundary,
+// so a poll inside the hook often missed it, and current releases do not write
+// hook_progress entries at all.
 //
-// Settle-on-stability is therefore the fallback. It is only a heuristic proxy
-// for completion, not a completion signal, so we require the size to hold steady
-// across a wall-clock quietWindow (not just a poll or two) before trusting it.
+// Settle-on-stability is therefore what actually ends the wait, for Stop and
+// StopFailure alike. It is only a heuristic proxy for completion, not a
+// completion signal, so we require the size to hold steady across a wall-clock
+// quietWindow (not just a poll or two) before trusting it.
 // A shorter window risks a brief mid-write pause — a GC pause, disk contention,
 // or a large tool-result flushed as several writes — being mistaken for a
 // finished transcript, causing turn-end to read a TRUNCATED transcript that then
