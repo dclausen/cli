@@ -207,11 +207,11 @@ func claudeTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 					continue
 				}
 				for _, name := range trustSortedKeys(env) {
-					out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: "env " + name, Command: compactJSON(env[name]), Source: rel})
+					out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: "env " + name, Command: trustHiddenValue, Source: rel})
 				}
 			case slices.Contains(claudeIgnoredSettings, key):
 			default:
-				out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: key, Command: compactJSON(raw), Source: rel})
+				out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: key, Command: trustSettingValue(key, raw), Source: rel})
 			}
 		}
 	}
@@ -293,7 +293,7 @@ func hookTrustEntries(agentName, source string, raw json.RawMessage, canonical m
 				command, commandOK := jsonString(hook["command"])
 				shown := command
 				if shown == "" || !commandOK {
-					shown = compactJSON(mustMarshal(hook))
+					shown = trustSettingValue("", mustMarshal(hook))
 				}
 				entire := typeOK && commandOK && (hookType == "" || hookType == "command") &&
 					command != "" && slices.Contains(canonical[event], command)
@@ -318,7 +318,7 @@ func mcpServerCommand(raw json.RawMessage) string {
 	case command == "" && url != "":
 		return url
 	default:
-		return compactJSON(raw)
+		return trustSettingValue("", raw)
 	}
 }
 
@@ -401,7 +401,7 @@ func codexTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 					continue
 				}
 			}
-			out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: key, Command: compactJSON(mustMarshal(config[key])), Source: trustCodexConfig})
+			out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: key, Command: trustSettingValue(key, mustMarshal(config[key])), Source: trustCodexConfig})
 		}
 	}
 	return append(out, instructionDirEntries(files, agentName, codexInstructionDirs)...), nil
@@ -477,7 +477,7 @@ func piTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 			return append(out, instructionDirEntries(files, agentName, piInstructionDirs)...), nil
 		}
 		for _, key := range trustSortedKeys(settings) {
-			out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: key, Command: compactJSON(settings[key]), Source: ".pi/settings.json"})
+			out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSetting, Name: key, Command: trustSettingValue(key, settings[key]), Source: ".pi/settings.json"})
 		}
 	}
 	return append(out, instructionDirEntries(files, agentName, piInstructionDirs)...), nil
@@ -785,6 +785,76 @@ func compactJSON(raw []byte) string {
 		return string(raw)
 	}
 	return b.String()
+}
+
+// trustHiddenValue stands in for a value the inventory must not print. The
+// inventory reaches --show-config, the confirm dialog, and agents that are told
+// they may relay it, and a file read from disk can be the reviewer's own (e.g.
+// the gitignored .claude/settings.local.json holding their API key). So
+// credentials are named, never echoed, whichever file they came from.
+const trustHiddenValue = "(value hidden)"
+
+// trustSecretMapKeys hold name-to-value maps whose values can be credentials:
+// environment variables, HTTP headers, Codex's shell_environment_policy.set.
+var trustSecretMapKeys = []string{"env", "headers", "http_headers", "set"}
+
+// trustSecretKeyParts mark a key whose value is a credential.
+var trustSecretKeyParts = []string{"token", "secret", "password"}
+
+func isTrustSecretKey(key string) bool {
+	lower := strings.ToLower(key)
+	return slices.ContainsFunc(trustSecretKeyParts, func(part string) bool { return strings.Contains(lower, part) })
+}
+
+// trustSettingValue renders a setting's value with credentials hidden; key is
+// the setting's own name, or "" when raw is a whole entry.
+func trustSettingValue(key string, raw json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return compactJSON(raw)
+	}
+	// Wrapped so the setting's own name is judged like a nested key.
+	wrapped := map[string]any{key: v}
+	if !hideTrustSecrets(wrapped) {
+		return compactJSON(raw)
+	}
+	return compactJSON(mustMarshal(wrapped[key]))
+}
+
+// hideTrustSecrets replaces credential values in v in place and reports
+// whether it replaced any.
+func hideTrustSecrets(v any) bool {
+	hid := false
+	switch v := v.(type) {
+	case map[string]any:
+		for key, child := range v {
+			switch {
+			case slices.Contains(trustSecretMapKeys, strings.ToLower(key)):
+				values, isMap := child.(map[string]any)
+				if !isMap {
+					v[key] = trustHiddenValue
+					hid = true
+					continue
+				}
+				for name := range values {
+					values[name] = trustHiddenValue
+					hid = true
+				}
+			case isTrustSecretKey(key):
+				v[key] = trustHiddenValue
+				hid = true
+			default:
+				hid = hideTrustSecrets(child) || hid
+			}
+		}
+	case []any:
+		for _, child := range v {
+			hid = hideTrustSecrets(child) || hid
+		}
+	}
+	return hid
 }
 
 func mustMarshal(v any) json.RawMessage {

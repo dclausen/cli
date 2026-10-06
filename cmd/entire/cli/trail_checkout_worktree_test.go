@@ -794,3 +794,30 @@ func TestCheckoutReviewWorktreeRejectsMovedBranch(t *testing.T) {
 		t.Fatalf("worktree for a moved branch was left behind (stat err %v)", err)
 	}
 }
+
+// A branch that moves after the pin check must still leave only the pinned
+// commit's files on disk: the checkout names the pin, not HEAD.
+func TestCheckoutReviewWorktreeChecksOutPinNotMovedHead(t *testing.T) {
+	repoDir := newTrailWorktreeTestRepo(t)
+	runGit(t, repoDir, "branch", "feature/race")
+	t.Chdir(repoDir)
+	pinned := branchHeadForTest(t, "feature/race")
+	beforePinnedReviewCheckout = func(string) {
+		testutil.WriteFile(t, repoDir, "unapproved.txt", "x")
+		testutil.GitAdd(t, repoDir, "unapproved.txt")
+		testutil.GitCommit(t, repoDir, "move after pin check")
+		runGit(t, repoDir, "update-ref", "refs/heads/feature/race", "HEAD")
+	}
+	t.Cleanup(func() { beforePinnedReviewCheckout = nil })
+
+	worktreePath, err := checkoutReviewWorktree(context.Background(), io.Discard, io.Discard, "feature/race", pinned, true)
+	if err != nil {
+		t.Fatalf("checkoutReviewWorktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreePath, "unapproved.txt")); !os.IsNotExist(err) {
+		t.Fatalf("file from the unapproved commit was checked out (stat err %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreePath, "README.md")); err != nil {
+		t.Fatalf("pinned commit's files missing: %v", err)
+	}
+}

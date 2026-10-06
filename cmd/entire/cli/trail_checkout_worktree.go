@@ -441,8 +441,15 @@ func checkoutManagedBranchWorktree(
 	return worktreePath, nil
 }
 
+// beforePinnedReviewCheckout runs between the pin check and the checkout; a
+// test seam for the branch moving in that window.
+var beforePinnedReviewCheckout func(worktreePath string)
+
 // addPinnedReviewWorktree adds the worktree without a checkout, verifies HEAD
-// against the pin the gate inspected, and only then checks files out.
+// against the pin the gate inspected, and only then checks files out. Files are
+// checked out from the pin itself, not HEAD, so a branch that moves after the
+// check still leaves only the approved commit on disk (and the caller's HEAD
+// recheck then refuses to run the review).
 func addPinnedReviewWorktree(ctx context.Context, root, worktreePath, branch string, review reviewCheckout) error {
 	hooksDir, err := os.MkdirTemp("", "entire-review-no-hooks-")
 	if err != nil {
@@ -467,8 +474,11 @@ func addPinnedReviewWorktree(ctx context.Context, root, worktreePath, branch str
 		removeWorktree()
 		return fmt.Errorf("branch %q moved to a different commit before it was checked out; run the review again", branch)
 	}
+	if beforePinnedReviewCheckout != nil {
+		beforePinnedReviewCheckout(worktreePath)
+	}
 
-	args := []string{"checkout", "-f", "HEAD"}
+	args := []string{"checkout", "-f", review.pin, "--", "."}
 	if review.untrusted {
 		args = append([]string{"-c", "core.hooksPath=" + hooksDir, "-c", "submodule.recurse=false"}, args...)
 	}
