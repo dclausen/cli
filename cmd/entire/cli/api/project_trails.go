@@ -134,6 +134,15 @@ type ChangeCreateResponse struct {
 	RepositoryID string `json:"repositoryId"`
 }
 
+// ChangeResource is a repository Change read through its owning project trail:
+// the branch-backed TrailResource plus the containment that route asserts.
+type ChangeResource struct {
+	TrailResource
+
+	TrailID      string `json:"trailId"`
+	RepositoryID string `json:"repositoryId"`
+}
+
 // ProjectTrailUpdateRequest can update the description and intent atomically.
 // Pointers preserve explicit clears, unlike omitempty on a plain string/slice.
 type ProjectTrailUpdateRequest struct {
@@ -162,15 +171,11 @@ func (c *Client) ProjectTrailRequest(ctx context.Context, method, path string, b
 		return "", fmt.Errorf("project trail request: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusPreconditionFailed {
-		return "", errors.New("project trail changed since it was read; read it again before retrying")
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		var problem ErrorResponse
-		if err := DecodeJSON(resp, &problem); err != nil {
-			return "", fmt.Errorf("project trail request: HTTP %d (invalid error response): %w", resp.StatusCode, err)
+	if err := CheckResponse(resp); err != nil {
+		if IsHTTPErrorStatus(err, http.StatusPreconditionFailed) {
+			return "", errors.New("project trail changed since it was read; read it again before retrying")
 		}
-		return "", fmt.Errorf("project trail request: HTTP %d %s", resp.StatusCode, problem.Message())
+		return "", fmt.Errorf("project trail request: %w", err)
 	}
 	if out != nil {
 		if err := DecodeJSON(resp, out); err != nil {

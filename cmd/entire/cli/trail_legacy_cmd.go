@@ -3,16 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/api"
-	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/spf13/cobra"
 )
 
-// Legacy collection and deletion use repository-local identities. They are not
-// fallbacks for a failed project request: only the legacy command tree exposes them.
 func newTrailListCmd() *cobra.Command {
 	var opts trailListOptions
 	cmd := &cobra.Command{
@@ -30,83 +26,6 @@ func newTrailListCmd() *cobra.Command {
 	return cmd
 }
 
-func newTrailDeleteCmd() *cobra.Command {
-	var branch string
-	var force bool
-	cmd := &cobra.Command{
-		Use: "delete [<number>]", Short: "Delete a trail",
-		Long: `Delete a trail by number, or the trail for a branch.
-
-If <number> is omitted, the trail for --branch (or the current branch) is used.
-Deletion is permanent; you are prompted to confirm unless --force is passed.`,
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			number, err := parseTrailNumberArg(args)
-			if err != nil {
-				return err
-			}
-			if number > 0 && cmd.Flags().Changed("branch") {
-				return errors.New("cannot combine a trail <number> with --branch")
-			}
-			if err := ensureTrailRepoHasTarget(cmd, number > 0 || strings.TrimSpace(branch) != "", "pass a trail number or --branch"); err != nil {
-				return err
-			}
-			return runTrailDelete(cmd, number, branch, force)
-		},
-	}
-	cmd.Flags().StringVar(&branch, "branch", "", "Branch whose trail to delete (defaults to current)")
-	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip the confirmation prompt")
-	return cmd
-}
-
-func runTrailDelete(cmd *cobra.Command, number int, branch string, force bool) error {
-	ctx, w := cmd.Context(), cmd.OutOrStdout()
-	return runAuthenticatedTrailAPI(ctx, cmd.ErrOrStderr(), trailInsecureHTTP(cmd), trailRepoFlag(cmd), func(ctx context.Context, client *api.Client, repoID string) error {
-		forge, owner, repo, err := resolveTrailRepoOrRemote(ctx, trailRepoFlag(cmd))
-		if err != nil {
-			return err
-		}
-		basePath, err := trailRepoBasePath(forge, owner, repo, repoID)
-		if err != nil {
-			return err
-		}
-		title := ""
-		if number == 0 {
-			branch, err = resolveTrailBranch(ctx, branch)
-			if err != nil {
-				return err
-			}
-			found, err := findTrailByBranchAtPath(ctx, client, basePath, branch)
-			if err != nil {
-				return err
-			}
-			if found == nil {
-				return fmt.Errorf("no trail found for branch %q", branch)
-			}
-			if found.Number <= 0 {
-				return fmt.Errorf("trail for branch %q has no number yet; cannot delete", branch)
-			}
-			number, title = found.Number, found.Title
-		} else if found, err := findTrailByNumberAtPath(ctx, client, basePath, number); err == nil && found != nil {
-			title = found.Title
-		}
-		proceed, err := confirmTrailDeletion(ctx, w, number, title, force, interactive.CanPromptInteractively())
-		if err != nil {
-			return err
-		}
-		if !proceed {
-			return nil
-		}
-		if err := deleteTrailByNumberAtPath(ctx, client, basePath, number); err != nil {
-			return err
-		}
-		fmt.Fprintf(w, "Deleted trail #%d\n", number)
-		return nil
-	})
-}
-
-// Shared operations use the same review/session/checkout code, but legacy
-// selection never resolves or follows a project parent (even when one is sent).
 func resolveLegacyTrailContext(cmd *cobra.Command, selector, branch string, localOnly bool) (*trailWorkingContext, error) {
 	if selector != "" && strings.TrimSpace(branch) != "" && !localOnly {
 		return nil, errors.New("pass a trail selector or --branch, not both")
@@ -115,7 +34,7 @@ func resolveLegacyTrailContext(cmd *cobra.Command, selector, branch string, loca
 	if localOnly {
 		repoOverride = ""
 	}
-	if err := requireTrailWorkingTarget(repoOverride, selector, branch); err != nil {
+	if err := ensureTrailRepoHasTarget(cmd, localOnly || selector != "" || strings.TrimSpace(branch) != "", "pass a trail selector or --branch"); err != nil {
 		return nil, err
 	}
 	var selected *trailWorkingContext
@@ -140,14 +59,12 @@ func resolveLegacyTrailContext(cmd *cobra.Command, selector, branch string, loca
 	return selected, err
 }
 
-// Preserve the legacy finding resolver's missing-default sentinel: a bare
-// finding dashboard with no trail is an empty view, not a project lookup error.
 func authenticatedLegacyTrailReviewTarget(cmd *cobra.Command, selector string) (*api.Client, trailReviewTarget, error) {
 	repo, branch := trailRepoFlag(cmd), trailBranchFlag(cmd)
 	if selector != "" && branch != "" {
 		return nil, trailReviewTarget{}, errors.New("pass a trail selector or --branch, not both")
 	}
-	if err := requireTrailWorkingTarget(repo, selector, branch); err != nil {
+	if err := ensureTrailRepoHasTarget(cmd, selector != "" || branch != "", "pass a trail selector or --branch"); err != nil {
 		return nil, trailReviewTarget{}, err
 	}
 	var client *api.Client
@@ -169,8 +86,6 @@ func configureLegacyTrailHelp(root *cobra.Command) {
 		if err != nil {
 			panic(err)
 		}
-		// Keep operational details (SSE events, checkout/resume safety) while
-		// replacing the project-selector paragraphs with the legacy contract.
 		start, end := strings.Index(cmd.Long, "The trail may be given"), -1
 		if start >= 0 {
 			end = strings.Index(cmd.Long[start:], "\n\n")

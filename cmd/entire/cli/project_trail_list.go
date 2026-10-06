@@ -34,26 +34,38 @@ func listProjectTrails(cmd *cobra.Command, status string, size int, cursor strin
 	}
 	repoID := ""
 	if repo := trailRepoFlag(cmd); repo != "" {
-		ctx, cancel := context.WithTimeout(cmd.Context(), requiredCellResolveTimeout)
-		defer cancel()
-		forge, owner, name, err := resolveTrailRepoOrRemote(ctx, repo)
-		if err != nil {
+		if repoID, err = resolveTrailRepoID(cmd.Context(), repo); err != nil {
 			return out, err
 		}
-		placement, err := resolveForgeRepoCellPlacement(ctx, forge, owner, name)
-		if err != nil {
-			return out, err
-		}
-		repoID = placement.RepoID
 	}
 	return target.list(cmd.Context(), size, cursor, status, repoID)
 }
+
+// resolveTrailRepoID turns a --repo value (or the origin remote when empty)
+// into the control plane's repository ID.
+func resolveTrailRepoID(ctx context.Context, repoFlag string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, requiredCellResolveTimeout)
+	defer cancel()
+	forge, owner, repo, err := resolveTrailRepoOrRemote(ctx, repoFlag)
+	if err != nil {
+		return "", err
+	}
+	placement, err := resolveForgeRepoCellPlacement(ctx, forge, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	return placement.RepoID, nil
+}
+
+// projectTrailListTimeout bounds one collection page, including each page of a
+// numeric selector lookup.
+const projectTrailListTimeout = 30 * time.Second
 
 // All collection reads, including numeric selector lookup, use the one
 // project-addressed endpoint. The server owns cursor binding and ordering;
 // forward its opaque token unchanged, never wrap or merge it client-side.
 func (t *projectTrailTarget) list(ctx context.Context, size int, cursor, status, repoID string) (api.ProjectTrailListResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, projectTrailListTimeout)
 	defer cancel()
 	var out api.ProjectTrailListResponse
 	q := url.Values{

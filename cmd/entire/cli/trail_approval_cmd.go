@@ -62,9 +62,6 @@ parent. --repo and --branch select a working context. Only that branch is approv
 not every repository on the trail. The branch work must be open.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ensureTrailRepoHasTarget(cmd, selectorFromArgs(args) != "" || strings.TrimSpace(branch) != "", "pass a trail selector or --branch"); err != nil {
-				return err
-			}
 			return submitWorkingTrailApproval(cmd, selectorFromArgs(args), branch, "approve", message, "Approved")
 		},
 	}
@@ -85,9 +82,6 @@ parent. --repo and --branch select a working context. A reason (--message) is
 required. The decision applies only to the selected branch.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ensureTrailRepoHasTarget(cmd, selectorFromArgs(args) != "" || strings.TrimSpace(branch) != "", "pass a trail selector or --branch"); err != nil {
-				return err
-			}
 			return submitWorkingTrailApproval(cmd, selectorFromArgs(args), branch, "request_changes", message, "Requested changes on")
 		},
 	}
@@ -104,9 +98,6 @@ func newTrailApprovalsCmd() *cobra.Command {
 		Short: "List approval decisions on a trail",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ensureTrailRepoHasTarget(cmd, selectorFromArgs(args) != "" || strings.TrimSpace(branch) != "", "pass a trail selector or --branch"); err != nil {
-				return err
-			}
 			return listWorkingTrailApprovals(cmd, selectorFromArgs(args), branch, jsonOut)
 		},
 	}

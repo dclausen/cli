@@ -455,35 +455,18 @@ func normalizeToolUsePaths(files []string, eventCWD, repoRoot string) []string {
 	return FilterAndNormalizePaths(resolved, repoRoot)
 }
 
-// handleLifecycleTurnStart handles turn start: captures pre-prompt state,
-// ensures strategy setup, initializes session.
-// entireTrailContextInjection is the one-time, model-facing pointer Entire
-// injects on the first turn of a session. It points at `entire agent-help` for
-// the full flag/subcommand surface — fetched on demand so that surface never goes
-// stale here as it grows — and adds only what an agent must know even if it never
-// drills in: commits auto-capture checkpoints, and setup/destructive commands
-// belong to the user. It also names the auto-detected repo (from the
-// already-loaded session scope, no IO) and the standing rule that the agent is
-// inside the repo and must never ask the user for the repo name. Kept terse: it
-// costs context-window tokens on the first turn of every session.
-//
-// Deliberately NOT here: per-task command recommendations. An earlier revision
-// urged `entire why <file>:<line>` and `entire checkpoint search` "before large
-// edits". A census of 963 agent transcripts on a heavy-use machine found zero
-// invocations of either against 25 calls to the agent-help pointer above, so the
-// recommendation only ever cost tokens. It also mis-framed a
-// sometimes-appropriate query as an always-do step. Which commands suit a given
-// task is agent-help's job, where it is pulled on demand and grouped by who
-// should initiate the command (see agentHelpAudience); this string carries only
-// invariants that hold on every turn of every session.
+// entireTrailContextInjection introduces project-level trails on the first turn
+// of a session. Keep the workflow short and defer command details to agent-help.
+// The repository context comes from the already-loaded scope, without IO.
 func entireTrailContextInjection(scope trailEnablementScope) string {
 	repo := ""
 	if scope.Forge != "" && scope.Owner != "" && scope.Repo != "" {
 		repo = trailEnablementRepoKey(scope.Forge, scope.Owner, scope.Repo)
 	}
 	var b strings.Builder
-	b.WriteString("Entire is enabled for this repo. Run `entire agent-help` to see what entire does and which subcommand to use, then `entire agent-help <command>` for that command's exact, current flags. ")
-	b.WriteString("Commits automatically capture the AI session as a checkpoint, so never create checkpoints by hand — just commit normally. Leave setup and destructive commands (enable, disable, clean, auth) to the user. ")
+	b.WriteString("Entire Trails is enabled. A trail captures project-level intent across repositories and branches—not just one branch. ")
+	b.WriteString("Start with `entire trail show` to find the current branch's trail. Reuse an existing trail when the work shares its intent; otherwise create one. ")
+	b.WriteString("Keep its description current with `entire trail update`. Use `entire agent-help trail` to discover commands and flags. ")
 	// Mirror agentHelpRepoBlock's defense-in-depth: this string is injected raw
 	// into the agent's model context (no escaping), so a repo key carrying control
 	// characters (e.g. an <sessionID>.trail-scope.json cache written by a pre-fix
@@ -1311,6 +1294,61 @@ func finalizeCodexObservedAtSessionEnd(ctx context.Context, sessionID string) {
 	}
 }
 
+// refreshCodexInventoriesBeforeCondense reconciles the Codex child ledgers of
+// the sessions PostCommit is about to condense (registered with
+// strategy.SetBeforeCondense), so their child task records are stored
+// completed, with files and tokens. Codex's subagent-stop is provisional, and
+// otherwise only the parent's turn end or session end reads the child
+// rollouts: a parent that waits for a child and commits before its own turn
+// ends would store the child's record as still in flight. It reports whether
+// it refreshed anything.
+func refreshCodexInventoriesBeforeCondense(ctx context.Context, sessions []*strategy.SessionState) bool {
+	candidates := codexRefreshCandidates(sessions)
+	if len(candidates) == 0 {
+		return false
+	}
+	ag, err := agent.GetByAgentType(agent.AgentTypeCodex)
+	if err != nil {
+		logging.Debug(ctx, "codex inventory refresh skipped: codex agent unavailable",
+			slog.String("error", err.Error()))
+		return false
+	}
+	for _, state := range candidates {
+		// The refresh only stores child evidence and subagent counters, so the
+		// parent's offset does not matter. Child completion needs only the
+		// child rollouts, so an unreadable parent still refreshes, as session
+		// end does with no parent at all.
+		var parent []byte
+		if state.TranscriptPath != "" {
+			if parent, err = ag.ReadTranscript(state.TranscriptPath); err != nil {
+				logging.Debug(ctx, "codex inventory refresh: parent transcript unreadable",
+					slog.String("session_id", state.SessionID),
+					slog.String("error", err.Error()))
+				parent = nil
+			}
+		}
+		refreshCodexInventory(ctx, ag, state.SessionID, parent, 0)
+	}
+	return true
+}
+
+// codexRefreshCandidates returns the Codex sessions with in-flight task
+// records that have not ended: the only ones a refresh can change. (Session
+// end already ran it for ended ones.)
+func codexRefreshCandidates(sessions []*strategy.SessionState) []*strategy.SessionState {
+	var candidates []*strategy.SessionState
+	for _, state := range sessions {
+		if state == nil || state.AgentType != agent.AgentTypeCodex || len(state.LiveTaskRecords()) == 0 {
+			continue
+		}
+		if state.Phase == session.PhaseEnded || state.EndedAt != nil {
+			continue
+		}
+		candidates = append(candidates, state)
+	}
+	return candidates
+}
+
 // refreshCodexInventory snapshots the durable child ledger, performs the
 // potentially slow filesystem analysis outside its lock, then applies only
 // path enrichment and terminal evidence if no new child observation raced it.
@@ -1539,8 +1577,9 @@ func declaredSubagentTranscript(ctx context.Context, event *agent.Event) string 
 //
 //   - event.Final == true (SubagentStop): the authoritative final capture.
 //     See handleSubagentStopFinal.
-//   - event.Final == false, background launch (run_in_background: true in
-//     ToolInput): post-task fires seconds after launch, before any real work
+//   - event.Final == false, background launch (reported by the agent via
+//     event.SubagentLaunch, else run_in_background in ToolInput): post-task
+//     fires seconds after launch, before any real work
 //     happens. Records an in-flight marker and defers the real capture to
 //     SubagentStop instead of completing the record from the stub.
 //   - event.Final == false, foreground: post-task fires at true completion, so
@@ -1585,7 +1624,7 @@ func handleLifecycleSubagentEnd(ctx context.Context, ag agent.Agent, event *agen
 		return handleSubagentStopFinal(logCtx, ag, event)
 	}
 
-	if isBackgroundLaunch(logCtx, event.ToolInput) {
+	if isBackgroundLaunch(logCtx, event) {
 		return recordInFlightTaskLaunch(logCtx, event)
 	}
 
@@ -1675,6 +1714,16 @@ func handleSubagentStopFinal(logCtx context.Context, ag agent.Agent, event *agen
 		return nil
 	}
 
+	// Claude Code's SubagentStop names the subagent but not the tool_use_id
+	// that launched it. Find the launch record by agent ID and adopt its
+	// ToolUseID, which keys the exactly-once completion and the checkpoint's
+	// tasks/<tool_use_id>/ tree.
+	if event.ToolUseID == "" && !event.CompletionWithoutLaunch {
+		if rec := state.FindTaskRecordByAgentID(event.SubagentID); rec != nil {
+			event.ToolUseID = rec.ToolUseID
+		}
+	}
+
 	marker := state.FindTaskRecord(event.ToolUseID)
 	if event.CompletionWithoutLaunch && state.IsEnded() {
 		logging.Info(logCtx, "skipping completion-only subagent capture: parent session already ended",
@@ -1694,7 +1743,10 @@ func handleSubagentStopFinal(logCtx context.Context, ag agent.Agent, event *agen
 		// emitting the launch-time marker — worth surfacing over Debug. A
 		// CompletionWithoutLaunch event is an explicit exception: it requires
 		// no launch marker, and duplicate completions are expected.
-		if !event.CompletionWithoutLaunch && (event.SubagentID != "" || event.SubagentTranscriptPath != "") {
+		// An event with no ToolUseID that matched no record is expected: a
+		// Claude Code foreground subagent's SubagentStop arrives before the
+		// PostToolUse that captures it, so there is nothing to complete yet.
+		if !event.CompletionWithoutLaunch && event.ToolUseID != "" && (event.SubagentID != "" || event.SubagentTranscriptPath != "") {
 			logging.Warn(logCtx, "no in-flight marker for completed subagent — foreground dedup, a duplicate event, or a misintegrated agent setting Final without launch markers",
 				slog.String("session_id", event.SessionID),
 				slog.String("tool_use_id", event.ToolUseID),
@@ -1867,6 +1919,28 @@ func subagentTranscriptAndFiles(
 	return transcriptPath, mergeUnique(modifiedFiles, files), nil
 }
 
+// subagentTokenUsage computes a subagent's own token usage from its
+// transcript, for agents whose stop payload carries none (Claude Code). nil
+// when there is no transcript or the agent cannot compute usage from one.
+func subagentTokenUsage(ctx context.Context, ag agent.Agent, event *agent.Event, transcriptPath string) *agent.TokenUsage {
+	if transcriptPath == "" {
+		return nil
+	}
+	data, err := ag.ReadTranscript(transcriptPath)
+	if err != nil {
+		logging.Warn(ctx, "failed to read subagent transcript for token usage",
+			slog.String("session_id", event.SessionID),
+			slog.String("tool_use_id", event.ToolUseID),
+			slog.String("error", err.Error()))
+		return nil
+	}
+	if len(data) == 0 {
+		// An empty transcript records no usage; exact zero would claim it.
+		return nil
+	}
+	return agent.CalculateTokenUsage(ctx, ag, data, 0, "")
+}
+
 // completeSubagentTaskRecord detects a completed subagent invocation's changes
 // and completes its durable task record (#2058): files, labels, tokens, and the
 // declared transcript path land on the record; condensation later materializes
@@ -1983,6 +2057,10 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 	}
 
 	files := mergeUnique(mergeUnique(relModifiedFiles, relNewFiles), relDeletedFiles)
+	tokenUsage := event.TokenUsage
+	if tokenUsage == nil {
+		tokenUsage = subagentTokenUsage(logCtx, ag, event, subagentTranscriptPath)
+	}
 	rec := session.TaskRecord{
 		ToolUseID:              event.ToolUseID,
 		AgentID:                event.SubagentID,
@@ -1992,7 +2070,7 @@ func completeSubagentTaskRecord(logCtx context.Context, ag agent.Agent, event *a
 		DeclaredTranscriptPath: subagentTranscriptPath,
 		TranscriptUnavailable:  event.SubagentTranscriptUnavailable,
 		Files:                  files,
-		TokenUsage:             event.TokenUsage,
+		TokenUsage:             tokenUsage,
 	}
 	// Exactly-once needs an identity to be "once" about. Copilot CLI's
 	// SubagentEnd carries no correlation ID at all, so every one of its

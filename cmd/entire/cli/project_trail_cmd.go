@@ -100,8 +100,8 @@ func newProjectTrailListCmd() *cobra.Command {
 			if jsonRequested(cmd) {
 				return printJSON(cmd.OutOrStdout(), page)
 			}
+			project := projectTrailProjectFlag(cmd)
 			if err := printTable(cmd.OutOrStdout(), []string{colHeaderProject, "NUMBER", "ID", colHeaderStatus, colHeaderTitle}, items, func(t api.ProjectTrail) []string {
-				project := projectTrailProjectFlag(cmd)
 				return []string{tuiutil.SanitizeTerminalLabel(project), strconv.Itoa(t.Number), t.ID, tuiutil.SanitizeTerminalLabel(t.Status), tuiutil.SanitizeTerminalLabel(t.Title)}
 			}); err != nil {
 				return err
@@ -147,13 +147,7 @@ func (f *projectTrailFields) validate(cmd *cobra.Command, creating bool) error {
 	if cmd.Flags().Changed("status") && !validProjectTrailStatus(f.Status) {
 		return errors.New("project trail status must be draft, open, or closed (merged belongs to a change)")
 	}
-	if cmd.Flags().Changed("type") && !trail.Type(f.Type).IsValid() {
-		return fmt.Errorf("invalid type: %s", formatValidTypes())
-	}
-	if cmd.Flags().Changed("priority") && !trail.Priority(f.Priority).IsValid() {
-		return fmt.Errorf("invalid priority: %s", formatValidPriorities())
-	}
-	return nil
+	return validateTrailCreateEnums(cmd, f.Type, f.Priority)
 }
 
 func newProjectTrailUpdateCmd() *cobra.Command {
@@ -180,7 +174,7 @@ func newProjectTrailUpdateCmd() *cobra.Command {
 				}
 			}
 			assigning := cmd.Flags().Changed("assignee") || cmd.Flags().Changed("add-assignee") || cmd.Flags().Changed("remove-assignee")
-			if patch.Title == nil && patch.Body == nil && patch.Status == nil && patch.Type == nil && patch.Priority == nil && !assigning {
+			if patch == (api.ProjectTrailUpdateRequest{}) && !assigning {
 				return errors.New("provide at least one field to update")
 			}
 			target, err := resolveProjectTrail(cmd, projectTrailSelector(args))
@@ -316,16 +310,12 @@ func projectTrailIdempotencyKey(w io.Writer, key string) string {
 }
 
 func projectTrailChangeRequest(cmd *cobra.Command, fields projectTrailFields, branch, base, action string) (api.ChangeCreateRequest, error) {
-	forge, owner, repo, err := resolveTrailRepoOrRemote(cmd.Context(), trailRepoFlag(cmd))
-	if err != nil {
-		return api.ChangeCreateRequest{}, err
-	}
-	placement, err := resolveForgeRepoCellPlacement(cmd.Context(), forge, owner, repo)
+	repoID, err := resolveTrailRepoID(cmd.Context(), trailRepoFlag(cmd))
 	if err != nil {
 		return api.ChangeCreateRequest{}, err
 	}
 	return api.ChangeCreateRequest{
-		RepositoryID: placement.RepoID,
+		RepositoryID: repoID,
 		Title:        fields.Title, Body: fields.Body, BranchName: branch, Base: base, BranchAction: action,
 		Status: fields.Status, Type: fields.Type, Priority: fields.Priority, Assignees: fields.Assignees,
 	}, nil

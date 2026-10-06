@@ -209,12 +209,7 @@ func newTrailResumeIntegrationAPIServer(t *testing.T, trail api.TrailResource) *
 		case r.Method == http.MethodGet && r.URL.Path == parentPath:
 			writeTrailResumeIntegrationJSON(t, w, parent)
 		case r.Method == http.MethodGet && r.URL.Path == parentPath+"/changes/"+trail.ID:
-			writeTrailResumeIntegrationJSON(t, w, struct {
-				api.TrailResource
-
-				TrailID      string `json:"trailId"`
-				RepositoryID string `json:"repositoryId"`
-			}{trail, parentID, "placement-primary"})
+			writeTrailResumeIntegrationJSON(t, w, api.ChangeResource{TrailResource: trail, TrailID: parentID, RepositoryID: "placement-primary"})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/trails/gh/entireio/cli":
 			writeTrailResumeIntegrationJSON(t, w, api.TrailListResponse{
 				Trails: []api.TrailResource{trail},

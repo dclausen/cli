@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -25,7 +26,7 @@ func newTrailLinkCmd() *cobra.Command {
 			if err := fields.validate(cmd, false); err != nil {
 				return err
 			}
-			if err := requireTrailWorkingTarget(trailRepoFlag(cmd), "", branch); err != nil {
+			if err := ensureTrailRepoHasTarget(cmd, strings.TrimSpace(branch) != "", "pass --branch"); err != nil {
 				return err
 			}
 			var err error
@@ -36,7 +37,7 @@ func newTrailLinkCmd() *cobra.Command {
 			if err := validateProjectTrailBranch(cmd, branch, action); err != nil {
 				return err
 			}
-			target, err := resolveProjectTrailWithBranch(cmd, args[0], "")
+			target, err := resolveProjectTrailBySelector(cmd, args[0])
 			if err != nil {
 				return err
 			}

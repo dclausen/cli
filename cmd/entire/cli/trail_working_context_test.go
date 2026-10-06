@@ -201,7 +201,7 @@ func TestWorkingTrailBranchDiscoveryDoesNotRequireProjectEnumeration(t *testing.
 			_, _, err := executeProjectTrailTest(t, "approve", "--repo", "gh/acme/widget", "--branch", "feature/work")
 			require.Zero(t, core.resolveCalls)
 			if missingParent {
-				require.ErrorContains(t, err, "no discoverable trail")
+				require.ErrorContains(t, err, "no discoverable project trail")
 				require.Zero(t, writes)
 			} else {
 				require.NoError(t, err)

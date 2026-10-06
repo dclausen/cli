@@ -100,13 +100,7 @@ func runProjectDiscussion(cmd *cobra.Command, action string, args []string, body
 		if err != nil {
 			return err
 		}
-		if jsonRequested(cmd) {
-			return printJSON(cmd.OutOrStdout(), items)
-		}
-		for _, item := range items {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s  %s (resolved: %t)\n", tuiutil.SanitizeTerminalLabel(item.ID), tuiutil.SanitizeTerminalLabel(item.Title), item.Resolved)
-		}
-		return nil
+		return printTrailDiscussions(cmd.OutOrStdout(), items, "trail "+target.TrailID, jsonRequested(cmd), true)
 	}
 	if len(args) > 0 {
 		path += "/" + url.PathEscape(args[0])
@@ -122,11 +116,11 @@ func runProjectDiscussion(cmd *cobra.Command, action string, args []string, body
 			return errors.New("discussion response identity does not match the request")
 		}
 	}
+	// Render through the shared view types: raw API structs carry each
+	// resource's ETag, an internal conditional-write token, which the legacy
+	// JSON output deliberately omits.
 	if action == discussionShow {
-		if jsonRequested(cmd) {
-			return printJSON(cmd.OutOrStdout(), current)
-		}
-		return printTrailDiscussionDetail(cmd.OutOrStdout(), api.TrailDiscussionDetailResponse{Discussion: current.Discussion, Messages: current.Messages}, false)
+		return printTrailDiscussionDetail(cmd.OutOrStdout(), api.TrailDiscussionDetailResponse{Discussion: current.Discussion, Messages: current.Messages}, jsonRequested(cmd))
 	}
 	method := http.MethodPost
 	var request any
@@ -174,7 +168,7 @@ func runProjectDiscussion(cmd *cobra.Command, action string, args []string, body
 		return nil
 	}
 	if jsonRequested(cmd) {
-		return printJSON(cmd.OutOrStdout(), out)
+		return printJSON(cmd.OutOrStdout(), toTrailDiscussionCreateResponseJSON(api.TrailDiscussionCreateResponse{Discussion: out.Discussion, Message: out.Message}))
 	}
 	if out.Message != nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "Message %s saved\n", tuiutil.SanitizeTerminalLabel(out.Message.ID))

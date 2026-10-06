@@ -13,7 +13,7 @@ import (
 )
 
 func TestSubmitTrailApprovalUsesHTTPStatusNotResponseBody(t *testing.T) {
-	// Client constructor overrides are process-global, so these tests are serial.
+	// Serial: replaces global clients.
 	for _, project := range []bool{false, true} {
 		for _, verb := range []string{"approve", "request-changes"} {
 			for _, response := range []struct {

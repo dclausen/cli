@@ -16,7 +16,6 @@ import (
 )
 
 func TestTrailModeEnvironment(t *testing.T) {
-	// Not parallel: validates the process environment entry point.
 	for _, value := range []string{"", "0", "false", "true", "typo", "1"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(projectTrailsEnv, value)
@@ -24,7 +23,6 @@ func TestTrailModeEnvironment(t *testing.T) {
 			wantProject := value == "1"
 			require.Equal(t, wantProject, usesProjectTrails(cmd))
 			require.Equal(t, wantProject, cmd.PersistentFlags().Lookup("project") != nil)
-			// Construction freezes the selection, rather than re-reading env at IO time.
 			t.Setenv(projectTrailsEnv, "changed")
 			child, _, err := cmd.Find([]string{"finding", "resolve"})
 			require.NoError(t, err)
@@ -74,7 +72,7 @@ func TestTrailModeCommandSurface(t *testing.T) {
 }
 
 func TestLegacyTrailRequestsDoNotResolveProject(t *testing.T) {
-	// Replaces client constructors; no live auth, git, or network state.
+	// Serial: replaces global clients.
 	for _, args := range [][]string{
 		{"list", "--json"}, {"show", "7", "--json"},
 		{"approve", "7"}, {"request-changes", "7", "-m", "Fix it"},
@@ -82,7 +80,6 @@ func TestLegacyTrailRequestsDoNotResolveProject(t *testing.T) {
 		{"finding", "list", "feature/work", "--json"},
 		{"finding", "--branch", "missing"},
 		{"finding", "resolve", "7", "finding-one"},
-		{"delete", "7", "--force"},
 	} {
 		t.Run(fmt.Sprint(args), func(t *testing.T) {
 			old := newProjectTrailCoreClient
@@ -114,9 +111,6 @@ func TestLegacyTrailRequestsDoNotResolveProject(t *testing.T) {
 					payload = map[string]any{"comments": []map[string]any{{"id": "finding-one", "review_id": "review-one", "status": "open"}}}
 				case "PATCH /api/v1/trails/gh/acme/widget/7/reviews/review-one/comments/finding-one":
 					payload = map[string]any{"id": "finding-one", "review_id": "review-one", "status": "resolved"}
-				case "DELETE /api/v1/trails/gh/acme/widget/7":
-					w.WriteHeader(http.StatusNoContent)
-					return
 				default:
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 					http.NotFound(w, r)

@@ -102,6 +102,7 @@ var agentHelpClassification = map[string]agentHelpFacts{
 	"search": {agentHelpAudienceReadOnly, true},
 
 	"checkpoint":         {agentHelpAudienceTaskDriven, true},
+	"checkpoint create":  {agentHelpAudienceUserOwned, false},  // hidden; writes a checkpoint
 	"checkpoint explain": {agentHelpAudienceTaskDriven, false}, // --generate writes a summary
 	"checkpoint list":    {agentHelpAudienceReadOnly, false},
 	"checkpoint search":  {agentHelpAudienceReadOnly, false},
@@ -209,7 +210,9 @@ var agentHelpGuidance = map[string]string{
 		"--transcript or --raw-transcript, this only reads and is safe to run\n" +
 		"whenever you need the context. --generate is the exception — it writes a\n" +
 		"summary onto the checkpoint and spends tokens with the summary provider,\n" +
-		"so pass it only when the user asked for a summary.",
+		"so pass it only when the user asked for a summary. To see what subagents\n" +
+		"did, read \"tasks\" in --json, then stream one subagent's transcript with\n" +
+		"--transcript --task <tool_use_id>.",
 }
 
 // agentHelpFactsFor classifies one command path, defaulting the unclassified

@@ -113,7 +113,7 @@ func TestProjectTrailListFailuresDoNotFallback(t *testing.T) {
 				assert.NoError(t, json.NewEncoder(w).Encode(map[string]string{"error": "scope or cursor rejected"}))
 			})
 			out, _, err := executeProjectTrailTest(t, "list", "--project", "gh/acme", "--page-token", "server-bound-token", "--json")
-			require.ErrorContains(t, err, fmt.Sprintf("HTTP %d", status))
+			require.ErrorContains(t, err, fmt.Sprintf("(status %d)", status))
 			require.Empty(t, out)
 			require.Equal(t, 1, calls)
 			require.Zero(t, core.catalogCalls)

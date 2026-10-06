@@ -51,15 +51,11 @@ uses the following routing shapes, mirroring the entire.io BFF:
   used by cross-repo checkpoint reads (`explain --repo`, `explain_repo.go`) and
   by `experts --repo owner/repo`, which sends that placement id to entire-api
   instead of re-deriving it from a data-plane repo listing.
-- **Project-scoped trails → the assigned project cell** (only with
-  `ENTIRE_PROJECT_TRAILS=1`; legacy repository-scoped trails remain the default):
-  `trail list` requires
-  an explicit `--project gh/<owner>|et/<project>`, resolves it through Core, and
-  sends one `GET /api/v1/trails?projectId=<ID>` to its assigned API URL.
-  `--repo` is only an optional within-project filter, never an alternative
-  routing scope. Numeric trail lookups use the same collection. No fleet or
-  affiliation enumeration, cross-cell merge, removed project-collection GET,
-  or unscoped fallback is allowed. Pagination passes the server token through.
+- **Project-scoped trails → assigned project cell** (`ENTIRE_PROJECT_TRAILS=1`):
+  Core resolves the required `--project`; list and numeric lookups use
+  `GET /api/v1/trails?projectId=<ID>` at its assigned API URL. `--repo` only
+  filters within that project. No fanout or fallback; server cursors pass through.
+  See [Project trails CLI](../architecture/project-trails-cli.md).
 - **User-scoped `/me` → home cell, never fan out**:
   `auth.NewEntireAPICellClient(ctx, insecure, nil)` routes by the
   `home_jurisdiction` JWT claim; activity/recap use it with a data-API

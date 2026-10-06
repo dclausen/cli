@@ -1,171 +1,47 @@
 # Project trails CLI
 
-## Rollout: legacy by default, project trails by opt-in
+Legacy repository-scoped commands remain the default. Set
+`ENTIRE_PROJECT_TRAILS=1` (exact value) to enable project trails; unset it to
+return to legacy. Help and agent-help reflect the selected mode.
 
-The default `entire trail` command tree retains the legacy repository-scoped
-API and selectors (repository-local number, ID, or branch). It includes
-`delete`, repository discussions, `list --author`, and the existing code-work
-create/update flow. `--repo` defaults to origin; no project resolution or parent
-lookup takes place, even if the server returns a parent reference.
-
-The project-scoped variant described below is available **only** with
-`ENTIRE_PROJECT_TRAILS=1`. Unset, empty, `0`, or any other value selects legacy.
-There is no CLI flag, persisted setting, automatic API detection, or error-driven
-fallback. Experimental build visibility does not enable this variant.
+## Usage
 
 ```sh
-# Legacy: repository-local trails and API.
-entire trail list --json
-
-# Opt-in for one invocation.
-ENTIRE_PROJECT_TRAILS=1 entire trail list --project gh/entireio --json
-
-# Or for a shell, including all examples below.
 export ENTIRE_PROJECT_TRAILS=1
-# Return to legacy with: unset ENTIRE_PROJECT_TRAILS
-```
 
-The command tree is selected once at construction, so help, agent-help, flags,
-selectors, reads, and writes use the same variant. Legacy rejects `--project`
-and has no `link`/`unlink`; project mode exposes those but not `delete`.
-Shared checkout, resume, findings, approvals, and watch code selects identities
-through the corresponding resolver. Project resume suggestions include the
-opt-in variable so copied commands cannot silently target a legacy number.
-
-## Project model
-
-There is one user-facing entity: **a trail**, representing intent across
-repositories and branches. Internal project-trail and repository-work identities
-remain separate, but there is no `trail change` subgroup or change selector.
-
-## Intent
-
-```sh
-# Listing requires one explicit project, inside or outside a clone.
 entire trail list --project gh/entireio --json
-entire trail list --project gh/entireio --status open --limit 50
-# Repository scope is only a filter inside that project.
-entire trail list --project gh/entirehq --repo gh/entirehq/entire.io
-entire trail list --project et/widgets --limit 50 --page-token '<nextPageToken>'
-
-# No selector follows the current branch's parent.
-entire trail show
+entire trail list --project gh/entireio --limit 50 --page-token '<nextPageToken>'
 entire trail show 42 --project gh/entireio
-entire trail update --body 'Updated intent' --status open
-
-# Creation publishes the local branch, then links it with the new intent.
-# No separate commit/push is required. On the base branch, derive a new name
-# from the title; on a feature branch, use that branch.
 entire trail create --title 'Cross-repository work'
-# Intent without a branch is explicit.
 entire trail create --project gh/entireio --title 'Plan' --no-branch
-# Alternatively, ask the server to create the branch without a local push.
-entire trail create --title 'Intent' --branch feature/work --base main --branch-action create
-```
-
-Selectors are **project-local numbers or project trail ULIDs**, never repository
-numbers or branch names. Use `--branch` for a branch. Project status is
-`draft`, `open`, or `closed`; `merged` belongs to branch work. There is no trail
-deletion command. Show displays intent plus “Repositories and branches,” not a
-second class of user-visible entities.
-
-List uses `GET /api/v1/trails?projectId=<ID>`. `--project` is mandatory,
-even inside a checkout; it is addressing scope, not a global-feed filter.
-Core resolves the explicit `gh/<owner>` or `et/<project>` reference and its
-assigned API URL. One invocation makes one collection request to that cell,
-including when it is hidden from the cluster catalog. There is no fleet or
-project enumeration, cross-cell merge, or fallback on failed resolution/reads.
-
-`--repo` resolves a repository ID only as an optional filter inside the selected
-project. The server enforces repository ownership/access; the repository's cell
-never replaces the project's route. A repo-only invocation fails before I/O.
-`--status` filters server-side before pagination; `--limit` is the page size.
-JSON preserves `items`, `nextPageToken`, groups, exact group totals, jurisdiction,
-and collection capabilities. Text identifies the selected project without
-requiring a per-item project object.
-
-Pagination forwards the server's project/filter-bound `nextPageToken` unchanged.
-Repeat the same project and filters with `--page-token`; no CLI composite cursor
-or per-item ordering/continuation metadata remains. Failed reads return an error,
-not an empty or partial success. Numeric selector lookups also use this scoped
-`/trails` collection and follow its cursor across all lifecycle states. The
-removed `GET /{host}/{project}/trails` is never retried or used as a fallback.
-Detail, create POST, update PATCH, Changes, and discussion routes remain
-project-scoped and unchanged.
-
-Update combines body and metadata in one conditional PATCH. `--assignee` replaces the list,
-`--assignee=` clears it, and `--add-assignee`/`--remove-assignee` modify the read
-list. JSON retains backend resource fields and IDs for automation.
-
-## Repository/branch context
-
-```sh
-entire trail checkout 42 --branch feature/work
-entire trail resume 42 --branch feature/work --no-resume
-entire trail finding list 42 --repo gh/entireio/cli --branch feature/work
-entire trail approve 42 --branch feature/work
-entire trail approvals 42 --branch feature/work
-entire trail watch 42 --branch feature/work
-
-# Add another repository/branch to existing intent. No backing ID is needed.
+entire trail update 42 --body 'Updated intent'
 entire trail link 42 --repo gh/entireio/api --branch feature/api
 entire trail unlink 42 --repo gh/entireio/api --branch feature/api
-```
-
-Context selection is deterministic: explicit `--branch`, then a matching current
-checkout, then the only visible branch in the selected repository. Multiple
-matches list the branches and require selection; zero matches fail. An explicit
-`--repo` never borrows the local branch silently. Checkout and resume operate in
-a local clone; checkout rejects `--repo`, and resume treats it as a local-repo
-assertion. Approvals and findings affect only the selected branch, not every
-repository in the trail. Confirmation text identifies that scope.
-
-Link defaults to the current branch, or accepts `--branch`; `--branch-action`
-can be `link` (default) or `create`. Existing work, reviews, and body survive a
-link. Linking a branch owned by another trail fails. Link expands repository
-scope atomically. Unlink removes membership without deleting the branch or its
-work. Both operations require the parent's read ETag.
-
-## Discussions
-
-```sh
-entire trail comment list --trail 42 --project gh/entireio
+entire trail finding list 42 --repo gh/entireio/cli --branch feature/work
 entire trail comment add --trail 42 --body 'Cross-repository plan'
-entire trail comment reply '<discussion-id>' --trail 42 --body 'Agreed'
-entire trail comment resolve '<discussion-id>' --trail 42
 ```
 
-Comments use project-wide `/discussions` routes, including edits and deletion
-(`--force` required). Discussion updates use the discussion ETag; message
-updates/deletion use that message's ETag, not its parent's. Code-review comments
-remain under `finding`. `watch` currently streams the selected repository/branch,
-not an aggregation of project discussions and all repositories.
+Selectors are project-local numbers or trail ULIDs. Without a selector, commands
+follow the current branch's parent. `--branch` selects branch work; ambiguous
+matches require it. Checkout and resume operate on the local clone. Findings,
+approvals, and watch apply to the selected branch; comments apply to the whole
+trail. Project mode has `link`/`unlink`, not `delete` or a `change` subgroup.
 
-## Routing and safety
+## API and safety
 
-- Creation and explicit selectors use Core `/projects/resolve/{host}/{project}`
-  and its returned `project.apiUrl`, with the stored `primaryProcessingCell` and
-  `region`. No separate catalog lookup is needed, including for hidden assigned
-  clusters. Routes use the canonical public reference, not an internal GitHub
-  project storage name. Missing fields (older Core), an unassigned project, or
-  an unavailable URL fail closed; a catalog or region default is not a fallback.
-- Branch discovery follows the backing row's `parent` through the catalog
-  (parent references currently carry a cell ID, not an API URL), without
-  requiring a project-collection lookup. A missing parent may be hidden,
-  stale, or unresolved; it is never a reason to fall back to legacy semantics.
-- Branch operations validate membership through the owned project route before
-  using the repository-local ID/number for findings, approvals, or streams.
-- Parent routing never falls back to a repository or jurisdiction-default cell.
-- Permission-filtered detail may be partial. JSON retains `isPossiblyPartial`;
-  text warns that the repository/branch list may be incomplete.
-- Missing ETags refuse protected mutations; a 412 never causes an unconditional
-  retry. Creation and link print an Idempotency-Key before sending the request;
-  retry with that key and identical inputs. Local `create` publishes the branch
-  before the API request, running push hooks and preserving the local tip. It
-  never commits uncommitted work, force-pushes, or deletes branches to compensate
-  for an API failure. A rejected push prevents the creation request. `--repo`
-  targets remote work without publishing the local clone; `--no-branch` and
-  `--branch-action create` also skip local publication.
+- List requires `--project` and reads `GET /api/v1/trails?projectId=<ID>` from
+  Core's assigned project cell. `--repo` only filters within that project.
+  Numeric lookups use the same collection; server pagination tokens pass through
+  unchanged. JSON preserves counts, groups, jurisdiction, and capabilities.
+- Explicit selectors resolve through Core `/projects/resolve/{host}/{project}`.
+  Branch discovery follows the backing row's parent. Neither falls back to
+  legacy semantics or another cell on failure.
+- Branch operations verify project membership before using repository-local
+  IDs for subresource requests. Permission-filtered detail may be incomplete.
+- Updates require the resource's ETag; a 412 never triggers an unconditional
+  retry. Create/link print an idempotency key for retries with identical inputs.
+- Local create publishes the branch but never commits, force-pushes, or deletes
+  it on failure. `--repo`, `--no-branch`, and `--branch-action create` skip local
+  publication. Unlink preserves the branch and its work.
 
-Project-wide streaming, batch multi-repository creation inputs, and direct
-project metadata/scope editing remain follow-up work.
+Project-wide streaming and batch multi-repository creation are not supported.
