@@ -855,11 +855,12 @@ func RemoveGitHook(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open the git hooks lock directory: %w", err)
 	}
-	return removeHooks(ctx, lockRoot, root, hooksDir)
+	return removeHooks(ctx, lockRoot, root, hooksDir, restoreLegacy)
 }
 
 // removeHooks is RemoveGitHook on an opened hooks root, under the hooks lock.
-func removeHooks(ctx context.Context, lockRoot, root *os.Root, hooksDir string) (int, error) {
+// restore is restoreLegacy; tests pass a failing one.
+func removeHooks(ctx context.Context, lockRoot, root *os.Root, hooksDir string, restore func(*os.Root, string) error) (int, error) {
 	release, err := acquireHooksLock(ctx, lockRoot, hooksDir)
 	if err != nil {
 		return 0, err
@@ -890,8 +891,9 @@ func removeHooks(ctx context.Context, lockRoot, root *os.Root, hooksDir string) 
 		hookIsOurs := class == hookOurs
 		hookExists := class != hookAbsent
 
-		if err := restoreLegacy(root, hook); err != nil {
+		if err := restore(root, hook); err != nil {
 			removeErrors = append(removeErrors, fmt.Sprintf("restore %s%s: %v", hook, legacySuffix, err))
+			continue // leave this hook's files as they are, so a retry can finish
 		}
 		// pre-commit reinstalled over Entire's hook: its wrapper is at the path
 		// and an identical copy in the backup is redundant.

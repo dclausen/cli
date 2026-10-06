@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -309,7 +310,7 @@ func TestHooksLock_SharedHooksDirInstallVsRemoveKeepsUserHook(t *testing.T) {
 			}
 		})
 		wg.Go(func() {
-			if _, err := removeHooks(context.Background(), f.lockRoot, f.root, other); err != nil {
+			if _, err := removeHooks(context.Background(), f.lockRoot, f.root, other, restoreLegacy); err != nil {
 				t.Errorf("removeHooks: %v", err)
 			}
 		})
@@ -497,7 +498,7 @@ func TestRemoveHooks_AfterReclaimRestoresPreCommit(t *testing.T) {
 	}
 	f.write("commit-msg", wrapper)
 
-	if _, err := removeHooks(context.Background(), f.lockRoot, f.root, f.dir); err != nil {
+	if _, err := removeHooks(context.Background(), f.lockRoot, f.root, f.dir, restoreLegacy); err != nil {
 		t.Fatalf("removeHooks: %v", err)
 	}
 
@@ -507,4 +508,36 @@ func TestRemoveHooks_AfterReclaimRestoresPreCommit(t *testing.T) {
 			t.Errorf("%s left behind", name)
 		}
 	}
+}
+
+// A failed .legacy restore stops uninstall for that hook: nothing else is
+// touched, so the user's hook is still on disk and a retry finishes the job.
+func TestRemoveHooks_FailedLegacyRestoreLeavesHookForRetry(t *testing.T) {
+	t.Parallel()
+	spec := specFor(t, "commit-msg")
+	wrapper := preCommitWrapper("commit-msg")
+	f := newHooksFixture(t)
+	f.write("commit-msg", wrapper)
+	f.write("commit-msg"+legacySuffix, generateChainedContent(spec.content, spec.name))
+	f.write("commit-msg"+backupSuffix, userHookV1)
+	f.install(spec)
+	if err := os.Rename(filepath.Join(f.dir, "commit-msg"), filepath.Join(f.dir, "commit-msg"+legacySuffix)); err != nil {
+		t.Fatal(err)
+	}
+	f.write("commit-msg", wrapper)
+	failing := func(*os.Root, string) error { return errors.New("injected") }
+
+	if _, err := removeHooks(context.Background(), f.lockRoot, f.root, f.dir, failing); err == nil {
+		t.Fatal("removeHooks succeeded despite the failed restore")
+	}
+	assertHooks(t, f, map[string]string{
+		"commit-msg":                wrapper,
+		"commit-msg" + backupSuffix: wrapper,
+		"commit-msg" + keepSuffix:   userHookV1,
+	})
+
+	if _, err := removeHooks(context.Background(), f.lockRoot, f.root, f.dir, restoreLegacy); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	assertHooks(t, f, map[string]string{"commit-msg": wrapper, "commit-msg" + legacySuffix: userHookV1})
 }
