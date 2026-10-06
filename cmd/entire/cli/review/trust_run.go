@@ -22,14 +22,13 @@ func registerTrustFlags(cmd *cobra.Command, trustTarget *string, showConfig, sho
 	cmd.Flags().StringVar(trustTarget, "trust-target", "", "approve reviewing code by someone else at this commit SHA (the review loads the checkout's hooks, MCP servers, and settings)")
 	cmd.Flags().BoolVar(showConfig, "show-config", false, "list what the review would run (hooks, MCP servers, settings) and exit without running it")
 	cmd.Flags().BoolVar(showConfigJSON, "json", false, "with --show-config: print JSON")
-	// Validate before any mode dispatch, so --list --json or --configure with
-	// a malformed --trust-target fail instead of silently ignoring the flag.
+	// Validate before any mode runs, so no mode silently ignores these flags.
 	cmd.PreRunE = func(*cobra.Command, []string) error {
 		return reviewGateOptions{TrustTarget: *trustTarget, ShowConfig: *showConfig, ShowConfigJSON: *showConfigJSON}.validate()
 	}
 }
 
-// validate rejects malformed gate flags before any work starts.
+// validate rejects malformed gate flags.
 func (o reviewGateOptions) validate() error {
 	if err := validateTrustTarget(o.TrustTarget); err != nil {
 		return err
@@ -40,23 +39,19 @@ func (o reviewGateOptions) validate() error {
 	return nil
 }
 
-// plainReviewLabel names the target of a review of the current checkout.
 const plainReviewLabel = "HEAD"
 
 // reviewGateOptions carries the flags the trust gate reads.
 type reviewGateOptions struct {
-	TrustTarget   string
-	Command       string
-	AgentOverride string
-	// ShowConfig lists what the review would run instead of running it.
+	TrustTarget    string
+	Command        string
+	AgentOverride  string
 	ShowConfig     bool
 	ShowConfigJSON bool
 }
 
-// reviewSettingsContext scopes review settings to the user's own checkout. A
-// target review re-runs inside the branch's worktree, whose
-// .entire/settings.json the branch's author controls; its agents, models, and
-// judge must still come from the checkout the user ran the command in.
+// reviewSettingsContext reads review settings from the user's own checkout,
+// not the target worktree's .entire/settings.json, which the branch controls.
 func reviewSettingsContext(ctx context.Context) context.Context {
 	if caller := strings.TrimSpace(os.Getenv(envReviewFindingsWorktree)); caller != "" {
 		return settings.WithWorktreeRoot(ctx, caller)
@@ -64,13 +59,11 @@ func reviewSettingsContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-// knownReviewAgents are the agents a review can launch. Their configuration
-// is what the gate inspects when no profile narrows it down.
+// knownReviewAgents are the agents a review can launch.
 var knownReviewAgents = []string{"claude-code", "codex", "pi"}
 
-// profileAgentNames lists the agents a review of profile would launch: the
-// --agent reviewer alone when set, otherwise every reviewer. The judge runs
-// from a temp directory and never loads the checkout's configuration.
+// profileAgentNames lists the reviewer agents a profile launches (or just
+// --agent). The judge runs from a temp directory, so it is not included.
 func profileAgentNames(profile settings.ReviewProfileConfig, agentOverride string) []string {
 	if agentOverride != "" {
 		if worker, cfg, err := selectProfileWorker(profile, agentOverride); err == nil {
@@ -88,8 +81,7 @@ func profileAgentNames(profile settings.ReviewProfileConfig, agentOverride strin
 	return names
 }
 
-// showConfigAgents picks the agents --show-config inspects: the named
-// profile's when it resolves, otherwise every agent a review can launch.
+// showConfigAgents uses the named profile's agents, or all launchable ones.
 func showConfigAgents(ctx context.Context, profileName, agentOverride string) []string {
 	if s, err := settings.Load(reviewSettingsContext(ctx)); err == nil && s != nil {
 		applyLegacyReviewProfileFallback(s)
@@ -114,9 +106,8 @@ func gatePlainReview(ctx context.Context, cmd *cobra.Command, opts reviewGateOpt
 	if err != nil {
 		return trustInspectionFailed(cmd, deps, err)
 	}
-	// The re-run inside a target worktree was gated by the parent, which
-	// forwards the pinned head. Re-checking it here keeps the environment
-	// variable alone from skipping the gate.
+	// The parent already gated a target re-run and forwards the pinned head;
+	// requiring it to match means the env var alone can't skip the gate.
 	if os.Getenv(envReviewFindingsWorktree) != "" && trustTargetMatches(opts.TrustTarget, head) {
 		return nil
 	}
@@ -129,8 +120,7 @@ func gatePlainReview(ctx context.Context, cmd *cobra.Command, opts reviewGateOpt
 	return runTrustGate(ctx, cmd, opts, subject, inv, deps)
 }
 
-// inspectReview gathers who wrote base..head and, unless every commit is the
-// user's and alwaysInventory is false, what source would run.
+// inspectReview gathers authorship and, when needed, what source would run.
 func inspectReview(ctx context.Context, repoRoot, head string, source TrustSource, agents []string, alwaysInventory bool, deps Deps) (TrustSubject, TrustInventory, error) {
 	subject, err := commitAuthorship(ctx, repoRoot, head)
 	if err != nil {
@@ -201,15 +191,13 @@ func runReviewShowConfig(ctx context.Context, cmd *cobra.Command, profileName st
 	return printTrustConfig(cmd.OutOrStdout(), subject, inv, opts.ShowConfigJSON)
 }
 
-// reviewInvocationFlags are the flags kept when echoing the user's command
-// back in a hint. --prompt is left out (it can be long and is free text), as
-// are the gate's own flags.
+// reviewInvocationFlags are kept when echoing the command in hints; --prompt
+// and the gate's own flags are left out.
 var reviewInvocationFlags = []string{"target", "profile", "agent", reviewFlagModel, "base", "timeout"}
 
 const reviewFlagModel = "model"
 
-// reviewInvocation rebuilds the user's command for hints such as
-// "<cmd> --trust-target <sha>". Values come from the user's own arguments.
+// reviewInvocation rebuilds the user's command for hints.
 func reviewInvocation(cmd *cobra.Command, positional []string) string {
 	parts := []string{"entire", cmd.Name()}
 	for _, arg := range positional {

@@ -344,13 +344,8 @@ func checkoutTrailWorktree(ctx context.Context, w, errW io.Writer, branch string
 // checkoutReviewWorktree returns a worktree containing branch. Unlike trail
 // checkout, review can use a branch with no trail and can run in an existing
 // worktree outside Entire's managed directory.
-//
-// A new worktree is added without a checkout, its HEAD verified against pin
-// (the commit the trust gate inspected), and only then populated. untrusted
-// is set when the branch has commits by someone else: the checkout then runs
-// with no git hooks, no LFS smudge (a branch .lfsconfig could point LFS at its
-// own server), and no submodule recursion, and .worktreeinclude files are not
-// copied in.
+// For untrusted (someone else's) branches the checkout runs no git hooks, LFS
+// smudge, or submodule recursion, and copies no .worktreeinclude files.
 func checkoutReviewWorktree(ctx context.Context, w, errW io.Writer, branch, pin string, untrusted bool) (string, error) {
 	return checkoutManagedBranchWorktree(ctx, w, errW, branch, false, true, &reviewCheckout{pin: pin, untrusted: untrusted}, func(root string) string {
 		return defaultReviewWorktreePath(root, branch)
@@ -446,10 +441,8 @@ func checkoutManagedBranchWorktree(
 	return worktreePath, nil
 }
 
-// addPinnedReviewWorktree adds worktreePath for branch without checking files
-// out, aborts if the branch no longer points at review.pin, and then checks
-// the files out. Nothing from the branch is written to disk, and no hook runs,
-// until the commit is known to be the one the trust gate inspected.
+// addPinnedReviewWorktree adds the worktree without a checkout, verifies HEAD
+// against the pin the gate inspected, and only then checks files out.
 func addPinnedReviewWorktree(ctx context.Context, root, worktreePath, branch string, review reviewCheckout) error {
 	hooksDir, err := os.MkdirTemp("", "entire-review-no-hooks-")
 	if err != nil {
@@ -464,8 +457,7 @@ func addPinnedReviewWorktree(ctx context.Context, root, worktreePath, branch str
 		return fmt.Errorf("failed to create worktree: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	removeWorktree := func() {
-		// Not ctx: a cancelled operation must still remove the half-made
-		// worktree, or a retry would reuse it without the pin check.
+		// Ignore cancellation: a half-made worktree must not be left for reuse.
 		remove := exec.CommandContext(context.WithoutCancel(ctx), "git", "worktree", "remove", "--force", "--", worktreePath)
 		remove.Dir = root
 		_ = remove.Run() //nolint:errcheck // best effort; the caller reports the original failure

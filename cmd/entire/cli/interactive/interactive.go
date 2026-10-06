@@ -112,16 +112,12 @@ func isAgentSubprocessEnv() bool {
 	return os.Getenv("GIT_TERMINAL_PROMPT") == "0"
 }
 
-// AgentSubprocessEnvVars returns the agent-subprocess sentinel names, so tests
-// that must not inherit a developer's agent environment can clear all of them.
+// AgentSubprocessEnvVars returns the sentinel names, for tests to clear.
 func AgentSubprocessEnvVars() []string {
 	return slices.Clone(agentSubprocessEnvVars)
 }
 
-// AgentSubprocessEnvVar returns the name of the first agent-subprocess
-// sentinel set in the environment, or "" when none is. It reads the same list
-// as isAgentSubprocessEnv, for callers that must refuse rather than prompt
-// when an agent is driving them and want to log which agent it was.
+// AgentSubprocessEnvVar returns the first sentinel set in the environment, or "".
 func AgentSubprocessEnvVar() string {
 	for _, name := range agentSubprocessEnvVars {
 		if os.Getenv(name) != "" {

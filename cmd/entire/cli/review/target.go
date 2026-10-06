@@ -28,18 +28,15 @@ type TargetWorktree struct {
 	Created bool
 }
 
-// ResolvedTarget is a review target resolved to a local branch whose head is
-// pinned before anything is checked out.
+// ResolvedTarget is a review target's local branch and pinned head.
 type ResolvedTarget struct {
 	Branch  string
 	HeadSHA string
-	// ExistingWorktree is the worktree the branch is already checked out in,
-	// or "" when the review will create one.
+	// ExistingWorktree is where the branch is already checked out, if anywhere.
 	ExistingWorktree string
 }
 
-// ErrTargetCancelled is returned by ResolveTarget when the user declines a
-// prompt while the target is resolved (for example, fetching the branch).
+// ErrTargetCancelled is returned when the user declines a prompt in ResolveTarget.
 var ErrTargetCancelled = errors.New("review target cancelled")
 
 type reviewWorktreeRunner func(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error
@@ -52,8 +49,7 @@ type targetReviewRequest struct {
 	CleanupWorktree bool
 	ShowConfig      bool
 	ShowConfigJSON  bool
-	// ModeSelected is set when a non-run mode (--configure, --list, ...) was
-	// also passed; --target only applies to running a review.
+	// ModeSelected is set when a non-run mode such as --list was also passed.
 	ModeSelected bool
 	Gate         reviewGateOptions
 }
@@ -83,9 +79,8 @@ func runTargetReview(ctx context.Context, cmd *cobra.Command, req targetReviewRe
 	if req.ShowConfig {
 		agents = showConfigAgents(ctx, profileName, req.Gate.AgentOverride)
 	} else {
-		// Resolve the profile here, in the user's checkout, so first-run setup
-		// and the chooser never run inside (or save into) the branch's worktree,
-		// and so the gate knows which agents' configuration to inspect.
+		// Resolve the profile in the user's checkout, never the branch's worktree;
+		// the gate also needs its agents.
 		selection, selErr := resolveReviewProfile(ctx, cmd, profileName, deps)
 		if selErr != nil || selection.done {
 			return selErr
@@ -107,8 +102,7 @@ func runTargetReview(ctx context.Context, cmd *cobra.Command, req targetReviewRe
 
 	source := TrustSource{RepoRoot: callerWorktree, Commit: resolved.HeadSHA}
 	if resolved.ExistingWorktree != "" {
-		// A reused worktree runs what is on its disk, including uncommitted and
-		// ignored files, so inspect that rather than the commit.
+		// A reused worktree runs what's on its disk, so inspect that.
 		worktreeHead, headErr := gitexec.HeadSHA(ctx, resolved.ExistingWorktree)
 		if headErr != nil || worktreeHead != resolved.HeadSHA {
 			cmd.SilenceUsage = true
@@ -139,8 +133,7 @@ func runTargetReview(ctx context.Context, cmd *cobra.Command, req targetReviewRe
 	if err != nil {
 		return err
 	}
-	// The branch could have moved between the gate and the checkout. Nothing
-	// has run in the worktree yet, so a mismatch is caught before it matters.
+	// Catch a branch that moved between the gate and the checkout.
 	if checkedOut, headErr := gitexec.HeadSHA(ctx, prepared.Path); headErr != nil || checkedOut != resolved.HeadSHA {
 		if prepared.Created && deps.RemoveTarget != nil {
 			_ = deps.RemoveTarget(ctx, prepared.Path) //nolint:errcheck // best effort; the abort below is what matters
@@ -158,13 +151,11 @@ func runTargetReview(ctx context.Context, cmd *cobra.Command, req targetReviewRe
 	return finishTargetReview(ctx, cmd, prepared, req.CleanupWorktree, deps.RemoveTarget)
 }
 
-// reviewTargetChildFlagsDropped are handled by the parent and never reach
-// the re-run inside the worktree.
+// reviewTargetChildFlagsDropped are handled by the parent only.
 var reviewTargetChildFlagsDropped = []string{"target", "cleanup-worktree", "show-config", "json", "trust-target"}
 
-// reviewTargetChildArgs builds the re-run's arguments. The parent forwards the
-// pinned head as --trust-target so the child skips the gate it already passed,
-// and the profile it chose, so the child never prompts for one.
+// reviewTargetChildArgs builds the re-run's arguments, forwarding the pinned
+// head as --trust-target and the chosen profile so the child never prompts.
 func reviewTargetChildArgs(cmd *cobra.Command, positional []string, headSHA, profile string) []string {
 	args := make([]string, 0, len(positional)+cmd.Flags().NFlag()+3)
 	args = append(args, "review")

@@ -75,21 +75,14 @@ type Deps struct {
 	PostReviewToTrail func(ctx context.Context, out io.Writer, profileName, verdict string) error
 
 	// ResolveTarget resolves a branch, trail ID, or trail URL to a local branch
-	// and pins its head commit, fetching the branch when only origin has it. It
-	// checks nothing out, so the trust gate can decide before anything from the
-	// branch runs. Injected because trail API access lives in the parent package.
+	// and pins its head without checking anything out.
 	ResolveTarget func(ctx context.Context, out, errOut io.Writer, selector string) (ResolvedTarget, error)
 
-	// CheckoutTarget checks a resolved target out in a worktree (or reuses the
-	// one it is already checked out in) and returns the worktree in which the
-	// review should be re-run. untrusted hardens the checkout for code by
-	// someone else: no git hooks, LFS smudge, or submodule recursion during
-	// the add, and no .worktreeinclude copy.
+	// CheckoutTarget checks a resolved target out (or reuses its worktree);
+	// untrusted hardens the checkout for someone else's code.
 	CheckoutTarget func(ctx context.Context, out, errOut io.Writer, target ResolvedTarget, untrusted bool) (TargetWorktree, error)
 
-	// InspectTrust lists what the given checkout would run during a review by
-	// the named agents. Injected because the per-agent hook formats live in
-	// agent packages that import review.
+	// InspectTrust lists what a checkout would run for the named agents.
 	InspectTrust func(ctx context.Context, source TrustSource, agents []string) (TrustInventory, error)
 
 	// RemoveTarget removes a worktree created specifically for this review.
@@ -830,8 +823,7 @@ func judgeTimeoutArg(reviewerArg time.Duration) time.Duration {
 	return max(reviewerArg, 0)
 }
 
-// reviewProfileSelection is the profile a review run resolved to. done means
-// the user finished in setup without starting a review.
+// reviewProfileSelection is the resolved profile; done means setup ended the run.
 type reviewProfileSelection struct {
 	name      string
 	profile   settings.ReviewProfileConfig
@@ -839,8 +831,7 @@ type reviewProfileSelection struct {
 	done      bool
 }
 
-// resolveReviewProfile loads review settings and selects the profile to run,
-// running first-run setup or the profile chooser when needed.
+// resolveReviewProfile selects the profile, running setup or the chooser if needed.
 func resolveReviewProfile(ctx context.Context, cmd *cobra.Command, profileOverride string, deps Deps) (reviewProfileSelection, error) {
 	out := cmd.OutOrStdout()
 	silentErr := deps.NewSilentError
@@ -987,8 +978,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, agentOverride, modelOver
 	}
 	profileName, profile, installed := selection.name, selection.profile, selection.installed
 
-	// Gate before anything from the checkout runs: the reviewers load its
-	// hooks, MCP servers, and settings.
+	// Gate before the reviewers load the checkout's configuration.
 	if err := gatePlainReview(ctx, cmd, gateOpts, profileAgentNames(profile, agentOverride), deps); err != nil {
 		if errors.Is(err, errTrustCancelled) {
 			return nil

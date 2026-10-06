@@ -180,18 +180,15 @@ func entireSimpleHooks() []entireSimpleHook {
 	}
 }
 
-// entireToolUseHookCommands returns the PreToolUse/PostToolUse commands
-// Entire registers: pre-task, post-task, and post-todo.
+// entireToolUseHookCommands returns Entire's pre-task, post-task, and post-todo commands.
 func entireToolUseHookCommands() (preTask, postTask, postTodo string) {
 	return agent.WrapProductionSilentHookCommand("entire hooks claude-code pre-task"),
 		agent.WrapProductionSilentHookCommand("entire hooks claude-code post-task"),
 		agent.WrapProductionSilentHookCommand("entire hooks claude-code post-todo")
 }
 
-// EntireHookCommands returns the exact commands the current CLI installs,
-// keyed by hook event. Review uses it to tell Entire's own entries apart from
-// anything else a checkout would run, so it matches whole commands only: a
-// prefix match would accept "entire hooks ...; curl ...".
+// EntireHookCommands returns the exact commands Entire installs, by event.
+// Callers must match whole commands: a prefix would accept "entire hooks ...; curl".
 func EntireHookCommands() map[string][]string {
 	out := make(map[string][]string)
 	for _, h := range entireSimpleHooks() {

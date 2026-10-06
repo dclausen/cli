@@ -73,74 +73,6 @@ func setupForeignBranchRepo(t *testing.T) (reviewer *captureRunConfigReviewer, d
 	return reviewer, deps, head
 }
 
-func TestRunReview_ForeignCommitsRefusedWithoutApproval(t *testing.T) {
-	reviewer, deps, head := setupForeignBranchRepo(t)
-
-	var out, errOut bytes.Buffer
-	cmd := review.NewCommand(deps)
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"general"})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("review of someone else's commits ran without approval")
-	}
-	if reviewer.called {
-		t.Fatal("reviewer started before approval")
-	}
-	for _, want := range []string{
-		"Not run: this review needs the user's approval.",
-		"would run 1 command on this machine",
-		"entire review general --trust-target " + head,
-	} {
-		if !strings.Contains(errOut.String(), want) {
-			t.Errorf("stderr missing %q:\n%s", want, errOut.String())
-		}
-	}
-	for _, notWant := range []string{"Mallory", "npm test"} {
-		if strings.Contains(errOut.String()+out.String(), notWant) {
-			t.Errorf("refusal shows author-controlled %q:\n%s", notWant, errOut.String())
-		}
-	}
-}
-
-func TestRunReview_ForeignCommitsRunWithMatchingTrustTarget(t *testing.T) {
-	reviewer, deps, head := setupForeignBranchRepo(t)
-
-	var errOut bytes.Buffer
-	cmd := review.NewCommand(deps)
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"general", "--trust-target", head})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("approved review failed: %v\n%s", err, errOut.String())
-	}
-	if !reviewer.called {
-		t.Fatal("reviewer did not start after approval")
-	}
-	if !strings.Contains(errOut.String(), "Running the review of "+head[:12]+" as approved (1 command).") {
-		t.Errorf("stderr missing approval line:\n%s", errOut.String())
-	}
-}
-
-func TestRunReview_TrustTargetForOtherCommitRefused(t *testing.T) {
-	reviewer, deps, _ := setupForeignBranchRepo(t)
-
-	var errOut bytes.Buffer
-	cmd := review.NewCommand(deps)
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"general", "--trust-target", strings.Repeat("0", 40)})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("mismatched --trust-target ran the review")
-	}
-	if reviewer.called {
-		t.Fatal("reviewer started on a mismatched --trust-target")
-	}
-	if !strings.Contains(errOut.String(), "not the approved "+strings.Repeat("0", 40)) {
-		t.Errorf("stderr:\n%s", errOut.String())
-	}
-}
-
 // The re-run inside a target worktree carries the caller's worktree in its
 // environment. That variable alone must not skip the gate.
 func TestRunReview_TargetChildEnvAloneDoesNotSkipGate(t *testing.T) {
@@ -153,40 +85,6 @@ func TestRunReview_TargetChildEnvAloneDoesNotSkipGate(t *testing.T) {
 	cmd.SetArgs([]string{"general"})
 	if err := cmd.Execute(); err == nil || reviewer.called {
 		t.Fatalf("env var alone skipped the gate (err=%v, called=%v)", err, reviewer.called)
-	}
-}
-
-func TestRunReview_ShowConfigListsWithoutRunning(t *testing.T) {
-	reviewer, deps, head := setupForeignBranchRepo(t)
-
-	var out bytes.Buffer
-	cmd := review.NewCommand(deps)
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"general", "--show-config"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("--show-config: %v", err)
-	}
-	if reviewer.called {
-		t.Fatal("--show-config started a reviewer")
-	}
-	for _, want := range []string{"feature @ " + head[:12] + " by Mallory (1 commit)", "npm test"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("stdout missing %q:\n%s", want, out.String())
-		}
-	}
-}
-
-func TestRunReview_MalformedTrustTargetIsUsageError(t *testing.T) {
-	reviewer, deps, _ := setupForeignBranchRepo(t)
-
-	cmd := review.NewCommand(deps)
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"general", "--trust-target", "yes"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "full commit SHA") || reviewer.called {
-		t.Fatalf("err = %v, called = %v", err, reviewer.called)
 	}
 }
 

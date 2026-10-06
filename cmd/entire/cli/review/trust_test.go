@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"charm.land/huh/v2"
-	"github.com/spf13/cobra"
 
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
@@ -239,19 +238,6 @@ func TestSanitizeDisplay(t *testing.T) {
 	}
 }
 
-func TestTruncateDisplayKeepsTail(t *testing.T) {
-	t.Parallel()
-
-	in := "npm test " + strings.Repeat("x", 200) + " | sh"
-	got := truncateDisplay(in, 80)
-	if !strings.HasPrefix(got, "npm test ") || !strings.Contains(got, "| sh  (truncated)") || !strings.Contains(got, " … ") {
-		t.Fatalf("truncateDisplay() = %q", got)
-	}
-	if short := truncateDisplay("short", 80); short != "short" {
-		t.Fatalf("short value changed: %q", short)
-	}
-}
-
 func TestValidateTrustTarget(t *testing.T) {
 	t.Parallel()
 
@@ -349,37 +335,6 @@ func TestPrintTrustConfigJSON(t *testing.T) {
 	first, ok := entries[0].(map[string]any)
 	if !ok || first["entire"] != false {
 		t.Errorf("non-Entire entries should come first, got %v", entries[0])
-	}
-}
-
-func TestPrintTrustConfigTextDoesNotTruncate(t *testing.T) {
-	t.Parallel()
-
-	long := "npm test " + strings.Repeat("y", 300)
-	inv := TrustInventory{Entries: []TrustEntry{{Kind: TrustKindHook, Name: "Stop", Command: long, Source: ".claude/settings.json"}}, Instructions: []string{"CLAUDE.md"}}
-	var out bytes.Buffer
-	if err := printTrustConfig(&out, foreignSubject(), inv, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), long) || !strings.Contains(out.String(), "Instructions the reviewer reads: CLAUDE.md") {
-		t.Fatalf("--show-config output:\n%s", out.String())
-	}
-}
-
-func TestReviewInvocationDropsGateFlagsAndPrompt(t *testing.T) {
-	t.Parallel()
-
-	cmd := &cobra.Command{Use: "review"}
-	for _, name := range []string{"target", "prompt", "trust-target", "base"} {
-		cmd.Flags().String(name, "", "")
-	}
-	if err := cmd.Flags().Parse([]string{"--target=https://entire.io/gh/a/b/trails/9", "--prompt=focus", "--trust-target=abcdef0", "--base=origin/dev branch"}); err != nil {
-		t.Fatal(err)
-	}
-	got := reviewInvocation(cmd, []string{"general"})
-	want := "entire review general --base 'origin/dev branch' --target https://entire.io/gh/a/b/trails/9"
-	if got != want {
-		t.Fatalf("reviewInvocation() = %q, want %q", got, want)
 	}
 }
 

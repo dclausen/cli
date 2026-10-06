@@ -1,10 +1,7 @@
 // Package review — see env.go for package-level rationale.
 //
-// trust.go gates reviews of code someone else wrote. A reviewer agent loads the
-// checkout's full configuration (hooks, MCP servers, settings), so reviewing a
-// teammate's branch runs whatever that branch configures. Reviews of the
-// user's own commits run as before; anything else needs the user's approval,
-// either through a terminal confirm or `--trust-target <sha>`.
+// trust.go gates reviews of code someone else wrote: the reviewer loads the
+// checkout's hooks, MCP servers, and settings, so those need the user's approval.
 package review
 
 import (
@@ -37,12 +34,11 @@ const (
 	TrustKindMCP       = "mcp"
 	TrustKindSetting   = "setting"
 	TrustKindExtension = "extension"
-	// TrustKindSkill is a skill, command, prompt, or subagent file the
-	// reviewer can load; such files can carry their own hooks or commands.
+	// TrustKindSkill is a skill, command, prompt, or subagent file; these can
+	// carry their own hooks or commands.
 	TrustKindSkill = "skill"
-	// TrustKindUnknown marks configuration that could not be inspected (a
-	// symlink, malformed JSON). It counts as a command: unknown is never
-	// treated as "nothing runs".
+	// TrustKindUnknown is configuration that could not be inspected (symlink,
+	// malformed JSON). It counts as a command, never as "nothing runs".
 	TrustKindUnknown = "unknown"
 )
 
@@ -60,22 +56,19 @@ type TrustEntry struct {
 // TrustInventory lists what a checkout would run during a review.
 type TrustInventory struct {
 	Entries []TrustEntry
-	// Instructions are the instruction files the reviewer reads (CLAUDE.md,
-	// AGENTS.md). Listed for information; they do not run anything.
+	// Instructions are files like CLAUDE.md the reviewer reads; informational.
 	Instructions []string
 }
 
-// TrustSource names the configuration to inspect: the tree of Commit in the
-// repository at RepoRoot when Commit is set (nothing is checked out yet), or
-// else the files on disk under WorktreeRoot.
+// TrustSource is what to inspect: Commit's tree in RepoRoot when set (before
+// any checkout), otherwise the files on disk under WorktreeRoot.
 type TrustSource struct {
 	RepoRoot     string
 	Commit       string
 	WorktreeRoot string
 }
 
-// orderedEntries returns non-Entire entries first, so the visible slots of the
-// warning always show what the branch adds before Entire's own hooks.
+// orderedEntries puts the branch's own entries before Entire's hooks.
 func (inv TrustInventory) orderedEntries() []TrustEntry {
 	out := make([]TrustEntry, 0, len(inv.Entries))
 	for _, e := range inv.Entries {
@@ -114,7 +107,6 @@ func (inv TrustInventory) entireAgents() []string {
 	return out
 }
 
-// trustWhatNothing is what() for a checkout that configures nothing that runs.
 const trustWhatNothing = "nothing"
 
 // what describes the inventory in a few words: "3 hooks", "4 commands", or
@@ -143,35 +135,25 @@ func pluralCount(n int, one, many string) string {
 
 // TrustSubject describes the commits under review.
 type TrustSubject struct {
-	// Label is how the user named the review target: the --target value as
-	// typed, or "HEAD" for a plain review. Never the branch name, which a
-	// trail's author controls.
-	Label string
-	// Branch is shown only in the human confirm, in a labelled field.
+	// Label is the target as the user typed it ("HEAD" for a plain review),
+	// never the branch name, which a trail's author controls.
+	Label   string
 	Branch  string
 	HeadSHA string
 	Commits int
-	// Authors are the names of commit authors other than the user.
 	Authors []string
 	Yours   bool
 }
 
-// commitAuthorship decides whether every commit between the user's default
-// branch and head is the user's: its author, as git records it, has the
-// user's git email. The author is self-declared, as it always is in git, so
-// this tells a teammate's branch from the user's own; it is not proof against
-// a branch that copies the user's email. If the user's git identity or the
-// default branch cannot be read, the commits count as someone else's.
-//
-// The range is always counted from the default branch, never from --base: a
-// base inside someone else's commits (or at head) would otherwise hide them.
+// commitAuthorship reports whether every commit from the user's default branch
+// to head is authored by the user's git email. Counting from --base instead
+// could hide commits. An unreadable identity or default branch fails closed.
 func commitAuthorship(ctx context.Context, repoRoot, head string) (TrustSubject, error) {
 	subject := TrustSubject{HeadSHA: head}
 	identity, err := gitexec.Run(ctx, repoRoot, "config", "--get", "user.email")
 	email := strings.ToLower(strings.TrimSpace(identity))
 	if err != nil {
-		// Exit 1 means unset; anything else is a real failure. Both leave the
-		// user without an identity, which fails closed below.
+		// Unset or unreadable: no identity, which fails closed below.
 		email = ""
 	}
 	base, err := defaultBranchCommit(repoRoot)
@@ -211,15 +193,13 @@ func commitAuthorship(ctx context.Context, repoRoot, head string) (TrustSubject,
 			subject.Authors = append(subject.Authors, name)
 		}
 	}
-	// Without an identity nothing is shown to be the user's, even an empty
-	// range: the gate must not depend on whether there is anything to compare.
+	// Without an identity nothing is the user's, even an empty range.
 	subject.Yours = yours && email != ""
 	return subject, nil
 }
 
-// defaultBranchCommit resolves the user's default branch (origin/HEAD, then
-// origin/main, origin/master, main, master) to a commit. It never uses --base
-// or a trail's base, which the branch's author can steer.
+// defaultBranchCommit resolves the user's default branch to a commit; never
+// --base or a trail's base, which the branch's author can steer.
 func defaultBranchCommit(repoRoot string) (string, error) {
 	repo, err := gitrepo.OpenPath(repoRoot)
 	if err != nil {
@@ -237,9 +217,8 @@ func defaultBranchCommit(repoRoot string) (string, error) {
 	return hash.String(), nil
 }
 
-// trustTargetPattern accepts a full commit SHA (SHA-1 or SHA-256). A short
-// prefix would let a branch's author grind a different commit with the same
-// prefix and swap it in after approval.
+// trustTargetPattern accepts only a full SHA: a short prefix can be ground to
+// match a different commit swapped in after approval.
 var trustTargetPattern = regexp.MustCompile(`^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 
 func validateTrustTarget(value string) error {
@@ -260,10 +239,8 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// detectAgentCaller returns the environment variable showing an agent is
-// running this command, or "". It checks the caller-session variables, the
-// agent-subprocess sentinels, and CLAUDECODE, which the shared sentinel list
-// leaves out on purpose (see interactive.agentSubprocessEnvVars).
+// detectAgentCaller returns the variable showing an agent runs this command,
+// or "". CLAUDECODE is checked here because the shared sentinel list omits it.
 func detectAgentCaller() string {
 	for _, name := range agent.CallerSessionEnvVars() {
 		if os.Getenv(name) != "" {
@@ -288,8 +265,7 @@ type trustGate struct {
 	Command     string
 	Interactive bool
 	AgentCaller string
-	// Confirm asks the human at the terminal, printing description to w
-	// first. Tests replace it.
+	// Confirm asks the human at the terminal; tests replace it.
 	Confirm func(ctx context.Context, w io.Writer, title, description string) (bool, error)
 }
 
@@ -299,9 +275,8 @@ var errTrustRefused = errors.New("review needs approval")
 // errTrustCancelled marks a review the user declined at the confirm.
 var errTrustCancelled = errors.New("review cancelled")
 
-// run applies the gate, printing every message to errOut. It returns nil to
-// proceed, errTrustCancelled when the user declined (exit 0), or a refusal
-// error after printing why (exit 1).
+// run applies the gate, printing to errOut: nil proceeds, errTrustCancelled
+// exits 0, errTrustRefused exits 1.
 func (g trustGate) run(ctx context.Context, errOut io.Writer) error {
 	if g.Subject.Yours {
 		if g.TrustTarget != "" {
@@ -332,9 +307,8 @@ func (g trustGate) run(ctx context.Context, errOut io.Writer) error {
 		}
 		return nil
 	}
-	// An agent can hold a PTY, so check for one before offering the confirm.
-	// Without a terminal the same fixed text applies, so an agent that was not
-	// detected is not invited to approve itself either.
+	// Agents can hold a PTY, so they never get the confirm. No terminal gets the
+	// same text, so an undetected agent isn't invited to approve itself.
 	if g.AgentCaller != "" || !g.Interactive || g.Confirm == nil {
 		printTrustRefusal(errOut, what, g.Command, g.Subject.HeadSHA)
 		return errTrustRefused
@@ -363,8 +337,7 @@ func printTrustRefusal(errOut io.Writer, what, command, head string) {
 	fmt.Fprintf(errOut, "  %s --trust-target %s\n", command, head)
 }
 
-// trustConfirmVisible is how many entries the confirm lists before pointing at
-// --show-config for the rest.
+// trustConfirmVisible is how many entries the confirm lists.
 const trustConfirmVisible = 3
 
 // trustDisplayWidth caps each author-controlled value in the confirm.
@@ -422,10 +395,8 @@ func formatAuthors(authors []string) string {
 	return out
 }
 
-// confirmTrustOnTerminal is the production trustGate.Confirm. The details are
-// printed above the prompt rather than set as the field's description:
-// huh's accessible confirm renders only the title, and a screen-reader user
-// must see what would run before approving it.
+// confirmTrustOnTerminal prints the details above the prompt because huh's
+// accessible confirm renders only the title.
 func confirmTrustOnTerminal(ctx context.Context, w io.Writer, title, description string) (bool, error) {
 	fmt.Fprintln(w, description)
 	fmt.Fprintln(w)
@@ -445,9 +416,8 @@ func confirmTrustOnTerminal(ctx context.Context, w io.Writer, title, description
 
 var ansiEscapePattern = regexp.MustCompile(`\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)?|[@-Z\\-_])`)
 
-// sanitizeDisplay makes an author-controlled value safe to print: ANSI
-// escapes are removed, and control, bidi, and zero-width characters become
-// spaces or disappear, so a value cannot fake extra lines or reorder text.
+// sanitizeDisplay strips ANSI escapes and control, bidi, and zero-width
+// characters, so an author-controlled value can't fake lines or reorder text.
 func sanitizeDisplay(s string) string {
 	s = ansiEscapePattern.ReplaceAllString(s, "")
 	var b strings.Builder
@@ -458,7 +428,6 @@ func sanitizeDisplay(s string) string {
 		case unicode.IsControl(r):
 			b.WriteRune(' ')
 		case isInvisibleFormatRune(r):
-			// dropped
 		default:
 			b.WriteRune(r)
 		}
@@ -476,8 +445,7 @@ func isInvisibleFormatRune(r rune) bool {
 	return unicode.Is(unicode.Cf, r)
 }
 
-// truncateDisplay shortens s to about width runes, keeping the head and the
-// tail so a dangerous suffix ("... | sh") stays visible, and marks the cut.
+// truncateDisplay keeps the head and tail, so a suffix like "| sh" stays visible.
 func truncateDisplay(s string, width int) string {
 	runes := []rune(s)
 	if len(runes) <= width {

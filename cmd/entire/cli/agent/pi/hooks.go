@@ -176,11 +176,8 @@ func (a *PiAgent) HookConfigRelPath() string { return extensionDirName + "/" + e
 // ExtensionRelPath is the repo-relative path of the extension Entire installs.
 const ExtensionRelPath = extensionDirName + "/" + extensionFileName
 
-// IsEntireExtension reports whether content is exactly the extension the
-// current CLI renders, ignoring CRLF line endings a Windows checkout may add.
-// Review uses it to tell Entire's extension apart from any other code in
-// .pi/extensions; the marker comment alone is not enough, since any file can
-// copy it.
+// IsEntireExtension reports whether content is exactly Entire's rendered
+// extension (CRLF ignored); the marker comment alone can be copied.
 func IsEntireExtension(content []byte) bool {
 	normalize := func(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 	return normalize(string(content)) == normalize(renderExtension())

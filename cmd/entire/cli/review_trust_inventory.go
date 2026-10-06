@@ -1,9 +1,7 @@
 package cli
 
-// review_trust_inventory.go lists what a checkout's agent configuration would
-// run during `entire review`, for the trust gate in the review package. It
-// lives here because the per-agent formats (and Entire's own canonical hook
-// commands) are in agent packages that import review.
+// review_trust_inventory.go lists what a checkout would run during `entire
+// review`. It lives here because the agent packages it reads import review.
 
 import (
 	"bytes"
@@ -37,14 +35,12 @@ const (
 	trustPathAbsent trustPathKind = iota
 	trustPathFile
 	trustPathDir
-	// trustPathOpaque is a symlink (at the path or any parent), a submodule,
-	// or anything else whose content the inspection will not follow. It is
+	// trustPathOpaque is a symlink, submodule, or anything not followed;
 	// reported as unknown, never as absent.
 	trustPathOpaque
 )
 
-// trustFiles reads the checkout being inspected: either a commit's tree,
-// before anything is checked out, or files on disk.
+// trustFiles reads a commit's tree or files on disk.
 type trustFiles interface {
 	kind(rel string) (trustPathKind, error)
 	read(rel string) ([]byte, error)
@@ -52,7 +48,6 @@ type trustFiles interface {
 	files(dir string) (regular, opaque []string, err error)
 }
 
-// Instruction files the reviewer reads; listed for information.
 const (
 	trustClaudeMD = "CLAUDE.md"
 	trustAgentsMD = "AGENTS.md"
@@ -60,21 +55,18 @@ const (
 
 const (
 	trustCodexConfig = ".codex/config.toml"
-	// trustHooksKey is the settings key holding Claude Code hooks.
-	trustHooksKey = "hooks"
+	trustHooksKey    = "hooks"
 )
 
-// Inspection runs on the branch's data before the user approves anything, so
-// it is bounded: a larger config file is reported as unknown rather than read,
-// a directory lists at most trustMaxItems items, and a tree with more than
-// trustMaxTreeEntries configuration entries fails the inspection (closed).
+// Inspection reads branch data before approval, so it is bounded: larger files
+// are unknown, directories list a limited number of items, and a larger tree
+// fails closed.
 const (
 	trustMaxFileBytes   = 1 << 20
 	trustMaxItems       = 100
 	trustMaxTreeEntries = 20000
 )
 
-// errTrustTooLarge reports a file over trustMaxFileBytes.
 var errTrustTooLarge = errors.New("too large to inspect")
 
 // trustRoots are the only paths the inventory reads.
@@ -114,8 +106,7 @@ func buildTrustInventory(files trustFiles, agents []string) (cliReview.TrustInve
 		case string(agent.AgentNamePi):
 			entries, err = piTrustEntries(files)
 		default:
-			// Only the agents above launch reviewers; any other agent falls back
-			// to a marker file and runs nothing.
+			// Other agents have no reviewer runner and run nothing.
 			continue
 		}
 		if err != nil {
@@ -139,8 +130,7 @@ func unknownTrustEntry(agentName, source, reason string) cliReview.TrustEntry {
 	return cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindUnknown, Name: source, Command: reason, Source: source}
 }
 
-// readTrustFile reads rel, turning anything uninspectable into an unknown
-// entry. ok is false when rel is absent or unknown.
+// readTrustFile reads rel; anything uninspectable becomes an unknown entry.
 func readTrustFile(files trustFiles, agentName, rel string) (data []byte, entries []cliReview.TrustEntry, ok bool, err error) {
 	k, err := files.kind(rel)
 	if err != nil {
@@ -166,17 +156,15 @@ func readTrustFile(files trustFiles, agentName, rel string) (data []byte, entrie
 
 // --- Claude Code ---
 
-// claudeIgnoredSettings are settings keys that neither run anything nor widen
-// what the reviewer may do. Every other key is listed (an unknown key counts),
-// so new command-bearing settings are covered without a code change.
+// claudeIgnoredSettings run nothing and grant nothing. Every other key is
+// listed, so new command-bearing settings are covered by default.
 var claudeIgnoredSettings = []string{
 	"$schema", "model", "cleanupPeriodDays", "includeCoAuthoredBy", "includeGitInstructions",
 	"outputStyle", "language", "alwaysThinkingEnabled", "spinnerTipsEnabled", "respectGitignore",
 	"attribution", "companyAnnouncements", "disableAllHooks",
 }
 
-// claudeRiskyPermissionTools are permission rules that let the model run or
-// change things without asking.
+// claudeRiskyPermissionTools let the model run or change things unasked.
 var claudeRiskyPermissionTools = []string{"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "mcp__"}
 
 func claudeTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
@@ -248,9 +236,7 @@ func claudeTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 	return append(out, instructionDirEntries(files, agentName, claudeInstructionDirs)...), nil
 }
 
-// claudeInstructionDirs hold files the reviewer loads that can carry their own
-// hooks, MCP servers, or shell expansions (skills, commands, subagents, local
-// plugins). Each item is listed rather than parsed.
+// claudeInstructionDirs hold skills, commands, subagents, and local plugins.
 var claudeInstructionDirs = []string{".claude/commands", ".claude/skills", ".claude/agents", ".claude/plugins"}
 
 func claudePermissionEntries(source string, raw json.RawMessage) ([]cliReview.TrustEntry, bool) {
@@ -282,14 +268,11 @@ func claudePermissionEntries(source string, raw json.RawMessage) ([]cliReview.Tr
 	return out, true
 }
 
-// hookTrustEntries reads the hooks object shared by Claude Code and Codex:
-// {"Event": [{"matcher": "...", "hooks": [{"type": "command", "command": "..."}]}]}.
-// A hook is Entire's only when its whole command equals one Entire installs
-// for that event.
+// hookTrustEntries reads the hooks object shared by Claude Code and Codex. A
+// hook is Entire's only when its whole command equals one Entire installs.
 func hookTrustEntries(agentName, source string, raw json.RawMessage, canonical map[string][]string) ([]cliReview.TrustEntry, bool) {
-	// Every level is read as a map with exact keys, as the agents (JS, serde)
-	// read it. encoding/json structs match keys case-insensitively, so a
-	// branch could add "Hooks": [] after "hooks" and hide the real entries.
+	// Exact-key maps, as the agents read them: Go structs match keys
+	// case-insensitively, so a "Hooks": [] decoy could hide "hooks".
 	events, ok := jsonObject(raw)
 	if !ok {
 		return nil, false
@@ -339,10 +322,8 @@ func mcpServerCommand(raw json.RawMessage) string {
 	}
 }
 
-// instructionDirEntries lists one entry per item (file or directory) directly
-// under each of dirs. Skills, commands, prompts, and subagents are loaded by
-// the reviewer and can carry hooks, MCP servers, or shell expansions of their
-// own, so they are listed without trying to parse every format.
+// instructionDirEntries lists each item directly under dirs. These files can
+// carry their own hooks or shell expansions, so they are listed, not parsed.
 func instructionDirEntries(files trustFiles, agentName string, dirs []string) []cliReview.TrustEntry {
 	var out []cliReview.TrustEntry
 	for _, dir := range dirs {
@@ -394,8 +375,7 @@ func codexTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 		}
 	}
 
-	// Entire writes nothing to the project's config.toml, so every key in it
-	// is the branch's: MCP servers, providers, sandbox and approval settings.
+	// Entire writes nothing here, so every key is the branch's.
 	data, unknown, ok, err = readTrustFile(files, agentName, trustCodexConfig)
 	if err != nil {
 		return nil, err
@@ -427,13 +407,10 @@ func codexTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 	return append(out, instructionDirEntries(files, agentName, codexInstructionDirs)...), nil
 }
 
-// codexInstructionDirs hold Codex skills, prompts, and subagents a review can
-// load.
+// codexInstructionDirs hold Codex skills, prompts, and subagents.
 var codexInstructionDirs = []string{".codex/skills", ".codex/prompts", ".codex/agents", ".agents/skills"}
 
-// codexHookFeatureFlags only switch hooks on (older Entire versions and Codex
-// releases before hooks were on by default needed them). The hooks they enable
-// are listed from hooks.json, so the flags themselves are not.
+// codexHookFeatureFlags only switch on hooks, which hooks.json already lists.
 var codexHookFeatureFlags = []string{"hooks", "codex_hooks"}
 
 func codexFeatureEntries(value any) []cliReview.TrustEntry {
@@ -487,7 +464,7 @@ func piTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 		out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindExtension, Name: path.Base(path.Dir(rel)), Command: rel, Source: rel, Entire: entire})
 	}
 
-	// Entire writes nothing to .pi/settings.json, so every key is listed.
+	// Entire writes nothing here, so every key is listed.
 	data, unknown, ok, err := readTrustFile(files, agentName, ".pi/settings.json")
 	if err != nil {
 		return nil, err
@@ -506,19 +483,17 @@ func piTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 	return append(out, instructionDirEntries(files, agentName, piInstructionDirs)...), nil
 }
 
-// piInstructionDirs hold Pi skills and prompt templates a review can load.
+// piInstructionDirs hold Pi skills and prompt templates.
 var piInstructionDirs = []string{".pi/skills", ".pi/prompts"}
 
 // --- sources ---
 
-// gitTrustTree is a commit's tree, restricted to trustRoots. Paths are matched
-// case-insensitively: on macOS and Windows a committed ".Claude/Settings.json"
-// checks out as the file Claude Code loads, so it must not slip past an exact
-// lookup. Names that collide once folded are treated as opaque.
+// gitTrustTree is a commit's tree under trustRoots, matched case-insensitively
+// as a macOS or Windows checkout loads it; names that collide are opaque.
 type gitTrustTree struct {
 	ctx      context.Context
 	repoRoot string
-	// entries is keyed by the lower-cased path.
+	// entries is keyed by lower-cased path.
 	entries map[string]gitTrustTreeEntry
 }
 
@@ -537,7 +512,6 @@ const (
 
 func loadGitTrustTree(ctx context.Context, repoRoot, commit string) (*gitTrustTree, error) {
 	tree := &gitTrustTree{ctx: ctx, repoRoot: repoRoot, entries: map[string]gitTrustTreeEntry{}}
-	// List the root first, so roots spelled in any case are found.
 	rootEntries, err := lsTreeRecords(ctx, repoRoot, "ls-tree", "-z", "--full-tree", "--end-of-options", commit)
 	if err != nil {
 		return nil, fmt.Errorf("list configuration at %s: %w", commit, err)
@@ -574,7 +548,7 @@ func loadGitTrustTree(ctx context.Context, repoRoot, commit string) (*gitTrustTr
 
 type lsTreeRecord struct {
 	mode, oid, name string
-	// size is set by `ls-tree -l`; -1 for trees and when not requested.
+	// size is from `ls-tree -l`; -1 for trees.
 	size int64
 }
 
@@ -741,8 +715,7 @@ func isJSONNull(raw json.RawMessage) bool {
 	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
-// jsonObject decodes a JSON object into a map with exact keys. Absent (nil)
-// input is an empty object.
+// jsonObject decodes an object with exact keys; absent input is empty.
 func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return map[string]json.RawMessage{}, true
@@ -754,7 +727,6 @@ func jsonObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 	return m, true
 }
 
-// jsonObjects decodes a JSON array of objects. Absent input is empty.
 func jsonObjects(raw json.RawMessage) ([]map[string]json.RawMessage, bool) {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return nil, true
@@ -766,7 +738,6 @@ func jsonObjects(raw json.RawMessage) ([]map[string]json.RawMessage, bool) {
 	return items, true
 }
 
-// jsonString decodes a JSON string. Absent input is "".
 func jsonString(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return "", true
@@ -778,7 +749,6 @@ func jsonString(raw json.RawMessage) (string, bool) {
 	return v, true
 }
 
-// jsonStrings decodes a JSON array of strings. Absent input is empty.
 func jsonStrings(raw json.RawMessage) ([]string, bool) {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return nil, true
@@ -790,8 +760,8 @@ func jsonStrings(raw json.RawMessage) ([]string, bool) {
 	return v, true
 }
 
-// decodeTrustDocument decodes data, reporting failure as false: a file that
-// does not parse is listed as unknown rather than failing the inspection.
+// decodeTrustDocument reports a parse failure as false, so the file is listed
+// as unknown instead of failing the inspection.
 func decodeTrustDocument[T any](data []byte, unmarshal func([]byte, any) error) (T, bool) {
 	var v T
 	if err := unmarshal(data, &v); err != nil {

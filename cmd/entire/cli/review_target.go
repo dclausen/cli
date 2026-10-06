@@ -17,9 +17,8 @@ import (
 	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
 )
 
-// resolveReviewTarget resolves a branch, trail ID, or trail URL to a local
-// branch and pins its head, fetching the branch when only origin has it. It
-// checks nothing out: the trust gate inspects the pinned commit first.
+// resolveReviewTarget resolves the target to a local branch (fetching it if
+// needed) and pins its head, without checking anything out.
 func resolveReviewTarget(ctx context.Context, _, errOut io.Writer, selector string) (cliReview.ResolvedTarget, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
@@ -90,8 +89,7 @@ func resolveReviewTarget(ctx context.Context, _, errOut io.Writer, selector stri
 			return cliReview.ResolvedTarget{}, cliReview.ErrTargetCancelled
 		}
 	}
-	// Pin the ref `git worktree add` will check out: the local branch, which
-	// the fetch above created when only origin had it.
+	// Pin the local branch, which `git worktree add` will check out.
 	head, err := gitexec.Run(ctx, root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return cliReview.ResolvedTarget{}, fmt.Errorf("resolve head of branch %s: %w", branch, err)
@@ -100,8 +98,7 @@ func resolveReviewTarget(ctx context.Context, _, errOut io.Writer, selector stri
 	return resolved, nil
 }
 
-// checkoutReviewTarget checks a resolved target out in a review worktree, or
-// returns the worktree it is already checked out in.
+// checkoutReviewTarget checks the target out, or reuses its existing worktree.
 func checkoutReviewTarget(ctx context.Context, out, errOut io.Writer, target cliReview.ResolvedTarget, untrusted bool) (cliReview.TargetWorktree, error) {
 	if target.ExistingWorktree != "" {
 		fmt.Fprintf(out, "Reviewing branch %s in %s.\n", target.Branch, target.ExistingWorktree)
