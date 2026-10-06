@@ -148,7 +148,7 @@ func isUserPromptLine(raw []byte) bool {
 }
 
 // splitRawLines splits content into raw lines in the same index space as
-// transcript.SliceFromLine (newline-counted). Trailing empty segment from a
+// transcript.SliceFromLine (github.com/entireio/cli/transcript) (newline-counted). Trailing empty segment from a
 // final newline is dropped.
 func splitRawLines(content []byte) [][]byte {
 	if len(content) == 0 {
