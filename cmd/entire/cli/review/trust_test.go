@@ -302,20 +302,17 @@ func TestCommitAuthorship(t *testing.T) {
 	mine := commit("b.txt")
 	check(mine, true, 1)
 
-	// GitHub's web flow rewrites commits on "Update branch"; the author stays.
-	webFlow := commit("c.txt", "GIT_COMMITTER_EMAIL=noreply@github.com", "GIT_COMMITTER_NAME=GitHub")
-	check(webFlow, true, 2)
+	// The author decides, as in git: a commit the user wrote is the user's
+	// whoever committed (amended, rebased, merged on GitHub) it.
+	recommitted := commit("c.txt", "GIT_COMMITTER_EMAIL=bob@example.com")
+	check(recommitted, true, 2)
 
 	// A case difference in the email is still the user.
 	upper := commit("d.txt", "GIT_AUTHOR_EMAIL="+strings.ToUpper(email))
 	check(upper, true, 3)
 
-	// Authored by the user but committed (amended, rebased) by someone else.
-	recommitted := commit("e.txt", "GIT_COMMITTER_EMAIL=bob@example.com")
-	check(recommitted, false, 4, "bob@example.com")
-
 	theirs := commit("f.txt", "GIT_AUTHOR_EMAIL=mallory@example.com", "GIT_AUTHOR_NAME=Mallory")
-	check(theirs, false, 5, "Mallory", "bob@example.com") // newest first
+	check(theirs, false, 4, "Mallory")
 
 	// Without a git identity, nothing can be shown to be the user's.
 	gitRun(t, dir, nil, "config", "--unset", "user.email")

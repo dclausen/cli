@@ -95,15 +95,15 @@ configuration is theirs, so a review of commits you did not author needs your
 approval first.
 
 - **Whose commits.** Every commit between your default branch (origin/HEAD,
-  origin/main, origin/master, main, master) and the head must be authored by
-  your `user.email` and committed by it or by GitHub's web flow
-  (`noreply@github.com`). `--base` only scopes the review; it never shortens
-  this range. Uncommitted changes in a plain review are yours. With no
-  `user.email` (common on CI runners) or no default branch, the commits count
-  as someone else's, so automation passes `--trust-target`. Both email fields
-  are self-declared, so this tells a teammate's branch from yours; it is not
-  proof against a branch that copies your email. Verifying commit signatures
-  and using a trail's authenticated author are follow-ups.
+  origin/main, origin/master, main, master) and the head must have your
+  `user.email` as its git author, as for any commit; who committed it does not
+  matter. `--base` only scopes the review; it never shortens this range.
+  Uncommitted changes in a plain review are yours. With no `user.email`
+  (common on CI runners) or no default branch, the commits count as someone
+  else's, so automation passes `--trust-target`. The author is self-declared,
+  as in any git commit, so this tells a teammate's branch from yours; it is
+  not proof against a branch that copies your email. Verifying commit
+  signatures and using a trail's authenticated author are follow-ups.
 - **What runs.** The gate lists, for the agents in the profile: hooks (Entire's
   own count only when the whole command equals one this CLI installs, Unix or
   Windows form), MCP servers, command-bearing and permission settings in

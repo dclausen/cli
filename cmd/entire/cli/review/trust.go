@@ -156,14 +156,9 @@ type TrustSubject struct {
 	Yours   bool
 }
 
-// githubWebFlowCommitter commits on GitHub's behalf when a user updates or
-// edits a branch on the web. Commits it rewrote keep their author, so it is
-// accepted as a committer of the user's own commits.
-const githubWebFlowCommitter = "noreply@github.com"
-
 // commitAuthorship decides whether every commit between the user's default
-// branch and head is the user's: authored by the user's git email, and
-// committed by it (or by GitHub's web flow). Both fields are self-declared, so
+// branch and head is the user's: its author, as git records it, has the
+// user's git email. The author is self-declared, as it always is in git, so
 // this tells a teammate's branch from the user's own; it is not proof against
 // a branch that copies the user's email. If the user's git identity or the
 // default branch cannot be read, the commits count as someone else's.
@@ -185,7 +180,7 @@ func commitAuthorship(ctx context.Context, repoRoot, head string) (TrustSubject,
 		subject.Commits = -1
 		return subject, nil
 	}
-	log, err := gitexec.Run(ctx, repoRoot, "log", "--no-show-signature", "-z", "--format=%ae%x1f%ce%x1f%an",
+	log, err := gitexec.Run(ctx, repoRoot, "log", "--no-show-signature", "-z", "--format=%ae%x1f%an",
 		"--end-of-options", base+".."+head, "--")
 	if err != nil {
 		return TrustSubject{}, fmt.Errorf("list commits under review: %w", err)
@@ -198,23 +193,18 @@ func commitAuthorship(ctx context.Context, repoRoot, head string) (TrustSubject,
 			continue
 		}
 		subject.Commits++
-		fields := strings.SplitN(record, "\x1f", 3)
-		if len(fields) != 3 {
+		authorEmail, authorName, found := strings.Cut(record, "\x1f")
+		if !found {
 			return TrustSubject{}, fmt.Errorf("unexpected git log record %q", record)
 		}
-		authorEmail, committerEmail, authorName := strings.TrimSpace(fields[0]), strings.TrimSpace(fields[1]), strings.TrimSpace(fields[2])
-		if email != "" && strings.EqualFold(authorEmail, email) &&
-			(strings.EqualFold(committerEmail, email) || strings.EqualFold(committerEmail, githubWebFlowCommitter)) {
+		authorEmail, authorName = strings.TrimSpace(authorEmail), strings.TrimSpace(authorName)
+		if email != "" && strings.EqualFold(authorEmail, email) {
 			continue
 		}
 		yours = false
 		name := authorName
 		if name == "" {
 			name = authorEmail
-		}
-		if email != "" && strings.EqualFold(authorEmail, email) {
-			// The user wrote it but someone else committed (amended, rebased) it.
-			name = committerEmail
 		}
 		if !seen[name] {
 			seen[name] = true
