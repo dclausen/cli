@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path"
 	"slices"
@@ -311,12 +312,12 @@ func mcpServerCommand(raw json.RawMessage) string {
 	}
 	command, _ := jsonString(server["command"])
 	args, argsOK := jsonStrings(server["args"])
-	url, _ := jsonString(server["url"])
+	serverURL, _ := jsonString(server["url"])
 	switch {
 	case command != "" && argsOK:
-		return strings.Join(append([]string{command}, args...), " ")
-	case command == "" && url != "":
-		return url
+		return strings.Join(append([]string{command}, hideTrustSecretArgs(args)...), " ")
+	case command == "" && serverURL != "":
+		return hideTrustURLSecrets(serverURL)
 	default:
 		return trustSettingValue("", raw)
 	}
@@ -800,6 +801,65 @@ var trustSecretMapKeys = []string{"env", "headers", "http_headers", "set"}
 
 // trustSecretKeyParts mark a key whose value is a credential.
 var trustSecretKeyParts = []string{"token", "secret", "password"}
+
+// trustSecretFlagParts mark a command-line flag or URL query parameter whose
+// value is a credential. Broader than trustSecretKeyParts: a flag value is
+// never a command we need to show, while a setting like apiKeyHelper is.
+var trustSecretFlagParts = append(slices.Clone(trustSecretKeyParts), "key", "auth")
+
+func isTrustSecretFlag(name string) bool {
+	lower := strings.ToLower(name)
+	return slices.ContainsFunc(trustSecretFlagParts, func(part string) bool { return strings.Contains(lower, part) })
+}
+
+// hideTrustSecretArgs hides the values of credential flags, given as
+// "--token X" or "--token=X". A secret in a positional argument is not caught.
+func hideTrustSecretArgs(args []string) []string {
+	out := slices.Clone(args)
+	for i := 0; i < len(out); i++ {
+		if !strings.HasPrefix(out[i], "-") {
+			continue
+		}
+		flag, _, hasValue := strings.Cut(out[i], "=")
+		if !isTrustSecretFlag(strings.TrimLeft(flag, "-")) {
+			continue
+		}
+		if hasValue {
+			out[i] = flag + "=" + trustHiddenValue
+		} else if i+1 < len(out) && !strings.HasPrefix(out[i+1], "-") {
+			i++
+			out[i] = trustHiddenValue
+		}
+	}
+	return out
+}
+
+// hideTrustURLSecrets hides a URL's password and credential query parameters.
+// A URL that will not parse is hidden whole rather than guessed at.
+func hideTrustURLSecrets(raw string) string {
+	const hidden = "hidden" // URL-safe, unlike trustHiddenValue
+	u, err := url.Parse(raw)
+	if err != nil {
+		return trustHiddenValue
+	}
+	changed := false
+	if _, hasPassword := u.User.Password(); hasPassword {
+		u.User = url.UserPassword(u.User.Username(), hidden)
+		changed = true
+	}
+	query := u.Query()
+	for name := range query {
+		if isTrustSecretFlag(name) {
+			query.Set(name, hidden)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	u.RawQuery = query.Encode()
+	return u.String()
+}
 
 func isTrustSecretKey(key string) bool {
 	lower := strings.ToLower(key)

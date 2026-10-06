@@ -414,3 +414,35 @@ func TestTrustInventory_SecretValuesAreNotShown(t *testing.T) {
 		}
 	}
 }
+
+// An MCP server's command line and URL stay visible, since they are what runs,
+// but credentials passed as flags, query parameters, or URL userinfo are not.
+func TestTrustInventory_MCPCredentialsAreNotShown(t *testing.T) {
+	t.Parallel()
+	const secret = "sk-not-for-display"
+	dir := newTrustInventoryRepo(t, map[string]string{
+		".mcp.json": `{"mcpServers":{` +
+			`"flag":{"command":"npx","args":["mcp-a","--token","` + secret + `","--api-key=` + secret + `","--verbose"]},` +
+			`"query":{"url":"https://mcp.example/sse?api_key=` + secret + `&region=us"},` +
+			`"userinfo":{"url":"https://bot:` + secret + `@mcp.example/sse"}}}`,
+		".codex/config.toml": "[mcp_servers.search]\ncommand = \"npx\"\nargs = [\"search-mcp\", \"--auth\", \"" + secret + "\"]\n",
+	})
+	inv := trustInventoryBoth(t, dir, "claude-code", "codex")
+	got := map[string]string{}
+	for _, e := range inv.Entries {
+		got[e.Name] = e.Command
+		if strings.Contains(e.Command, secret) {
+			t.Errorf("%s entry %q from %s shows a secret value: %q", e.Kind, e.Name, e.Source, e.Command)
+		}
+	}
+	for name, want := range map[string]string{
+		"flag":     "npx mcp-a --token " + trustHiddenValue + " --api-key=" + trustHiddenValue + " --verbose",
+		"query":    "https://mcp.example/sse?api_key=hidden&region=us",
+		"userinfo": "https://bot:hidden@mcp.example/sse",
+		"search":   "npx search-mcp --auth " + trustHiddenValue,
+	} {
+		if got[name] != want {
+			t.Errorf("entry %q = %q, want %q", name, got[name], want)
+		}
+	}
+}
