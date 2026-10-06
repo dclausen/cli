@@ -166,11 +166,11 @@ func TestSubagentCheckpoints_CommitWhileIdleWithTaskRecord_LinksAndCondensesCont
 	// Background launch: record created while the parent is still ACTIVE
 	// (mid-turn).
 	if err := env.SimulatePostTask(PostTaskInput{
-		SessionID:       sess.ID,
-		TranscriptPath:  sess.TranscriptPath,
-		ToolUseID:       taskToolUseID,
-		AgentID:         subagentID,
-		RunInBackground: true,
+		SessionID:      sess.ID,
+		TranscriptPath: sess.TranscriptPath,
+		ToolUseID:      taskToolUseID,
+		AgentID:        subagentID,
+		Background:     true,
 	}); err != nil {
 		t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
 	}
@@ -273,11 +273,11 @@ func TestSubagentCheckpoints_CommitAfterBackgroundTaskCompletes_LinksViaFiles(t 
 				t.Fatalf("SimulatePreTask failed: %v", err)
 			}
 			if err := env.SimulatePostTask(PostTaskInput{
-				SessionID:       sess.ID,
-				TranscriptPath:  sess.TranscriptPath,
-				ToolUseID:       taskToolUseID,
-				AgentID:         subagentID,
-				RunInBackground: true,
+				SessionID:      sess.ID,
+				TranscriptPath: sess.TranscriptPath,
+				ToolUseID:      taskToolUseID,
+				AgentID:        subagentID,
+				Background:     true,
 			}); err != nil {
 				t.Fatalf("SimulatePostTask (background stub) failed: %v", err)
 			}
@@ -294,7 +294,6 @@ func TestSubagentCheckpoints_CommitAfterBackgroundTaskCompletes_LinksViaFiles(t 
 				TranscriptPath:      sess.TranscriptPath,
 				AgentID:             subagentID,
 				AgentTranscriptPath: subagentTranscript,
-				ToolUseID:           taskToolUseID,
 			}); err != nil {
 				t.Fatalf("SimulateSubagentStop failed: %v", err)
 			}
@@ -359,11 +358,11 @@ func TestSubagentCheckpoints_JointCommitWithRunningSubagent_KeepsBothSessions(t 
 		t.Fatalf("parent pre-task failed: %v", err)
 	}
 	if err := env.SimulatePostTask(PostTaskInput{
-		SessionID:       parent.ID,
-		TranscriptPath:  parent.TranscriptPath,
-		ToolUseID:       taskToolUseID,
-		AgentID:         subagentID,
-		RunInBackground: true,
+		SessionID:      parent.ID,
+		TranscriptPath: parent.TranscriptPath,
+		ToolUseID:      taskToolUseID,
+		AgentID:        subagentID,
+		Background:     true,
 	}); err != nil {
 		t.Fatalf("parent post-task (background stub) failed: %v", err)
 	}
