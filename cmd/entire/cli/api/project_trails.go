@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -158,15 +159,17 @@ type ProjectTrailUpdateRequest struct {
 // the HTTP ETag (timestamp text in the body loses precision). It never retries
 // writes or downgrades a failed conditional write to an unconditional one.
 func (c *Client) ProjectTrailRequest(ctx context.Context, method, path string, body any, headers http.Header, out any) (string, error) {
-	var encoded []byte
+	// A nil reader, not an empty one: the client declares a JSON Content-Type
+	// for any non-nil body, which a bodyless GET or DELETE must not carry.
+	var reader io.Reader
 	if body != nil {
-		var err error
-		encoded, err = json.Marshal(body)
+		encoded, err := json.Marshal(body)
 		if err != nil {
 			return "", fmt.Errorf("encode project trail request: %w", err)
 		}
+		reader = bytes.NewReader(encoded)
 	}
-	resp, err := c.Request(ctx, method, path, headers, bytes.NewReader(encoded))
+	resp, err := c.Request(ctx, method, path, headers, reader)
 	if err != nil {
 		return "", fmt.Errorf("project trail request: %w", err)
 	}

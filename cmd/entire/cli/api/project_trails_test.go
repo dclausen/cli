@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -46,4 +48,36 @@ func TestInitialChangeCreationIsFlat(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"title":"Intent","changes":[{"title":"Work","branchName":"feature/a","branchAction":"link","repositoryId":"repo-id"}]}`, string(body))
+}
+
+// A bodyless read or delete must go out without a body or a JSON Content-Type;
+// only requests that carry a payload declare one.
+func TestProjectTrailRequestSendsBodyOnlyWhenGiven(t *testing.T) {
+	t.Parallel()
+	type seen struct {
+		contentType string
+		length      int64
+	}
+	got := map[string]seen{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got[r.Method] = seen{contentType: r.Header.Get("Content-Type"), length: r.ContentLength}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	client := NewClientWithBaseURL("token", server.URL)
+
+	for _, tc := range []struct {
+		method string
+		body   any
+	}{
+		{http.MethodGet, nil},
+		{http.MethodDelete, nil},
+		{http.MethodPatch, ProjectTrailUpdateRequest{}},
+	} {
+		_, err := client.ProjectTrailRequest(t.Context(), tc.method, "/api/v1/gh/acme/trails/x", tc.body, nil, nil)
+		require.NoError(t, err, tc.method)
+	}
+	require.Equal(t, seen{}, got[http.MethodGet])
+	require.Equal(t, seen{}, got[http.MethodDelete])
+	require.Equal(t, seen{contentType: "application/json", length: 2}, got[http.MethodPatch])
 }
