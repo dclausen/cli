@@ -188,17 +188,30 @@ func repoMatches(cwd, repoRoot string) bool {
 	if err != nil {
 		return false
 	}
-	return !strings.HasPrefix(rel, "..")
+	// Only a leading ".." component leaves the root; a descendant may itself be
+	// named "..cache".
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // normalizePath cleans a path and resolves symlinks when possible, so a cwd
 // recorded through a symlinked path (e.g. macOS /var → /private/var) still
-// matches the repo root. Falls back to the cleaned path when the target does
-// not exist on this machine.
+// matches the repo root. When the path no longer exists on this machine (a
+// deleted subdirectory), its longest existing ancestor is resolved and the
+// missing components are re-appended, so the spelling stays comparable to a
+// resolved repo root. Falls back to the cleaned path when nothing resolves.
 func normalizePath(p string) string {
 	cleaned := filepath.Clean(p)
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
-		return resolved
+	var missing []string
+	for cur := cleaned; ; {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			slices.Reverse(missing)
+			return filepath.Join(append([]string{resolved}, missing...)...)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return cleaned
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
 	}
-	return cleaned
 }

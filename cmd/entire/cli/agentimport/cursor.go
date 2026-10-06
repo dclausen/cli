@@ -2,11 +2,14 @@ package agentimport
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
@@ -42,13 +45,15 @@ func (cursorImporter) Discover(repoRoot, overridePath string, now time.Time, ses
 	files, err := discoverSessionFiles(dir, now, sessionFilter, func(dir string, e os.DirEntry) (string, string, bool) {
 		id, path := cursorSessionFile(dir, e)
 		return id, path, path != ""
-	})
+	}, nil)
 	if err != nil || len(files) == 0 || overridePath != "" {
 		return files, err
 	}
 	if other, shared := cursorProjectOtherPath(repoRoot, filepath.Dir(dir), cursorCollisionReadLimit); shared {
 		return nil, fmt.Errorf("cursor project directory %s may also hold sessions from %s; "+
-			"Cursor transcripts do not record their workspace, so none were imported", filepath.Dir(dir), other)
+			"Cursor transcripts do not record their workspace, so none were imported. "+
+			"If every session there belongs to this repository, rerun with: entire import cursor --path %s",
+			filepath.Dir(dir), other, dir)
 	}
 	return files, nil
 }
@@ -67,19 +72,20 @@ const cursorCollisionReadLimit = 2000
 //     by walking only the directories whose encoding is a prefix of it.
 //
 // A colliding repository that has since been deleted or moved is not
-// detected. A walk that hits readLimit is treated as shared (fail closed).
+// detected. A walk that hits readLimit, or that meets a directory it cannot
+// read, is treated as shared (fail closed).
 func cursorProjectOtherPath(repoRoot, projectDir string, readLimit int) (string, bool) {
 	if trusted := cursorTrustedWorkspace(projectDir); trusted != "" && !samePath(trusted, repoRoot) {
 		return trusted, true
 	}
-	matches, complete := pathsWithEncoding(repoRoot, cursor.SanitizePathForCursor, readLimit)
+	matches, unscanned := pathsWithEncoding(repoRoot, cursor.SanitizePathForCursor, readLimit)
 	for _, m := range matches {
 		if !samePath(m, repoRoot) {
 			return m, true
 		}
 	}
-	if !complete {
-		return "an unscanned path (collision check exceeded its directory budget)", true
+	if unscanned != "" {
+		return unscanned, true
 	}
 	return "", false
 }
@@ -105,19 +111,27 @@ func cursorTrustedWorkspace(projectDir string) string {
 // output character with separators becoming "-" (as the agents' project-dir
 // encodings do), so a directory can only lead to a match when its own encoding
 // is a prefix of the target's followed by "-"; every other branch is pruned.
-// complete is false when readLimit directory reads were exhausted.
-func pathsWithEncoding(target string, encode func(string) string, readLimit int) (matches []string, complete bool) {
+//
+// unscanned is empty when the walk was complete. Otherwise it describes what
+// could not be checked: a directory that could not be listed or a candidate
+// that could not be statted (a colliding workspace may sit there unseen, e.g.
+// under a traverse-only directory), or the readLimit being exhausted. Entries
+// that no longer exist, dangling links and symlink loops are conclusive and
+// skipped.
+func pathsWithEncoding(target string, encode func(string) string, readLimit int) (matches []string, unscanned string) {
 	want := encode(target)
 	queue := []string{filepath.VolumeName(target) + string(filepath.Separator)}
 	for reads := 0; len(queue) > 0; reads++ {
 		if reads >= readLimit {
-			return matches, false
+			return matches, "an unscanned path (collision check exceeded its directory budget)"
 		}
 		dir := queue[0]
 		queue = queue[1:]
+		// ReadDir returns what it read alongside an error; use it, so a real
+		// match is still reported by name.
 		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue // unreadable: nothing under it can be a workspace we can see
+		if err != nil && !isGone(err) && unscanned == "" {
+			unscanned = "a path under " + dir + ", which could not be listed"
 		}
 		for _, e := range entries {
 			p := filepath.Join(dir, e.Name())
@@ -125,7 +139,14 @@ func pathsWithEncoding(target string, encode func(string) string, readLimit int)
 			if enc != want && !strings.HasPrefix(want, enc+"-") {
 				continue
 			}
-			if info, statErr := os.Stat(p); statErr != nil || !info.IsDir() {
+			info, statErr := os.Stat(p)
+			if statErr != nil {
+				if !isGone(statErr) && !errors.Is(statErr, syscall.ELOOP) && unscanned == "" {
+					unscanned = p + ", which could not be checked"
+				}
+				continue
+			}
+			if !info.IsDir() {
 				continue
 			}
 			if enc == want {
@@ -135,7 +156,13 @@ func pathsWithEncoding(target string, encode func(string) string, readLimit int)
 			}
 		}
 	}
-	return matches, true
+	return matches, unscanned
+}
+
+// isGone reports whether err means the path no longer exists as a directory
+// (removed, or replaced by a file, between being listed and being read).
+func isGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // samePath reports whether a and b name the same location after cleaning and

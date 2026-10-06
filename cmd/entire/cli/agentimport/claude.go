@@ -23,7 +23,7 @@ func (claudeImporter) AgentType() types.AgentType { return agent.AgentTypeClaude
 
 // Discover returns Claude transcript files for the repo modified within the
 // lookback window whose recorded cwd is inside repoRoot (see
-// repoScopedJSONLResolver). overridePath replaces the default ~/.claude/projects/<slug>
+// recordedCwdIn). overridePath replaces the default ~/.claude/projects/<slug>
 // dir; sessionFilter, when non-empty, keeps only matching session IDs (the
 // file stem).
 func (claudeImporter) Discover(repoRoot, overridePath string, now time.Time, sessionFilter []string) ([]SessionFile, error) {
@@ -31,7 +31,7 @@ func (claudeImporter) Discover(repoRoot, overridePath string, now time.Time, ses
 	if err != nil {
 		return nil, err
 	}
-	return discoverSessionFiles(dir, now, sessionFilter, repoScopedJSONLResolver(".jsonl", identitySessionID, repoRoot))
+	return discoverSessionFiles(dir, now, sessionFilter, jsonlSessionResolver(identitySessionID), recordedCwdIn(repoRoot))
 }
 
 // SplitTurns produces one Turn per user-prompt line. Main-agent token usage for

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -169,9 +170,9 @@ func TestPathsWithEncoding_FindsCollidingDirectories(t *testing.T) {
 		t.Fatalf("fixture paths must collide: %q vs %q", a, b)
 	}
 
-	matches, complete := pathsWithEncoding(a, cursor.SanitizePathForCursor, cursorCollisionReadLimit)
-	if !complete {
-		t.Fatal("walk should complete within the read limit")
+	matches, unscanned := pathsWithEncoding(a, cursor.SanitizePathForCursor, cursorCollisionReadLimit)
+	if unscanned != "" {
+		t.Fatalf("walk should complete within the read limit, got unscanned %q", unscanned)
 	}
 	var sawA, sawB bool
 	for _, m := range matches {
@@ -182,7 +183,7 @@ func TestPathsWithEncoding_FindsCollidingDirectories(t *testing.T) {
 		t.Fatalf("matches = %v, want both %s and %s", matches, a, b)
 	}
 
-	if _, complete := pathsWithEncoding(a, cursor.SanitizePathForCursor, 1); complete {
+	if _, unscanned := pathsWithEncoding(a, cursor.SanitizePathForCursor, 1); unscanned == "" {
 		t.Error("walk with a one-read budget should report incomplete")
 	}
 }
@@ -260,5 +261,138 @@ func TestCursorDiscover_RefusesSharedProjectDir(t *testing.T) {
 	got, err = cursorImporter{}.Discover(a, "", time.Now(), nil)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("Discover without collision: got %v, err %v; want 1 session", got, err)
+	}
+}
+
+// TestPathsWithEncoding_UnreadableDirectoryFailsClosed: a candidate directory
+// that cannot be listed may hide a colliding workspace (e.g. a traverse-only
+// parent), so the walk must report it rather than claim completeness.
+func TestPathsWithEncoding_UnreadableDirectoryFailsClosed(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("needs POSIX permissions enforced for the current user")
+	}
+	base := t.TempDir()
+	target := filepath.Join(base, "x-y", "z")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// base/x encodes to a prefix of base/x-y/z, so the walk must list it.
+	decoy := filepath.Join(base, "x")
+	if err := os.Mkdir(decoy, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(decoy, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+
+	_, unscanned := pathsWithEncoding(target, cursor.SanitizePathForCursor, cursorCollisionReadLimit)
+	if !strings.Contains(unscanned, decoy) {
+		t.Fatalf("unscanned = %q, want it to name %s", unscanned, decoy)
+	}
+	if other, shared := cursorProjectOtherPath(target, t.TempDir(), cursorCollisionReadLimit); !shared {
+		t.Fatalf("an unreadable candidate directory must be treated as shared, got (%q, false)", other)
+	}
+}
+
+// TestPathsWithEncoding_DanglingLinkIsConclusive: a dangling symlink cannot be
+// a workspace, so it must not make the walk incomplete.
+func TestPathsWithEncoding_DanglingLinkIsConclusive(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	target := filepath.Join(base, "x-y", "z")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "missing"), filepath.Join(base, "x")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, unscanned := pathsWithEncoding(target, cursor.SanitizePathForCursor, cursorCollisionReadLimit); unscanned != "" {
+		t.Fatalf("unscanned = %q, want a complete walk", unscanned)
+	}
+}
+
+func TestRepoMatches(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator), "w", "repo")
+	for _, tc := range []struct {
+		cwd  string
+		want bool
+	}{
+		{root, true},
+		{filepath.Join(root, "pkg"), true},
+		{filepath.Join(root, "..cache"), true},
+		{filepath.Join(root, "..cache", "sub"), true},
+		{filepath.Join(string(filepath.Separator), "w", "repo-sibling"), false},
+		{filepath.Join(string(filepath.Separator), "w"), false},
+		{string(filepath.Separator), false},
+		{"relative/repo", false},
+		{"", false},
+	} {
+		if got := repoMatches(tc.cwd, root); got != tc.want {
+			t.Errorf("repoMatches(%q, %q) = %v, want %v", tc.cwd, root, got, tc.want)
+		}
+	}
+}
+
+// TestRepoMatches_DeletedSubdirUnderSymlinkedRoot: a session recorded in a
+// subdirectory that has since been deleted, through a symlinked spelling of
+// the repo, must still match the repo.
+func TestRepoMatches_DeletedSubdirUnderSymlinkedRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "real", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(filepath.Join(base, "real"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cwd := filepath.Join(link, "repo", "deleted", "pkg")
+	for _, root := range []string{filepath.Join(link, "repo"), filepath.Join(base, "real", "repo")} {
+		if !repoMatches(cwd, root) {
+			t.Errorf("repoMatches(%q, %q) = false, want true", cwd, root)
+		}
+	}
+	if !samePath(filepath.Join(link, "repo", "gone"), filepath.Join(base, "real", "repo", "gone")) {
+		t.Error("samePath should resolve the symlinked ancestor of a missing path")
+	}
+	if repoMatches(filepath.Join(link, "other", "deleted"), filepath.Join(base, "real", "repo")) {
+		t.Error("a missing path outside the repo must not match")
+	}
+}
+
+// TestDiscoverSessionFiles_KeepRunsAfterCheapFilters: keep may open the
+// transcript, so files excluded by the session filter or the lookback window
+// must never reach it.
+func TestDiscoverSessionFiles_KeepRunsAfterCheapFilters(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, id := range []string{"wanted", "filtered-out", "old"} {
+		writeLines(t, filepath.Join(dir, id+".jsonl"), `{}`)
+	}
+	now := time.Now()
+	old := now.AddDate(0, 0, -LookbackDays-1)
+	if err := os.Chtimes(filepath.Join(dir, "old.jsonl"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []string
+	keep := func(path string) bool {
+		seen = append(seen, filepath.Base(path))
+		return true
+	}
+	got, err := discoverSessionFiles(dir, now, []string{"wanted", "old"},
+		jsonlSessionResolver(identitySessionID), keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := sessionIDs(got); !slices.Equal(ids, []string{"wanted"}) {
+		t.Fatalf("discovered %v, want [wanted]", ids)
+	}
+	if !slices.Equal(seen, []string{"wanted.jsonl"}) {
+		t.Fatalf("keep saw %v, want only wanted.jsonl", seen)
 	}
 }
