@@ -743,8 +743,8 @@ func InstallGitHook(ctx context.Context, silent, absolutePath bool) (int, error)
 				if err := root.Rename(spec.name, backupName); err != nil {
 					return installedCount, fmt.Errorf("failed to back up %s: %w", spec.name, err)
 				}
-				fmt.Fprintf(os.Stderr, "[entire] Your existing %s hook still runs: it was moved to %s and Entire's %s runs first, then yours. Removing Entire (entire disable --uninstall) puts it back.\n",
-					spec.name, filepath.Join(hooksDir, backupName), spec.name)
+				fmt.Fprintf(os.Stderr, "[entire] Your %s hook still runs, after Entire's (moved to %s).\n",
+					spec.name, filepath.Join(hooksDir, backupName))
 				logging.Info(ctx, "git hook backed up", slog.String("hook", spec.name))
 			} else {
 				fmt.Fprintf(os.Stderr, "[entire] Warning: replacing %s: %s already exists from a previous install and is the hook that keeps running; the current %s is not kept.\n",
