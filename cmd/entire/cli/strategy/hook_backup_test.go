@@ -254,16 +254,82 @@ func TestInstallHooks_ConcurrentInstallsLoseNothing(t *testing.T) {
 func TestInstallHooks_LockTimeoutNamesTheLockFile(t *testing.T) {
 	t.Parallel()
 	f := newHooksFixture(t)
-	release, err := flock.AcquireIn(f.lockRoot, hooksLockName)
+	name, err := hooksLockFile(f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := flock.AcquireIn(f.lockRoot, name)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 
 	_, err = installHooks(context.Background(), f.lockRoot, f.root, f.dir, []hookSpec{specFor(t, "pre-push")}, backupClock)
-	if err == nil || !strings.Contains(err.Error(), hooksLockName) {
-		t.Errorf("err = %v, want a timeout naming %s", err, hooksLockName)
+	if err == nil || !strings.Contains(err.Error(), name) {
+		t.Errorf("err = %v, want a timeout naming %s", err, name)
 	}
+}
+
+// Repositories sharing one core.hooksPath (here spelled through a symlink, as
+// another repo's config might) share one lock, so their installs and removals
+// never interleave.
+func TestHooksLock_SharedHooksDirIsOneLock(t *testing.T) {
+	t.Parallel()
+	f := newHooksFixture(t)
+	other := filepath.Join(t.TempDir(), "hooks")
+	if err := os.Symlink(f.dir, other); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	release, err := acquireHooksLock(context.Background(), f.lockRoot, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if _, err := installHooks(context.Background(), f.lockRoot, f.root, f.dir, []hookSpec{specFor(t, "pre-push")}, backupClock); err == nil {
+		t.Error("install ran while another repository held the lock for the same hooks dir")
+	}
+}
+
+func TestHooksLock_SharedHooksDirInstallVsRemoveKeepsUserHook(t *testing.T) {
+	t.Parallel()
+	f := newHooksFixture(t)
+	other := filepath.Join(t.TempDir(), "hooks")
+	if err := os.Symlink(f.dir, other); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	spec := specFor(t, "pre-push")
+	f.write("pre-push", userHookV1)
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			if _, err := installHooks(context.Background(), f.lockRoot, f.root, f.dir, []hookSpec{spec}, backupClock); err != nil {
+				t.Errorf("installHooks: %v", err)
+			}
+		})
+		wg.Go(func() {
+			if _, err := removeHooks(context.Background(), f.lockRoot, f.root, other); err != nil {
+				t.Errorf("removeHooks: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	kept := f.contents(append(f.olderCopies(), existing(f, "pre-push", "pre-push"+backupSuffix)...)...)
+	if !slices.Contains(kept, userHookV1) {
+		t.Errorf("user hook lost; kept %q", kept)
+	}
+}
+
+func existing(f *hooksFixture, names ...string) []string {
+	var out []string
+	for _, n := range names {
+		if f.exists(n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func TestIsPreCommitWrapper(t *testing.T) {
@@ -431,7 +497,7 @@ func TestRemoveHooks_AfterReclaimRestoresPreCommit(t *testing.T) {
 	}
 	f.write("commit-msg", wrapper)
 
-	if _, err := removeHooks(context.Background(), f.lockRoot, f.root); err != nil {
+	if _, err := removeHooks(context.Background(), f.lockRoot, f.root, f.dir); err != nil {
 		t.Fatalf("removeHooks: %v", err)
 	}
 

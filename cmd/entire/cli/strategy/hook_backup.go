@@ -3,6 +3,8 @@ package strategy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,32 +18,36 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
 )
 
-// hooksLockName serializes hook installs and removals across Entire processes.
-// It lives in the git common dir, never the hooks dir: a tracked core.hooksPath
-// would show it as an untracked file.
-const hooksLockName = "entire-hooks.lock"
-
 // hooksLockTimeout bounds the wait; the moves under the lock take milliseconds.
 const hooksLockTimeout = time.Second
 
-func openHooksLockRoot(ctx context.Context) (*os.Root, error) {
-	commonDir, err := GetGitCommonDir(ctx)
+// hooksLockFile names the lock for one hooks directory, kept in the per-user
+// cache. It is keyed by the resolved directory, not by repository: a
+// core.hooksPath can be shared by several repositories, and they must all
+// take the same lock.
+func hooksLockFile(hooksDir string) (string, error) {
+	abs, err := filepath.Abs(hooksDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve hooks dir: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve hooks dir: %w", err)
+	}
+	sum := sha256.Sum256([]byte(resolved))
+	return "hooks-" + hex.EncodeToString(sum[:8]) + ".lock", nil
+}
+
+func acquireHooksLock(ctx context.Context, lockRoot *os.Root, hooksDir string) (func(), error) {
+	name, err := hooksLockFile(hooksDir)
 	if err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(commonDir)
-	if err != nil {
-		return nil, fmt.Errorf("open git common dir: %w", err)
-	}
-	return root, nil
-}
-
-func acquireHooksLock(ctx context.Context, lockRoot *os.Root) (func(), error) {
 	ctx, cancel := context.WithTimeout(ctx, hooksLockTimeout)
 	defer cancel()
-	release, err := flock.AcquireContextIn(ctx, lockRoot, hooksLockName)
+	release, err := flock.AcquireContextIn(ctx, lockRoot, name)
 	if err != nil {
-		return nil, fmt.Errorf("another Entire process is changing git hooks (lock %s): %w", filepath.Join(lockRoot.Name(), hooksLockName), err)
+		return nil, fmt.Errorf("another Entire process is changing git hooks (lock %s): %w", filepath.Join(lockRoot.Name(), name), err)
 	}
 	return release, nil
 }

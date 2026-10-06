@@ -19,6 +19,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
+	"github.com/entireio/cli/internal/entireclient/userdirs"
 )
 
 // Hook marker used to identify Entire CLI hooks
@@ -720,11 +721,10 @@ func InstallGitHook(ctx context.Context, silent, absolutePath bool) (int, error)
 	if err != nil {
 		return 0, err
 	}
-	lockRoot, err := openHooksLockRoot(ctx)
+	lockRoot, err := userdirs.CacheRoot()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("open the git hooks lock directory: %w", err)
 	}
-	defer lockRoot.Close()
 
 	installedCount, err := installHooks(ctx, lockRoot, root, hooksDir, buildHookSpecs(cmdPrefix), time.Now())
 	if err != nil {
@@ -742,7 +742,7 @@ func InstallGitHook(ctx context.Context, silent, absolutePath bool) (int, error)
 // installHooks writes specs into root, holding the hooks lock in lockRoot so
 // concurrent installs and removals never interleave their moves.
 func installHooks(ctx context.Context, lockRoot, root *os.Root, hooksDir string, specs []hookSpec, now time.Time) (int, error) {
-	release, err := acquireHooksLock(ctx, lockRoot)
+	release, err := acquireHooksLock(ctx, lockRoot, hooksDir)
 	if err != nil {
 		return 0, err
 	}
@@ -851,17 +851,16 @@ func RemoveGitHook(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("failed to open hooks directory %s: %w", hooksDir, err)
 	}
 
-	lockRoot, err := openHooksLockRoot(ctx)
+	lockRoot, err := userdirs.CacheRoot()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("open the git hooks lock directory: %w", err)
 	}
-	defer lockRoot.Close()
-	return removeHooks(ctx, lockRoot, root)
+	return removeHooks(ctx, lockRoot, root, hooksDir)
 }
 
 // removeHooks is RemoveGitHook on an opened hooks root, under the hooks lock.
-func removeHooks(ctx context.Context, lockRoot, root *os.Root) (int, error) {
-	release, err := acquireHooksLock(ctx, lockRoot)
+func removeHooks(ctx context.Context, lockRoot, root *os.Root, hooksDir string) (int, error) {
+	release, err := acquireHooksLock(ctx, lockRoot, hooksDir)
 	if err != nil {
 		return 0, err
 	}
