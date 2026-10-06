@@ -5535,6 +5535,11 @@ func (s *DeleteProjectNoContent) SetXEntireCommitToken(val OptString) {
 	s.XEntireCommitToken = val
 }
 
+// DeleteRepoAccepted is response for DeleteRepo operation.
+type DeleteRepoAccepted struct{}
+
+func (*DeleteRepoAccepted) deleteRepoRes() {}
+
 // DeleteRepoCIWebhookNoContent is response for DeleteRepoCIWebhook operation.
 type DeleteRepoCIWebhookNoContent struct{}
 
@@ -5552,6 +5557,8 @@ func (s *DeleteRepoNoContent) GetXEntireCommitToken() OptString {
 func (s *DeleteRepoNoContent) SetXEntireCommitToken(val OptString) {
 	s.XEntireCommitToken = val
 }
+
+func (*DeleteRepoNoContent) deleteRepoRes() {}
 
 // DeleteServiceAccountNoContent is response for DeleteServiceAccount operation.
 type DeleteServiceAccountNoContent struct{}
@@ -18817,7 +18824,9 @@ type Repo struct {
 	ProvisionAttempts OptInt64            `json:"provisionAttempts"`
 	ProvisionReason   OptString           `json:"provisionReason"`
 	RepoGroupId       OptString           `json:"repoGroupId"`
-	// Provisioning lifecycle. A mirror is active from creation, before its initial clone completes.
+	// Provisioning lifecycle. A mirror is active from creation, before its initial clone completes. A
+	// native primary whose group carries a cascade-delete tombstone reports "deleting" until its row is
+	// gone (then 404).
 	State           OptString `json:"state"`
 	Visibility      OptString `json:"visibility"`
 	AdditionalProps RepoAdditional
