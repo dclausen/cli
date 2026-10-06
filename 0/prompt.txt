@@ -1,13 +1,1 @@
-does the code base have a way to disable prompt saving
-
----
-
-How can I just stop prompts from being sync'd
-
----
-
-fork the repo, check out my fork, create a branch to disable prompts and make it a setting.
-
----
-
 yes, do those.
