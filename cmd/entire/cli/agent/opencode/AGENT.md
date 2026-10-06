@@ -155,12 +155,18 @@ not arbitrary session nesting.
 **Background subagents** (`background: true`, or a task promoted to the
 background): `tool.execute.after` fires at launch with
 `metadata: {background: true, jobId: <child>}`, so the plugin holds the
-`subagent-stop` payload (`backgroundTasks`, child → payloads) and fires it on
-the child's own `session.status` idle, which OpenCode emits when the child
-completes, fails, or is aborted. That check runs before the child-event guard.
-The parent's turn may end first; the record then stays in flight, and a
-commit in between stores the transcript so far (condensation re-exports the
-child). OpenCode delivers the result to the parent as a user message made only
+`subagent-stop` payload (`backgroundTasks`, child → queued payloads) and fires
+it on the child's own `session.status` idle, which OpenCode emits when the
+child completes, fails, or is aborted. That check runs before the child-event
+guard. A resume via `task_id` that joins a running background child
+(`BackgroundJob.extend`, "Background task updated") is queued behind the
+current run and runs as its own busy → idle cycle, so each idle that follows a
+busy period fires the oldest held stop; an errored run's second idle fires
+nothing. The parent's turn may end first; the record then stays in flight,
+and a commit in between stores the transcript so far (condensation
+re-exports the child). The same re-export, capped at 10 s, lets a commit see
+the running child's edits when deciding whether this IDLE session co-authored
+it. OpenCode delivers the result to the parent as a user message made only
 of synthetic text (`<task id=… state=…>`); prompt extraction skips such
 messages, so it is not recorded as a user prompt.
 
@@ -192,17 +198,21 @@ lives in the child's.
 - **`task_id` resumption** reuses a child session across several `callID`s.
   Handled: each call keeps its own task record (`ToolUseID = callID`,
   `AgentID = child`), and the plugin sends the call's `tool.execute.before`
-  clock as `started_at`, so the capture declares only the child messages
-  created at or after it (`.entire/tmp/<child>.<callID>.json`) and the
-  record's files and tokens are this call's alone. A re-export after the fact
-  (condensation) is also bounded by the record's completion, since the child
-  may have served a later call by then. A call whose start the plugin never
-  saw (a restart mid-task) declares the full export.
-- **Abort cleanup can end a still-running call**: when the parent's stream
-  ends, OpenCode waits 250 ms for in-flight tool calls and then marks them
-  `error`. A task whose execute is still running at that point is stopped
-  from the error part; its later child messages are left out of the stop-time
-  export, and its real `tool.execute.after` is ignored.
+  clock as `started_at`, so the capture declares only this call's slice of
+  the child (`.entire/tmp/<child>.<callID>.json`) and the record's files and
+  tokens are this call's alone. The slice starts at the call's prompt (the
+  first non-synthetic, non-compaction user message created at or after
+  `started_at`) and ends before the next such prompt, which is the next
+  call's. That end matters for any export taken after the child has served a
+  later call: a re-export after the fact (condensation, the SessionEnd sweep),
+  which is also bounded by the record's completion. A call whose start the
+  plugin never saw (a restart mid-task) declares the full export.
+- **Stopping on the error part is safe**: any end of the parent's stream
+  (Esc, a provider error, a retry) aborts the task tool's signal, which
+  cancels the child, before OpenCode marks in-flight tool parts `error`. The
+  child is therefore already stopping when the error part arrives (observed:
+  the child's `idle` precedes the parent's error part), and a stop-time export
+  then holds all of its work.
 - **Model-specific `callID` format**: opaque and not globally unique; the child
   session ID is the safe cross-process key.
 - **Nested subagents** are off by default (`subagent_depth: 1`); when enabled,

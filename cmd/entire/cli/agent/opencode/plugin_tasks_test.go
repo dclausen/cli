@@ -139,10 +139,11 @@ func taskPart(sessionID, partID, callID, childID, status string) map[string]any 
 	}}
 }
 
-func childIdle(childID string) map[string]any {
+// childStatus reports the child session's (ses_child) session.status.
+func childStatus(status string) map[string]any {
 	return map[string]any{"event": map[string]any{
 		"type":       "session.status",
-		"properties": map[string]any{"sessionID": childID, "status": map[string]any{"type": "idle"}},
+		"properties": map[string]any{"sessionID": "ses_child", "status": map[string]any{"type": status}},
 	}}
 }
 
@@ -255,6 +256,40 @@ func TestPlugin_TaskStartAndStopPair(t *testing.T) {
 			want: []string{"subagent-start:c1", "subagent-stop:c1", "subagent-start:c2", "subagent-stop:c2"},
 		},
 		{
+			name: "first run's idle ends only the first call queued on a background child",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				childStatus("idle"),
+				// an errored run reports idle twice; the second must not end c2
+				childStatus("idle"),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1"},
+		},
+		{
+			name: "calls queued on one background child end at their own runs' idle",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				childStatus("idle"),
+				// an errored run reports idle twice; the second must not end c2
+				childStatus("idle"),
+				childStatus("busy"),
+				childStatus("idle"),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1", "subagent-stop:c2"},
+		},
+		{
 			name: "background call held while a foreground call on its child fails",
 			steps: []map[string]any{
 				before(parent, "c1"),
@@ -264,7 +299,8 @@ func TestPlugin_TaskStartAndStopPair(t *testing.T) {
 				before(parent, "c2"),
 				taskPart(parent, "p2", "c2", child, "running"),
 				taskPart(parent, "p2", "c2", child, "error"),
-				childIdle(child),
+				childStatus("busy"),
+				childStatus("idle"),
 			},
 			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c2", "subagent-stop:c1"},
 		},

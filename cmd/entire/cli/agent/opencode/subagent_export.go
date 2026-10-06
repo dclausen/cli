@@ -21,10 +21,11 @@ import (
 // task call. A child resumed through the task tool's `task_id` backs several
 // calls, and its export holds every one of them; the framework reads a task
 // record's files and tokens from its whole declared transcript, so each call
-// must declare only the messages it produced: those created from the call's
-// start through its completion. The end matters for a re-export after the
-// fact (condensation, the SessionEnd sweep), when the child may already have
-// served a later call. The slice is written to
+// must declare only the messages it produced: from the call's prompt up to the
+// next call's prompt, and no later than the call's completion (see
+// scopeExportToCall). The end matters whenever the child has already served a
+// later call by export time, as in a re-export after the fact (condensation,
+// the SessionEnd sweep). The slice is written to
 // `.entire/tmp/<child>.<toolUseID>.json` — one file per call, so a later call
 // on the same child cannot overwrite an earlier record's transcript before it
 // is condensed. With neither bound known, the full export is returned.
@@ -74,10 +75,14 @@ func (a *OpenCodeAgent) exportSubagent(ctx context.Context, childID, toolUseID s
 	return filepath.Join(repoRoot, paths.EntireDir, filepath.FromSlash(name)), nil
 }
 
-// scopeExportToCall keeps the export's messages created at or after since and,
-// when until is set, at or before it, and returns the rewritten export with
-// how many it kept. Messages are carried as raw JSON, so fields the typed
-// export structs do not model survive.
+// scopeExportToCall keeps the export's messages for one task call and returns
+// the rewritten export with how many it kept. A call's messages begin at its
+// prompt, the first prompt created at or after since, and run up to the next
+// prompt, which belongs to the next call on the same child: an export taken
+// after the child served a later call holds that call too. With since unset
+// the slice begins at the first prompt. When until is set, messages created after it are
+// dropped too. Messages are carried as raw JSON, so fields the typed export
+// structs do not model survive.
 func scopeExportToCall(data []byte, since, until time.Time) ([]byte, int, error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -90,21 +95,31 @@ func scopeExportToCall(data []byte, since, until time.Time) ([]byte, int, error)
 		}
 	}
 	sinceMs := since.UnixMilli()
+	if since.IsZero() {
+		sinceMs = math.MinInt64
+	}
 	untilMs := int64(math.MaxInt64)
 	if !until.IsZero() {
 		untilMs = until.UnixMilli()
 	}
 	kept := make([]json.RawMessage, 0, len(messages))
+	inCall := false
 	for _, m := range messages {
 		var head struct {
-			Info struct {
-				Time Time `json:"time"`
-			} `json:"info"`
+			Info  MessageInfo `json:"info"`
+			Parts []Part      `json:"parts"`
 		}
 		if err := json.Unmarshal(m, &head); err != nil {
 			return nil, 0, fmt.Errorf("parse subagent export message: %w", err)
 		}
-		if created := head.Info.Time.Created; created >= sinceMs && created <= untilMs {
+		created := head.Info.Time.Created
+		if isCallPrompt(head.Info, head.Parts) {
+			if inCall {
+				break
+			}
+			inCall = created >= sinceMs
+		}
+		if inCall && created <= untilMs {
 			kept = append(kept, m)
 		}
 	}
@@ -118,4 +133,19 @@ func scopeExportToCall(data []byte, since, until time.Time) ([]byte, int, error)
 		return nil, 0, fmt.Errorf("encode scoped subagent export: %w", err)
 	}
 	return out, len(kept), nil
+}
+
+// isCallPrompt reports whether a child message is a task call's prompt: a
+// user message that is neither OpenCode's own synthetic text (a background
+// result) nor a compaction marker.
+func isCallPrompt(info MessageInfo, parts []Part) bool {
+	if info.Role != roleUser || OnlySyntheticText(parts) {
+		return false
+	}
+	for _, part := range parts {
+		if part.Type == "compaction" {
+			return false
+		}
+	}
+	return true
 }

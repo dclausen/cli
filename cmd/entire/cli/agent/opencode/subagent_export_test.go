@@ -47,7 +47,7 @@ func TestScopeExportToCall(t *testing.T) {
 		wantIDs []string
 	}{
 		{name: "second call keeps only its messages", since: time.UnixMilli(5000), wantIDs: []string{"m3", "m4"}},
-		{name: "first call start keeps everything", since: time.UnixMilli(1), wantIDs: []string{"m1", "m2", "m3", "m4"}},
+		{name: "first call ends at the second call's prompt", since: time.UnixMilli(1), wantIDs: []string{"m1", "m2"}},
 		{name: "start after every message keeps nothing", since: time.UnixMilli(9000), wantIDs: []string{}},
 		{name: "first call's completion drops the later call", since: time.UnixMilli(1), until: time.UnixMilli(100), wantIDs: []string{"m1", "m2"}},
 		{name: "end alone still cuts later calls", until: time.UnixMilli(100), wantIDs: []string{"m1", "m2"}},
@@ -66,6 +66,39 @@ func TestScopeExportToCall(t *testing.T) {
 			if kept > 0 && tt.wantIDs[0] == "m3" {
 				assert.Contains(t, string(doc["messages"]), `"custom":1`, "unknown message fields survive")
 			}
+		})
+	}
+}
+
+// absorbedCallExportFixture is a child that served call A and, while A was
+// still running, a resumed call B: B's prompt (m5, at 5000 ms) is queued in
+// before A's last reply. A synthetic background result (m3) and a compaction
+// marker (m4) are not prompts and do not end A.
+const absorbedCallExportFixture = `{"info":{"id":"ses_child"},"messages":[` +
+	`{"info":{"id":"m1","role":"user","time":{"created":1}},"parts":[{"type":"text","text":"make red"}]},` +
+	`{"info":{"id":"m2","role":"assistant","time":{"created":2}},"parts":[]},` +
+	`{"info":{"id":"m3","role":"user","time":{"created":3}},"parts":[{"type":"text","text":"<task state=\"completed\">","synthetic":true}]},` +
+	`{"info":{"id":"m4","role":"user","time":{"created":4}},"parts":[{"type":"compaction"}]},` +
+	`{"info":{"id":"m5","role":"user","time":{"created":5000}},"parts":[{"type":"text","text":"now blue"}]},` +
+	`{"info":{"id":"m6","role":"assistant","time":{"created":5001}},"parts":[]}]}`
+
+func TestScopeExportToCall_EndsAtTheNextPrompt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		since   time.Time
+		until   time.Time
+		wantIDs []string
+	}{
+		{name: "earlier call completing after the later one started", since: time.UnixMilli(1), until: time.UnixMilli(6000), wantIDs: []string{"m1", "m2", "m3", "m4"}},
+		{name: "later call starts at its own prompt", since: time.UnixMilli(10), wantIDs: []string{"m5", "m6"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out, _, err := scopeExportToCall([]byte(absorbedCallExportFixture), tt.since, tt.until)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantIDs, messageIDs(t, out))
 		})
 	}
 }

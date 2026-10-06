@@ -507,7 +507,7 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		// background: the stop is held until the child's own session goes idle
 		`if (output?.metadata?.background === true) {`,
 		`backgroundTasks.set(childID, [...(backgroundTasks.get(childID) ?? []), payload])`,
-		`if (event.type === "session.status" && props?.status?.type === "idle" && props?.sessionID) {`,
+		`else if (busySessions.delete(props.sessionID)) finishBackgroundTask(props.sessionID)`,
 		`finishBackgroundTask(props.sessionID)`,
 		`subagent_id: childID`,
 		`tool_use_id: input.callID`,

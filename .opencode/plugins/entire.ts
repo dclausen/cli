@@ -58,9 +58,15 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   const stoppedOnError = new Set<string>()
   // Background children (OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS, or a
   // foreground task promoted to the background): child ID -> subagent-stop
-  // payloads held back until the child's own session goes idle. A list, since
-  // a running background child resumed via `task_id` absorbs another call.
+  // payloads held back until the child's own session goes idle. A queue: a
+  // resume via `task_id` that joins a running child is queued behind the
+  // current run and runs as its own busy -> idle cycle, so each idle ends the
+  // oldest held call.
   const backgroundTasks = new Map<string, Record<string, unknown>[]>()
+  // Sessions whose last session.status was not idle. An idle only ends a
+  // held call when it follows a busy period: an errored run reports idle
+  // twice.
+  const busySessions = new Set<string>()
 
   /**
    * Build the shell command for a hook invocation.
@@ -239,14 +245,16 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     callHookSync("subagent-stop", payload)
   }
 
-  // finishBackgroundTask fires the held subagent-stop for a background child
-  // that went idle: its work finished, failed, or was aborted (`opencode run`
-  // exiting with the child still running). Each case ends the task.
+  // finishBackgroundTask fires the oldest held subagent-stop for a background
+  // child whose run went idle: its work finished, failed, or was aborted
+  // (`opencode run` exiting with the child still running). Each case ends the
+  // call; a later call queued on the same child ends at its own run's idle.
   function finishBackgroundTask(childID: string) {
     const payloads = backgroundTasks.get(childID)
-    if (!payloads) return
-    backgroundTasks.delete(childID)
-    for (const payload of payloads) callHookSync("subagent-stop", payload)
+    const payload = payloads?.shift()
+    if (!payload) return
+    if (payloads.length === 0) backgroundTasks.delete(childID)
+    callHookSync("subagent-stop", payload)
   }
 
   function resetSessionTracking(sessionID: string) {
@@ -337,8 +345,9 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
           announceTask(props?.part)
           stopFailedTask(props?.part)
         }
-        if (event.type === "session.status" && props?.status?.type === "idle" && props?.sessionID) {
-          finishBackgroundTask(props.sessionID)
+        if (event.type === "session.status" && props?.sessionID) {
+          if (props?.status?.type !== "idle") busySessions.add(props.sessionID)
+          else if (busySessions.delete(props.sessionID)) finishBackgroundTask(props.sessionID)
         }
         const eventSessionID: string | undefined =
           props?.sessionID ?? info?.sessionID ?? info?.id ?? props?.part?.sessionID
@@ -477,6 +486,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             // A background child still running here is ended by the Go side's
             // SessionEnd sweep, which completes every live task record.
             backgroundTasks.clear()
+            busySessions.clear()
             // Use sync variant: this is the last event before process exit.
             callHookSync("session-end", {
               session_id: sessionID,

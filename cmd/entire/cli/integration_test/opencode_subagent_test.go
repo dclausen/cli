@@ -248,3 +248,44 @@ func TestOpenCodeSubagentInFlightAtSessionEndKeepsItsFiles(t *testing.T) {
 	require.NotNil(t, rec.TokenUsage)
 	require.Equal(t, 150, rec.TokenUsage.InputTokens)
 }
+
+// TestOpenCodeSubagentJoinedCallDoesNotTakeTheLaterCallsWork covers a resume
+// that joins a child still working on an earlier call (a background child, or
+// a concurrent foreground resume): both calls stop together when the child
+// goes idle, earlier call first. The earlier call's record must end at the
+// later call's prompt and not take its files or tokens.
+func TestOpenCodeSubagentJoinedCallDoesNotTakeTheLaterCallsWork(t *testing.T) {
+	t.Parallel()
+
+	env := NewFeatureBranchEnv(t)
+	env.InitEntireWithAgent(agent.AgentNameOpenCode)
+
+	parent := env.NewOpenCodeSession()
+	child := env.NewOpenCodeSession()
+	const firstCall, secondCall = "call_first", "call_joined"
+	const firstStart, secondStart = int64(1708300001), int64(1708300003)
+
+	require.NoError(t, env.SimulateOpenCodeSessionStart(parent.ID, parent.TranscriptPath))
+	require.NoError(t, env.SimulateOpenCodeTurnStart(parent.ID, parent.TranscriptPath, "red in the background, then blue on the same subagent"))
+
+	require.NoError(t, env.SimulateOpenCodeSubagentStartAt(parent.ID, firstCall, child.ID, "general", "Create docs/red.md", firstStart))
+	env.WriteFile("docs/red.md", "red\n")
+	child.CreateOpenCodeTranscript("Create docs/red.md", []FileChange{{Path: "docs/red.md", Content: "red\n"}})
+	require.NoError(t, env.SimulateOpenCodeSubagentStartAt(parent.ID, secondCall, child.ID, "general", "Create docs/blue.md", secondStart))
+	env.WriteFile("docs/blue.md", "blue\n")
+	env.CopyTranscriptToEntireTmp(child.ID, child.CreateOpenCodeTranscript("Create docs/blue.md", []FileChange{{Path: "docs/blue.md", Content: "blue\n"}}))
+
+	// The child goes idle: both held stops fire, earlier call first.
+	require.NoError(t, env.SimulateOpenCodeSubagentStopAt(parent.ID, firstCall, child.ID, "general", "Create docs/red.md", firstStart))
+	require.NoError(t, env.SimulateOpenCodeSubagentStopAt(parent.ID, secondCall, child.ID, "general", "Create docs/blue.md", secondStart))
+
+	state, err := env.GetSessionState(parent.ID)
+	require.NoError(t, err)
+	first, second := state.FindTaskRecord(firstCall), state.FindTaskRecord(secondCall)
+	require.NotNil(t, first)
+	require.NotNil(t, second)
+	require.Equal(t, []string{"docs/red.md"}, first.Files, "the earlier call ends at the joined call's prompt")
+	require.Equal(t, []string{"docs/blue.md"}, second.Files)
+	require.NotNil(t, first.TokenUsage)
+	require.Equal(t, 150, first.TokenUsage.InputTokens, "only the earlier call's one assistant message counts")
+}
