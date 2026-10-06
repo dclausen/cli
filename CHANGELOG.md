@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Missing-checkpoint errors name the refs where the checkpoint can actually live under the configured backend, instead of always suggesting a fetch of `entire/checkpoints/v1` ([#2620](https://github.com/entireio/cli/pull/2620))
 - `entire import` derives ULID checkpoint IDs under the git-refs backend ([#2609](https://github.com/entireio/cli/pull/2609))
 - On Windows, `entire status` and `entire doctor` no longer report approved Codex hooks as needing approval ([#2607](https://github.com/entireio/cli/pull/2607))
-- `entire search` works from an Entire-native clone; with `--repo`, `repo:` or `--all-repos` it no longer requires a readable origin, and the default scope keeps the forge prefix so a native repo and a same-named GitHub mirror stay distinct ([#2639](https://github.com/entireio/cli/pull/2639))
+- `entire search` and `entire dispatch` work from an Entire-native clone instead of failing with "remote is not a GitHub repository": the default scope comes from the origin's forge (`et/…` or `gh/…`), so a native repo and a same-named GitHub mirror stay distinct. `entire search` with `--repo`, `repo:` or `--all-repos` no longer requires a readable origin, and the `entire dispatch` wizard now discovers native checkouts ([#2639](https://github.com/entireio/cli/pull/2639), [#2667](https://github.com/entireio/cli/pull/2667))
 - `entire session adopt` validates declared subagent transcript paths against the agent's session directory and clears paths it cannot verify, instead of copying them unchecked into checkpoints ([#2655](https://github.com/entireio/cli/pull/2655))
 
 ### Housekeeping
