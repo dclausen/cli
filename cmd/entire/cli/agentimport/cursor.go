@@ -67,7 +67,8 @@ const cursorCollisionReadLimit = 2000
 // repoRoot may also be used by a different path, returning that path (or a
 // description when it cannot be determined). It checks, in order:
 //
-//   - .workspace-trusted, which Cursor writes with the trusted workspacePath;
+//   - .workspace-trusted, which Cursor writes with the trusted workspacePath
+//     (absent is common; present but unreadable is treated as shared);
 //   - every existing directory whose Cursor encoding equals repoRoot's, found
 //     by walking only the directories whose encoding is a prefix of it.
 //
@@ -75,7 +76,11 @@ const cursorCollisionReadLimit = 2000
 // detected. A walk that hits readLimit, or that meets a directory it cannot
 // read, is treated as shared (fail closed).
 func cursorProjectOtherPath(repoRoot, projectDir string, readLimit int) (string, bool) {
-	if trusted := cursorTrustedWorkspace(projectDir); trusted != "" && !samePath(trusted, repoRoot) {
+	trusted, ok := cursorTrustedWorkspace(projectDir)
+	if !ok {
+		return "an unknown path (" + filepath.Join(projectDir, ".workspace-trusted") + " could not be read)", true
+	}
+	if trusted != "" && !samePath(trusted, repoRoot) {
 		return trusted, true
 	}
 	matches, unscanned := pathsWithEncoding(repoRoot, cursor.SanitizePathForCursor, readLimit)
@@ -91,19 +96,24 @@ func cursorProjectOtherPath(repoRoot, projectDir string, readLimit int) (string,
 }
 
 // cursorTrustedWorkspace returns the workspacePath recorded in the project
-// directory's .workspace-trusted file, or "" when absent or unreadable.
-func cursorTrustedWorkspace(projectDir string) string {
+// directory's .workspace-trusted file, or "" when the file is absent. ok is
+// false when the file exists but cannot be read or names no workspace, since
+// it may then name another path.
+func cursorTrustedWorkspace(projectDir string) (workspace string, ok bool) {
 	data, err := os.ReadFile(filepath.Join(projectDir, ".workspace-trusted")) //nolint:gosec // fixed name under the Cursor project dir
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", true
+	}
 	if err != nil {
-		return ""
+		return "", false
 	}
 	var trusted struct {
 		WorkspacePath string `json:"workspacePath"`
 	}
-	if json.Unmarshal(data, &trusted) != nil {
-		return ""
+	if json.Unmarshal(data, &trusted) != nil || trusted.WorkspacePath == "" {
+		return "", false
 	}
-	return trusted.WorkspacePath
+	return trusted.WorkspacePath, true
 }
 
 // pathsWithEncoding returns every existing directory whose encode(path) equals
@@ -166,9 +176,15 @@ func isGone(err error) bool {
 }
 
 // samePath reports whether a and b name the same location after cleaning and
-// best-effort symlink resolution.
+// best-effort symlink resolution, or, when both exist, are the same directory
+// by file identity (which also covers case-insensitive filesystems).
 func samePath(a, b string) bool {
-	return normalizePath(a) == normalizePath(b)
+	if normalizePath(a) == normalizePath(b) {
+		return true
+	}
+	ai, aErr := os.Stat(a)
+	bi, bErr := os.Stat(b)
+	return aErr == nil && bErr == nil && os.SameFile(ai, bi)
 }
 
 // cursorSessionFile maps a directory entry to a (sessionID, transcript path),

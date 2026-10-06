@@ -223,6 +223,16 @@ func TestCursorProjectOtherPath(t *testing.T) {
 			t.Fatalf("unexpected collision with %q", other)
 		}
 	})
+	t.Run("unreadable workspace-trusted fails closed", func(t *testing.T) {
+		t.Parallel()
+		for _, content := range []string{"not json", `{"trustedAt":"x"}`} {
+			projectDir := t.TempDir()
+			writeLines(t, filepath.Join(projectDir, ".workspace-trusted"), content)
+			if other, shared := cursorProjectOtherPath(lone, projectDir, cursorCollisionReadLimit); !shared {
+				t.Errorf("workspace-trusted %q: got (%q, false), want shared", content, other)
+			}
+		}
+	})
 	t.Run("walk budget exhausted fails closed", func(t *testing.T) {
 		t.Parallel()
 		if _, shared := cursorProjectOtherPath(lone, t.TempDir(), 1); !shared {
@@ -329,6 +339,7 @@ func TestRepoMatches(t *testing.T) {
 		{filepath.Join(string(filepath.Separator), "w"), false},
 		{string(filepath.Separator), false},
 		{"relative/repo", false},
+		{".", false},
 		{"", false},
 	} {
 		if got := repoMatches(tc.cwd, root); got != tc.want {
@@ -394,5 +405,31 @@ func TestDiscoverSessionFiles_KeepRunsAfterCheapFilters(t *testing.T) {
 	}
 	if !slices.Equal(seen, []string{"wanted.jsonl"}) {
 		t.Fatalf("keep saw %v, want only wanted.jsonl", seen)
+	}
+}
+
+// TestRepoMatches_CaseInsensitiveSpelling: on a case-insensitive filesystem a
+// differently-cased spelling of the repo is the same directory and must match.
+func TestRepoMatches_CaseInsensitiveSpelling(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	repo := filepath.Join(base, "Repo")
+	if err := os.MkdirAll(filepath.Join(repo, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	upper := filepath.Join(base, "REPO")
+	if _, err := os.Stat(upper); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+	if !samePath(upper, repo) {
+		t.Errorf("samePath(%q, %q) = false, want true", upper, repo)
+	}
+	for _, cwd := range []string{upper, filepath.Join(upper, "pkg"), filepath.Join(upper, "pkg", "deleted")} {
+		if !repoMatches(cwd, repo) {
+			t.Errorf("repoMatches(%q, %q) = false, want true", cwd, repo)
+		}
+	}
+	if repoMatches(filepath.Join(base, "REPO-other"), repo) {
+		t.Error("a different directory must not match")
 	}
 }

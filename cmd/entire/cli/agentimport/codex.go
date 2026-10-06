@@ -178,19 +178,42 @@ func codexLineTime(raw []byte) time.Time {
 
 // repoMatches reports whether cwd is the repo root or a descendant of it. Both
 // paths are normalized (cleaned, symlinks resolved best-effort) before
-// comparison. Used by the global/flat-store importers (Codex, Copilot) to keep
-// only sessions belonging to this repo.
+// comparison. Used by every importer that reads a recorded cwd to keep only
+// sessions belonging to this repo.
 func repoMatches(cwd, repoRoot string) bool {
-	if cwd == "" || repoRoot == "" {
+	// A relative cwd would resolve against Entire's own working directory, not
+	// where the agent ran. (IsAbs also rejects "" and drive-relative "C:foo".)
+	if !filepath.IsAbs(cwd) || !filepath.IsAbs(repoRoot) {
 		return false
 	}
-	rel, err := filepath.Rel(normalizePath(repoRoot), normalizePath(cwd))
+	root, dir := normalizePath(repoRoot), normalizePath(cwd)
+	// Only a leading ".." component leaves the root; a descendant may itself be
+	// named "..cache".
+	if rel, err := filepath.Rel(root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	// On a case-insensitive filesystem the two may spell one directory
+	// differently; fall back to comparing directory identity.
+	return hasAncestorSameAs(dir, root)
+}
+
+// hasAncestorSameAs reports whether dir, or one of its existing ancestors, is
+// the same directory as root by file identity.
+func hasAncestorSameAs(dir, root string) bool {
+	rootInfo, err := os.Stat(root)
 	if err != nil {
 		return false
 	}
-	// Only a leading ".." component leaves the root; a descendant may itself be
-	// named "..cache".
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	for cur := dir; ; {
+		if info, statErr := os.Stat(cur); statErr == nil && os.SameFile(info, rootInfo) {
+			return true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return false
+		}
+		cur = parent
+	}
 }
 
 // normalizePath cleans a path and resolves symlinks when possible, so a cwd
