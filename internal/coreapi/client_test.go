@@ -460,25 +460,31 @@ func TestListOrgInvitations_UnknownEnumValuesPassThrough(t *testing.T) {
 	}
 }
 
+// rawJSONClient is a client whose server answers every request with body.
+func rawJSONClient(t *testing.T, body string) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("writing test response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := NewClient(srv.URL, bearerOnlySource{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return c
+}
+
 // TestDetachRepo_UnknownEnumValuesPassThrough: the detach result's precondition
 // slugs, access source/subject type, and status are documented as growing sets
 // that `entire repo mirror detach` prints, so a new value must decode.
 func TestDetachRepo_UnknownEnumValuesPassThrough(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(`{"dryRun":false,"eligible":true,"requestedBy":"01H0000000000000000000000A","targetProject":"01H000000000000000000000P1","name":"web","preconditions":[{"precondition":"no-open-trails","passed":true}],"access":[{"subjectType":"bot","subjectId":"x","role":"reader","source":"plugin","coveredByTargetProject":true}],"status":"queued"}`)); err != nil {
-			t.Errorf("writing test response: %v", err)
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	c, err := NewClient(srv.URL, bearerOnlySource{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	c := rawJSONClient(t, `{"dryRun":false,"eligible":true,"requestedBy":"01H0000000000000000000000A","targetProject":"01H000000000000000000000P1","name":"web","preconditions":[{"precondition":"no-open-trails","passed":true}],"access":[{"subjectType":"bot","subjectId":"x","role":"reader","source":"plugin","coveredByTargetProject":true}],"status":"queued"}`)
 
 	out, err := c.DetachRepo(context.Background(), &DetachRepoBody{TargetProject: "01H000000000000000000000P1"}, DetachRepoParams{RepoId: "01H0000000000000000000000R"})
 	if err != nil {
@@ -500,19 +506,7 @@ func TestDetachRepo_UnknownEnumValuesPassThrough(t *testing.T) {
 func TestGetRepoDetach_UnknownStatusPassesThrough(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(`{"status":"rolling_back","releasedAddresses":[],"resumable":false,"frozen":true}`)); err != nil {
-			t.Errorf("writing test response: %v", err)
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	c, err := NewClient(srv.URL, bearerOnlySource{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	c := rawJSONClient(t, `{"status":"rolling_back","releasedAddresses":[],"resumable":false,"frozen":true}`)
 	out, err := c.GetRepoDetach(context.Background(), GetRepoDetachParams{RepoId: "01H0000000000000000000000R"})
 	if err != nil {
 		t.Fatalf("GetRepoDetach with an unknown status must not fail (forward-compat), got: %v", err)
@@ -527,19 +521,7 @@ func TestGetRepoDetach_UnknownStatusPassesThrough(t *testing.T) {
 func TestListRepoPeople_NullDirectGrantDecodes(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(`{"items":[{"accountId":"01H0000000000000000000000A","handle":"github:alice","provider":"github","displayName":"Alice","role":"mirror_source_admin","directGrant":null,"sources":[{"source":"github","role":"mirror_source_admin"}]}],"totalCount":1}`)); err != nil {
-			t.Errorf("writing test response: %v", err)
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	c, err := NewClient(srv.URL, bearerOnlySource{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	c := rawJSONClient(t, `{"items":[{"accountId":"01H0000000000000000000000A","handle":"github:alice","provider":"github","displayName":"Alice","role":"mirror_source_admin","directGrant":null,"sources":[{"source":"github","role":"mirror_source_admin"}]}],"totalCount":1}`)
 	out, err := c.ListRepoPeople(context.Background(), ListRepoPeopleParams{RepoId: "01H0000000000000000000000R"})
 	if err != nil {
 		t.Fatalf("ListRepoPeople with a null directGrant must decode, got: %v", err)

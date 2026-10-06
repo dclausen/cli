@@ -10,12 +10,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/internal/coreapi"
 )
 
@@ -72,10 +72,7 @@ func (f *fakeDetachCore) handler(t *testing.T) http.HandlerFunc {
 			if body.DryRun {
 				answer = f.plan
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, err = io.WriteString(w, answer)
-			assert.NoError(t, err)
+			writeJSONResponse(t, w, http.StatusOK, json.RawMessage(answer))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/"+testDetachMirrorULID+"/people":
 			f.mu.Lock()
 			f.peopleGets++
@@ -86,13 +83,10 @@ func (f *fakeDetachCore) handler(t *testing.T) http.HandlerFunc {
 				return
 			}
 			// The shape production answers with for a mirror's GitHub collaborators.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, err := io.WriteString(w, `{"items":[
+			writeJSONResponse(t, w, http.StatusOK, json.RawMessage(`{"items":[
 				{"accountId":"01ALICE","handle":"github:alice","provider":"github","displayName":"Alice Smith","role":"writer","directGrant":null,"sources":[{"source":"github","role":"writer"}]},
 				{"accountId":"01BOB","handle":"github:bob","provider":"github","role":"reader","directGrant":null,"sources":[{"source":"github","role":"reader"}]}],
-				"totalCount":2}`)
-			assert.NoError(t, err)
+				"totalCount":2}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/"+testDetachMirrorULID+"/detach":
 			f.mu.Lock()
 			i := min(f.stateGets, len(f.states)-1)
@@ -108,10 +102,7 @@ func (f *fakeDetachCore) handler(t *testing.T) http.HandlerFunc {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, err := io.WriteString(w, f.states[i])
-			assert.NoError(t, err)
+			writeJSONResponse(t, w, http.StatusOK, json.RawMessage(f.states[i]))
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -140,32 +131,23 @@ const (
 	stateCompleteJSON          = `{"status":"complete","step":9,"nativeName":"et/acme/hello-world","releasedAddresses":["gh/octocat/hello-world"],"resumable":false,"frozen":false}`
 )
 
-// fastDetachPoll shortens the poll interval the detach wait shares with
-// `mirror add`.
-func fastDetachPoll(t *testing.T) {
-	t.Helper()
-	prev := mirrorPollInterval
-	mirrorPollInterval = time.Millisecond
-	t.Cleanup(func() { mirrorPollInterval = prev })
-}
-
 // An in-progress answer is waited on — through a stall the server resumes on
 // its own — and the final status is what both renderings report.
 //
 // Not parallel: swaps the package-level seams.
 func TestRepoMirrorDetach_WaitsForCompletion(t *testing.T) {
-	fastDetachPoll(t)
+	useFastMirrorPolling(t)
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON, stateStalledResumableJSON, stateCompleteJSON}
 
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	stdout, stderr, err := execDetach(t, url, "--yes")
 	require.NoError(t, err)
 	assert.Equal(t, 3, fake.stateGets, "a resumable stall keeps the wait going")
 	assert.Contains(t, stderr, "Waiting for the detach")
 	assert.Contains(t, stdout, "✓ Detached /gh/octocat/hello-world into /et/acme/hello-world")
 
 	fake.stateGets = 0
-	stdout, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--json")
+	stdout, _, err = execDetach(t, url, "--yes", "--json")
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &got), "stdout must be one JSON document: %s", stdout)
@@ -177,11 +159,11 @@ func TestRepoMirrorDetach_WaitsForCompletion(t *testing.T) {
 //
 // Not parallel: swaps the package-level seams.
 func TestRepoMirrorDetach_StallNeedingAnAdmin(t *testing.T) {
-	fastDetachPoll(t)
+	useFastMirrorPolling(t)
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON, stateStalledNeedsAdminJSON}
 
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	stdout, stderr, err := execDetach(t, url, "--yes")
 	require.ErrorContains(t, err, "needs an admin of the target project")
 	assert.Equal(t, 2, fake.stateGets)
 	assert.Contains(t, stdout, "until an admin of the target project resumes the rewire")
@@ -194,14 +176,14 @@ func TestRepoMirrorDetach_StallNeedingAnAdmin(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_NoWait(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--no-wait")
+	stdout, stderr, err := execDetach(t, url, "--yes", "--no-wait")
 	require.NoError(t, err)
 	assert.Zero(t, fake.stateGets)
 	assert.Contains(t, stdout, "is in progress")
 	assert.Contains(t, stderr, "Follow the detach with: entire api /api/v1/repos/"+testDetachMirrorULID+"/detach")
 
 	fake.result = strings.Replace(inProgressResultJSON, `"in_progress"`, `"stalled"`, 1)
-	stdout, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--no-wait")
+	stdout, _, err = execDetach(t, url, "--yes", "--no-wait")
 	require.NoError(t, err, "a stall the caller chose not to wait on is not a failure")
 	assert.Contains(t, stdout, "stalled")
 }
@@ -211,11 +193,11 @@ func TestRepoMirrorDetach_NoWait(t *testing.T) {
 //
 // Not parallel: swaps the package-level seams.
 func TestRepoMirrorDetach_WaitTimesOut(t *testing.T) {
-	fastDetachPoll(t)
+	useFastMirrorPolling(t)
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON}
 
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--timeout", "20ms")
+	stdout, _, err := execDetach(t, url, "--yes", "--timeout", "20ms")
 	require.ErrorContains(t, err, "timed out waiting for the detach")
 	require.ErrorContains(t, err, "carries on on the server")
 	assert.Contains(t, stdout, "is in progress")
@@ -229,23 +211,24 @@ func newDetachFixture(t *testing.T, plan, result string) (*fakeDetachCore, strin
 	return fake, srv.URL
 }
 
+// execDetach runs the command on /gh/octocat/hello-world into project acme.
 func execDetach(t *testing.T, srvURL string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	return runCoreCmd(t, newRepoMirrorDetachCmd, srvURL, args...)
+	return runCoreCmd(t, newRepoMirrorDetachCmd, srvURL, append([]string{"/gh/octocat/hello-world", "--project", "acme"}, args...)...)
 }
 
 // stubDetachPrompt makes the confirmation reachable and answers it, recording
 // whether it was asked.
 func stubDetachPrompt(t *testing.T, answer bool) *bool {
 	t.Helper()
+	t.Setenv(interactive.EnvTestTTY, "1")
 	asked := false
-	prevCan, prevConfirm := detachCanPrompt, detachConfirmed
-	detachCanPrompt = func() bool { return true }
+	prevConfirm := detachConfirmed
 	detachConfirmed = func(*cobra.Command, mirrorRepoRef, string, *coreapi.DetachRepoResult, detachNames) (bool, error) {
 		asked = true
 		return answer, nil
 	}
-	t.Cleanup(func() { detachCanPrompt, detachConfirmed = prevCan, prevConfirm })
+	t.Cleanup(func() { detachConfirmed = prevConfirm })
 	return &asked
 }
 
@@ -255,7 +238,7 @@ func stubDetachPrompt(t *testing.T, answer bool) *bool {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_DryRun(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run", "--name", "hello-world")
+	stdout, _, err := execDetach(t, url, "--dry-run", "--name", "hello-world")
 	require.NoError(t, err)
 
 	require.Len(t, fake.bodies, 1)
@@ -271,7 +254,7 @@ func TestRepoMirrorDetach_DryRun(t *testing.T) {
 	lost, kept, ok := strings.Cut(stdout, "Keeps access (1):")
 	require.True(t, ok, "who keeps access is its own section: %s", stdout)
 	assert.Contains(t, lost, "Loses access (1):")
-	assert.Contains(t, lost, "team:01TEAM", "a team has no handle and keeps its ID")
+	assert.Regexp(t, `01TEAM\s+-\s+reader\s+legacy-tuple\s+team`, lost, "a team has no handle: its ID, with the kind in TYPE")
 	assert.Contains(t, kept, "github:alice")
 	assert.Contains(t, kept, "Alice Smith")
 	assert.NotContains(t, stdout, "01ALICE", "an account the people listing names is shown by handle")
@@ -284,7 +267,7 @@ func TestRepoMirrorDetach_DryRun(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_DryRunJSON(t *testing.T) {
 	_, url := newDetachFixture(t, ineligiblePlanJSON, "")
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run", "--json")
+	stdout, _, err := execDetach(t, url, "--dry-run", "--json")
 	require.NoError(t, err, "an ineligible plan is still a successful dry run")
 
 	var got map[string]any
@@ -299,7 +282,7 @@ func TestRepoMirrorDetach_DryRunJSON(t *testing.T) {
 func TestRepoMirrorDetach_IneligibleRefusesBeforeWriting(t *testing.T) {
 	fake, url := newDetachFixture(t, ineligiblePlanJSON, completeResultJSON)
 	asked := stubDetachPrompt(t, true)
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme")
+	stdout, _, err := execDetach(t, url)
 	require.ErrorContains(t, err, "failed: single-placement")
 	assert.Contains(t, stdout, "mirrored on 2 clusters")
 	assert.False(t, *asked, "nothing to confirm on an ineligible plan")
@@ -314,7 +297,7 @@ func TestRepoMirrorDetach_IneligibleRefusesBeforeWriting(t *testing.T) {
 func TestRepoMirrorDetach_Confirmed(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
 	asked := stubDetachPrompt(t, true)
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme")
+	stdout, _, err := execDetach(t, url)
 	require.NoError(t, err)
 	assert.True(t, *asked)
 
@@ -335,7 +318,7 @@ func TestRepoMirrorDetach_Confirmed(t *testing.T) {
 func TestRepoMirrorDetach_Declined(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
 	asked := stubDetachPrompt(t, false)
-	_, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme")
+	_, _, err := execDetach(t, url)
 	require.NoError(t, err)
 	assert.True(t, *asked)
 	require.Len(t, fake.bodies, 1)
@@ -345,9 +328,9 @@ func TestRepoMirrorDetach_Declined(t *testing.T) {
 // --yes skips the prompt; --json then prints only the real result.
 //
 // Not parallel: swaps the package-level core-client seam.
-func TestRepoMirrorDetach_ForceJSON(t *testing.T) {
+func TestRepoMirrorDetach_YesJSON(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--json")
+	stdout, _, err := execDetach(t, url, "--yes", "--json")
 	require.NoError(t, err)
 	require.Len(t, fake.bodies, 2)
 
@@ -362,11 +345,9 @@ func TestRepoMirrorDetach_ForceJSON(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_NonInteractiveNeedsYes(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
-	prev := detachCanPrompt
-	detachCanPrompt = func() bool { return false }
-	t.Cleanup(func() { detachCanPrompt = prev })
+	t.Setenv(interactive.EnvTestTTY, "0")
 
-	_, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme")
+	_, _, err := execDetach(t, url)
 	require.ErrorContains(t, err, "pass --yes")
 	assert.Empty(t, fake.bodies)
 }
@@ -378,11 +359,11 @@ func TestRepoMirrorDetach_NonInteractiveNeedsYes(t *testing.T) {
 func TestRepoMirrorDetach_Refusals(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
 
-	_, _, err := execDetach(t, url, "/et/acme/web", "--project", "acme", "--dry-run")
+	_, _, err := runCoreCmd(t, newRepoMirrorDetachCmd, url, "/et/acme/web", "--project", "acme", "--dry-run")
 	require.ErrorContains(t, err, "supports GitHub mirrors only")
 
 	fake.placements = nil
-	_, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run")
+	_, _, err = execDetach(t, url, "--dry-run")
 	require.ErrorContains(t, err, "not mirrored on any cluster you can read")
 	assert.Empty(t, fake.bodies)
 }
@@ -396,8 +377,7 @@ func TestRenderDetachResult_Stalled(t *testing.T) {
 		"preconditions":[],"access":[],"status":"stalled","nativeName":"et/acme/web"}`)))
 	var b strings.Builder
 	ref := mirrorRepoRef{forge: mirrorCloneForge, owner: "o", repo: "web"}
-	resumable := true
-	require.NoError(t, renderDetachResult(&b, ref, &res, nil, &resumable))
+	require.NoError(t, renderDetachResult(&b, ref, &res, nil, &coreapi.RepoDetachState{Status: "stalled", Resumable: true}))
 	assert.Contains(t, b.String(), "until the server's sweep resumes the rewire")
 	assert.Contains(t, b.String(), "/et/acme/web")
 	assert.NotContains(t, b.String(), "No access was removed", "a resume does not know who lost access")
@@ -429,12 +409,12 @@ func TestDetachConfirmTitle(t *testing.T) {
 //
 // Not parallel: swaps the package-level seams.
 func TestRepoMirrorDetach_PollFailureKeepsTheContext(t *testing.T) {
-	fastDetachPoll(t)
+	useFastMirrorPolling(t)
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{stateInProgressJSON}
 	fake.stateFails = true
 
-	_, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	_, stderr, err := execDetach(t, url, "--yes")
 	require.ErrorContains(t, err, "detach state unavailable")
 	require.ErrorContains(t, err, "carries on on the server")
 	assert.Equal(t, maxConsecutivePollErrors, fake.stateGets)
@@ -446,16 +426,18 @@ func TestRepoMirrorDetach_PollFailureKeepsTheContext(t *testing.T) {
 //
 // Not parallel: swaps the package-level seams.
 func TestRepoMirrorDetach_UnexpectedStatuses(t *testing.T) {
-	fastDetachPoll(t)
+	useFastMirrorPolling(t)
 	fake, url := newDetachFixture(t, eligiblePlanJSON, inProgressResultJSON)
 	fake.states = []string{`{"status":"none","releasedAddresses":[],"resumable":false,"frozen":false}`}
 
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
-	require.ErrorContains(t, err, "no detach recorded")
+	stdout, stderr, err := execDetach(t, url, "--yes")
+	require.ErrorContains(t, err, `answered "in_progress", but the server reports no detach recorded`)
+	assert.NotContains(t, err.Error(), "carries on", "the server just said there is nothing to carry on")
+	assert.NotContains(t, stderr, "Follow the detach", "a read that repeats none is no follow-up")
 	assert.Contains(t, stdout, "is in progress", "a none state is not merged over the detach's own answer")
 
 	fake.result = strings.Replace(completeResultJSON, `"complete"`, `"queued"`, 1)
-	_, _, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	_, _, err = execDetach(t, url, "--yes")
 	require.ErrorContains(t, err, `unexpected status "queued"`)
 }
 
@@ -466,7 +448,7 @@ func TestRepoMirrorDetach_UnexpectedStatuses(t *testing.T) {
 func TestRepoMirrorDetach_RealCallRefused(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
 	fake.realFails = http.StatusConflict
-	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	stdout, stderr, err := execDetach(t, url, "--yes")
 	require.ErrorContains(t, err, "detach refused: retry later")
 	assert.Empty(t, stdout)
 	assert.NotContains(t, stderr, "may have started", "a 4xx changed nothing")
@@ -475,7 +457,7 @@ func TestRepoMirrorDetach_RealCallRefused(t *testing.T) {
 	// A 5xx (or no answer at all) leaves it unknown whether the repo was
 	// frozen and rewired, and the /gh/ ref may already answer moved.
 	fake.realFails = http.StatusServiceUnavailable
-	_, stderr, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	_, stderr, err = execDetach(t, url, "--yes")
 	require.Error(t, err)
 	assert.Contains(t, stderr, "The detach may have started. Follow the detach with: entire api /api/v1/repos/"+testDetachMirrorULID+"/detach")
 }
@@ -486,7 +468,7 @@ func TestRepoMirrorDetach_RealCallRefused(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_IneligibleJSON(t *testing.T) {
 	_, url := newDetachFixture(t, ineligiblePlanJSON, completeResultJSON)
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes", "--json")
+	stdout, _, err := execDetach(t, url, "--yes", "--json")
 	require.ErrorContains(t, err, "failed: single-placement")
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &got), "stdout must be one JSON document: %s", stdout)
@@ -518,7 +500,7 @@ func TestDetachConfirmed_PlanFollowsThePrompt(t *testing.T) {
 	proceed, err := detachConfirmed(cmd, mirrorRepoRef{forge: mirrorCloneForge, owner: "octocat", repo: "hello-world"}, "/et/acme/hello-world", &plan, names)
 	require.NoError(t, err)
 	assert.True(t, proceed)
-	assert.Contains(t, terminal.String(), "team:01TEAM", "the plan is shown where the question is asked")
+	assert.Contains(t, terminal.String(), "01TEAM", "the plan is shown where the question is asked")
 	assert.Contains(t, terminal.String(), "github:alice")
 	assert.Contains(t, terminal.String(), "1 access source the project does not cover will be removed")
 	assert.Empty(t, stdout.String())
@@ -549,7 +531,7 @@ func TestAwaitDetach_CancelIsAnInterruption(t *testing.T) {
 	cancel()
 	_, err := awaitDetach(ctx, detachStateFunc(func(context.Context, coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error) {
 		return nil, context.Canceled
-	}), testDetachMirrorULID, 0, nil)
+	}), testDetachMirrorULID, 0, func(int64, string) {})
 	require.ErrorIs(t, err, context.Canceled)
 	var silent *SilentError
 	require.ErrorAs(t, err, &silent, "main re-raises the signal instead of printing")
@@ -580,9 +562,9 @@ func TestRepoMirrorDetach_ConfirmFlags(t *testing.T) {
 func TestRepoMirrorDetach_NamesAreBestEffort(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
 	fake.peopleFail = true
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run")
+	stdout, _, err := execDetach(t, url, "--dry-run")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "account:01ALICE")
+	assert.Regexp(t, `01ALICE\s+-\s+writer\s+github\s+account`, stdout)
 }
 
 // --json is the wire plan, which names subjects by ID, so it skips the lookup.
@@ -590,7 +572,7 @@ func TestRepoMirrorDetach_NamesAreBestEffort(t *testing.T) {
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_JSONSkipsTheNameLookup(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, "")
-	_, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--dry-run", "--json")
+	_, _, err := execDetach(t, url, "--dry-run", "--json")
 	require.NoError(t, err)
 	assert.Zero(t, fake.peopleGets)
 }
@@ -600,7 +582,7 @@ func TestRepoMirrorDetach_JSONSkipsTheNameLookup(t *testing.T) {
 //
 // Not parallel: shortens the package-level poll interval.
 func TestAwaitDetach_ReportsEachStepOnce(t *testing.T) {
-	fastDetachPoll(t)
+	useFastMirrorPolling(t)
 	states := []string{
 		`{"status":"in_progress","releasedAddresses":[],"resumable":false,"frozen":true}`,
 		`{"status":"in_progress","step":5,"stepName":"group-rewrite","releasedAddresses":[],"resumable":false,"frozen":true}`,

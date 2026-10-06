@@ -72,8 +72,15 @@ func addForceFlag(cmd *cobra.Command) {
 	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (alias for --force)")
 }
 
-// forceRequested reports whether the delete should skip its confirmation
-// prompt, i.e. --force or its --yes alias was set.
+// addYesFlag registers only --yes/-y, for a command whose prompt guards
+// nothing a flag could override: --force would read as overriding a refusal.
+// forceRequested reads it as well.
+func addYesFlag(cmd *cobra.Command) {
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
+}
+
+// forceRequested reports whether the command should skip its confirmation
+// prompt, i.e. --force or --yes was set (either may be unregistered).
 func forceRequested(cmd *cobra.Command) bool {
 	force, ferr := cmd.Flags().GetBool("force")
 	yes, yerr := cmd.Flags().GetBool("yes")

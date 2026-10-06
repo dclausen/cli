@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -80,71 +80,83 @@ func newRepoMirrorDetachCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "Return once the repository is native, without waiting for the rewire to complete")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", 30*time.Minute, "How long to wait for the rewire to complete (0 waits indefinitely)")
 	markRequired(cmd, projectFlagName)
-	// Only --yes: --force/-f reads as overriding a refusal, and an ineligible
-	// plan cannot be overridden — the flag only answers the prompt.
-	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt")
+	// No --force: nothing overrides an ineligible plan, so the flag only
+	// answers the prompt.
+	addYesFlag(cmd)
 	addJSONFlag(cmd)
 	return cmd
 }
 
-// runMirrorDetach resolves the mirror and the target project, asks the server
-// for the plan, and — unless this is a dry run — confirms and runs the detach.
-//
-// The plan is always fetched first, even for a real detach the server would
-// check again on its own: it is what the confirmation shows (who loses access)
-// and it turns a refusal into the list of failed preconditions instead of one
-// problem message.
+// runMirrorDetach resolves the mirror and the target project, fetches the
+// dry-run plan (which the confirmation shows, and which names the failed
+// preconditions on a refusal), then confirms and runs the detach.
 func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOptions) error {
 	cmd.SilenceUsage = true
 	ref, err := parseMirrorRepoRef(repoRef, mirrorCloneForge)
 	if err != nil {
 		return err
 	}
-	yes, _ := cmd.Flags().GetBool("yes") //nolint:errcheck // registered above
-	// An unanswerable prompt must not cost a request: settle it from the
-	// command line before anything is resolved.
-	if !opts.dryRun && !yes && !detachCanPrompt() {
+	yes := forceRequested(cmd)
+	// An unanswerable prompt must not cost a request.
+	if !opts.dryRun && !yes && !interactive.CanPromptInteractively() {
 		return fmt.Errorf("refusing to detach %s without confirmation; pass --yes, or --dry-run to only see the plan", ref.qualified())
 	}
 
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
-		projectID, projectName, err := resolveProjectRefNamed(ctx, c, opts.project)
-		if err != nil {
-			return err
+		var (
+			projectID, projectName, repoID string
+			projectErr, repoErr            error
+			g                              errgroup.Group
+		)
+		// Independent lookups. No shared context, so one failing does not
+		// cancel the other into a misleading error; the project's error wins.
+		g.Go(func() error {
+			projectID, projectName, projectErr = resolveProjectRefNamed(ctx, c, opts.project)
+			return nil
+		})
+		g.Go(func() error {
+			repoID, repoErr = resolveDetachRepoID(ctx, c, ref)
+			return nil
+		})
+		_ = g.Wait() //nolint:errcheck // both goroutines return nil; their errors are read below
+		if projectErr != nil {
+			return projectErr
 		}
-		repoID, err := resolveDetachRepoID(ctx, c, ref)
-		if err != nil {
-			return err
+		if repoErr != nil {
+			return repoErr
 		}
+
 		body := coreapi.DetachRepoBody{TargetProject: projectID, DryRun: true}
 		if opts.name != "" {
 			body.Name = coreapi.NewOptString(opts.name)
 		}
 		params := coreapi.DetachRepoParams{RepoId: repoID}
-
 		plan, err := c.DetachRepo(ctx, &body, params)
 		if err != nil {
 			return fmt.Errorf("plan the detach of %s: %w", ref.qualified(), err)
 		}
 		target := nativeRepoPath(projectName + "/" + plan.Name)
-		// Names are for people reading tables: the plan, the prompt's copy of
-		// it, and the removed-access list. Read them now, while the repo's
-		// people still include everyone the detach is about to remove.
+		prompting := !opts.dryRun && plan.Eligible && !yes
+		// Read names now, while the repo's people still include everyone the
+		// detach is about to remove.
 		var names detachNames
-		if !jsonRequested(cmd) || (!opts.dryRun && plan.Eligible && !yes) {
+		if (!jsonRequested(cmd) || prompting) && hasAccountAccess(plan.Access) {
 			names = lookupDetachNames(ctx, c, repoID)
 		}
+
 		if opts.dryRun || !plan.Eligible {
-			if err := renderDetachPlan(cmd, ref, target, plan, names); err != nil {
+			if jsonRequested(cmd) {
+				err = printJSON(cmd.OutOrStdout(), plan)
+			} else {
+				err = writeDetachPlan(cmd.OutOrStdout(), ref, target, plan, names)
+			}
+			if err != nil || opts.dryRun {
 				return err
 			}
-			if !plan.Eligible && !opts.dryRun {
-				return fmt.Errorf("%s cannot be detached; failed: %s", ref.qualified(), strings.Join(failedDetachPreconditions(plan), ", "))
-			}
-			return nil
+			return fmt.Errorf("%s cannot be detached; failed: %s", ref.qualified(), strings.Join(failedDetachPreconditions(plan), ", "))
 		}
 
-		if !yes {
+		if prompting {
 			proceed, err := detachConfirmed(cmd, ref, target, plan, names)
 			if err != nil || !proceed {
 				return err
@@ -155,9 +167,8 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 		res, err := c.DetachRepo(ctx, &body, params)
 		if err != nil {
 			if !detachRefusedOutright(err) {
-				// No answer, a 5xx, or an interruption: the server may have
-				// frozen and rewired the repo all the same, and the /gh/ ref
-				// may already answer moved.
+				// No answer, a 5xx, or an interruption: the repo may have been
+				// frozen and rewired all the same.
 				fmt.Fprintf(cmd.ErrOrStderr(), "The detach may have started. %s\n", detachFollowUpHint(repoID))
 			}
 			return fmt.Errorf("detach %s: %w", ref.qualified(), err)
@@ -166,15 +177,14 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 	})
 }
 
-// finishDetach waits on a detach the server answered as unfinished, renders
-// where it ended, and decides the exit. The write has happened by now, so
-// every way out that leaves the repository frozen says how to follow it up:
-// the /gh/ ref this command takes answers "moved" from here on, so re-running
-// it cannot reach the detach again.
+// finishDetach waits on an unfinished detach, renders where it ended, and
+// decides the exit. Every exit that leaves the repo frozen prints how to
+// follow it up: the /gh/ ref answers "moved" now, so re-running this command
+// cannot reach the detach.
 func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, repoID, projectID string, res *coreapi.DetachRepoResult, names detachNames, opts mirrorDetachOptions) error {
 	errW := cmd.ErrOrStderr()
 	var (
-		state   *coreapi.RepoDetachState
+		state   *coreapi.RepoDetachState // nil without a state read
 		waitErr error
 	)
 	if !opts.noWait && detachUnfinished(res.Status.Or("")) {
@@ -183,49 +193,49 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 			fmt.Fprintf(errW, "  step %d finished (%s)\n", step, cmp.Or(name, "-"))
 		})
 		if state != nil {
-			mergeDetachState(res, state)
+			// Report where the detach ended, not where it started.
+			res.Status = coreapi.NewOptString(state.Status)
+			if state.Status == detachStatusComplete {
+				res.StatusUrl = coreapi.OptString{}
+			}
 		}
-	}
-	needsResume := state != nil && state.Status == detachStatusStalled && !state.Resumable
-	// Only a state read says whether the server resumes a stall on its own;
-	// the detach's own answer does not.
-	var resumable *bool
-	if state != nil {
-		resumable = &state.Resumable
 	}
 
 	var err error
 	if jsonRequested(cmd) {
 		err = printJSON(cmd.OutOrStdout(), res)
 	} else {
-		err = renderDetachResult(cmd.OutOrStdout(), ref, res, names, resumable)
+		err = renderDetachResult(cmd.OutOrStdout(), ref, res, names, state)
 	}
 	if err != nil {
 		return err
 	}
 
 	status := res.Status.Or("")
-	switch {
-	case waitErr != nil:
-		fmt.Fprintln(errW, detachFollowUpHint(repoID))
-		var silent *SilentError
-		if errors.As(waitErr, &silent) {
-			// An interruption: main re-raises the signal it recorded.
-			return waitErr
-		}
-		// Rendered here rather than by runCore: renderCoreError keeps only an
-		// API problem's detail, which would drop that the detach ran.
-		return fmt.Errorf("%s; the detach of %s carries on on the server", renderCoreError(waitErr).Error(), ref.qualified())
-	case needsResume:
+	if waitErr == nil && status == detachStatusComplete {
+		return nil
+	}
+	if errors.Is(waitErr, errDetachNotRecorded) {
+		// Nothing to follow up: the server contradicts the detach's own answer.
+		return fmt.Errorf("the detach of %s answered %s, but %w", ref.qualified(), strconv.Quote(status), errDetachNotRecorded)
+	}
+	if state != nil && status == detachStatusStalled && !state.Resumable {
 		fmt.Fprintln(errW, detachResumeHint(repoID, projectID))
 		return fmt.Errorf("the detach of %s stalled and needs an admin of the target project to resume it", ref.qualified())
-	case status == detachStatusComplete:
-		return nil
-	case opts.noWait && detachUnfinished(status):
-		fmt.Fprintln(errW, detachFollowUpHint(repoID))
-		return nil
+	}
+	fmt.Fprintln(errW, detachFollowUpHint(repoID))
+	switch {
+	case waitErr != nil:
+		var silent *SilentError
+		if errors.As(waitErr, &silent) {
+			return waitErr // an interruption: main re-raises the signal
+		}
+		// Rendered here: runCore's renderCoreError keeps only an API problem's
+		// detail, which would drop that the detach ran.
+		return fmt.Errorf("%s; the detach of %s carries on on the server", renderCoreError(waitErr).Error(), ref.qualified())
+	case detachUnfinished(status):
+		return nil // --no-wait
 	default:
-		fmt.Fprintln(errW, detachFollowUpHint(repoID))
 		return fmt.Errorf("the detach of %s answered an unexpected status %s", ref.qualified(), strconv.Quote(status))
 	}
 }
@@ -250,9 +260,7 @@ func detachUnfinished(status string) bool {
 	return status == detachStatusInProgress || status == detachStatusStalled
 }
 
-// errDetachNotRecorded is a state read that contradicts the detach's own
-// answer: it said the repository is native, and the state says no detach
-// exists.
+// errDetachNotRecorded is a state read contradicting the detach's own answer.
 var errDetachNotRecorded = errors.New("the server reports no detach recorded")
 
 // detachStateGetter is the one call awaitDetach makes, so a test can script it.
@@ -260,12 +268,10 @@ type detachStateGetter interface {
 	GetRepoDetach(ctx context.Context, params coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error)
 }
 
-// awaitDetach polls the detach's state until the rewire completes, or stalls
-// in a way the server will not resume on its own. A resumable stall keeps the
-// wait going: the core's sweep picks it back up. It returns the last state
-// read, including on a timeout, so the caller can report how far it got, and
-// calls progress once for each newly reported finished step; a state without
-// a step (before the group rewrite) reports nothing.
+// awaitDetach polls until the rewire completes or stalls in a way the server
+// will not resume on its own (a resumable stall is picked up by core's sweep).
+// It returns the last state read, also on a timeout, and calls progress once
+// per newly finished step.
 func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration, progress func(step int64, name string)) (*coreapi.RepoDetachState, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -293,7 +299,7 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 			return last, errDetachNotRecorded
 		default:
 			consecutiveErrs = 0
-			if step, ok := state.Step.Get(); ok && step != reported && progress != nil {
+			if step, ok := state.Step.Get(); ok && step != reported {
 				reported = step
 				progress(step, state.StepName.Or(""))
 			}
@@ -305,8 +311,7 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 					return state, nil
 				}
 			default:
-				// complete, or a status this client does not know: either way
-				// there is nothing a wait can add, and the caller decides.
+				// complete, or a status this client does not know: the caller decides.
 				return state, nil
 			}
 		}
@@ -318,26 +323,9 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 	}
 }
 
-// mergeDetachState folds the polled state into the detach's answer, so both
-// renderings report where the detach ended rather than where it started. A
-// completed detach has nothing left to poll, so its statusUrl goes.
-func mergeDetachState(res *coreapi.DetachRepoResult, state *coreapi.RepoDetachState) {
-	res.Status = coreapi.NewOptString(state.Status)
-	if name, ok := state.NativeName.Get(); ok {
-		res.NativeName = coreapi.NewOptString(name)
-	}
-	if len(state.ReleasedAddresses) > 0 {
-		res.ReleasedAddresses = state.ReleasedAddresses
-	}
-	if state.Status == detachStatusComplete {
-		res.StatusUrl = coreapi.OptString{}
-	}
-}
-
-// resolveDetachRepoID finds the mirror's placement ID, which is what the
-// detach route is keyed by. A detach needs exactly one placement; with several
-// the first is sent anyway, so the server's single-placement precondition is
-// the one that explains the refusal rather than a client-side guess at it.
+// resolveDetachRepoID finds the mirror's placement ID, which the detach route
+// is keyed by. With several placements the first is sent anyway, so the
+// server's single-placement precondition explains the refusal.
 func resolveDetachRepoID(ctx context.Context, c *coreapi.Client, ref mirrorRepoRef) (string, error) {
 	placements, err := resolvePullablePlacements(ctx, c, ref.owner, ref.repo)
 	if err != nil {
@@ -349,63 +337,25 @@ func resolveDetachRepoID(ctx context.Context, c *coreapi.Client, ref mirrorRepoR
 	return placements[0].MirrorId, nil
 }
 
-// detachCanPrompt is a seam so a test can reach the confirmation, which
-// `go test`'s missing terminal otherwise refuses before any request.
-var detachCanPrompt = interactive.CanPromptInteractively
-
 // detachConfirmed is the seam the confirmation sits behind, as revokeConfirmed
-// is for grants: the form needs a terminal, which `go test` does not have.
-//
-// The plan is written on the prompt's own writer, ahead of the form: it is
-// what the question asks about, so it follows the prompt, and a redirected
-// stdout keeps only what the command did. The consequences also go in the
-// Title, not a Description: huh's accessible mode renders only the title.
+// is for grants. The plan is written on the prompt's own writer, ahead of the
+// form; the title repeats the consequences because huh's accessible mode
+// renders nothing else.
 var detachConfirmed = func(cmd *cobra.Command, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult, names detachNames) (bool, error) {
-	if err := detachInterrupted(cmd); err != nil {
-		return false, err
-	}
-	confirmed := false
-	prompt := huh.NewConfirm().Title(detachConfirmTitle(ref, target, plan)).Value(&confirmed)
-	render, err := runPromptFormAfter(cmd, NewAccessibleForm(huh.NewGroup(prompt)), func(w io.Writer) error {
+	return confirmPrompt(cmd, "Detach", detachConfirmTitle(ref, target, plan), "", func(w io.Writer) error {
 		if err := writeDetachPlan(w, ref, target, plan, names); err != nil {
 			return err
 		}
 		fmt.Fprintln(w)
 		return nil
 	})
-	// Before the form error is looked at: handleFormCancellation treats
-	// context.Canceled as a clean abort and would report a signal as an answer.
-	if ierr := detachInterrupted(cmd); ierr != nil {
-		return false, ierr
-	}
-	if err != nil {
-		if cerr := handleFormCancellation(render, "Detach", err); cerr != nil {
-			return false, cerr
-		}
-		return false, nil
-	}
-	if !confirmed {
-		fmt.Fprintln(render, "Detach cancelled.")
-		return false, nil
-	}
-	return true, nil
-}
-
-// detachInterrupted reports a command context cancelled out from under the
-// confirmation, which is an interruption and not an answer (see
-// revocationInterrupted).
-func detachInterrupted(cmd *cobra.Command) error {
-	if err := cmd.Context().Err(); err != nil {
-		return fmt.Errorf("detach cancelled: %w", err)
-	}
-	return nil
 }
 
 func detachConfirmTitle(ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Detach %s into %s? Writes freeze until the rewire finishes", ref.qualified(), target)
-	if lost := len(detachLostAccess(plan.Access)); lost > 0 {
-		fmt.Fprintf(&b, ", and %d access %s the project does not cover will be removed", lost, pluralize("source", lost))
+	if lost, _ := splitDetachAccess(plan.Access); len(lost) > 0 {
+		fmt.Fprintf(&b, ", and %d access %s the project does not cover will be removed", len(lost), pluralize("source", len(lost)))
 	}
 	b.WriteString(".")
 	return b.String()
@@ -421,29 +371,28 @@ func failedDetachPreconditions(plan *coreapi.DetachRepoResult) []string {
 	return failed
 }
 
-func detachKeptAccess(access []coreapi.DetachAccessEntry) []coreapi.DetachAccessEntry {
-	var kept []coreapi.DetachAccessEntry
+// splitDetachAccess separates the access the target project does not cover,
+// which the detach removes, from the access it keeps.
+func splitDetachAccess(access []coreapi.DetachAccessEntry) (lost, kept []coreapi.DetachAccessEntry) {
 	for _, a := range access {
 		if a.CoveredByTargetProject {
 			kept = append(kept, a)
-		}
-	}
-	return kept
-}
-
-func detachLostAccess(access []coreapi.DetachAccessEntry) []coreapi.DetachAccessEntry {
-	var lost []coreapi.DetachAccessEntry
-	for _, a := range access {
-		if !a.CoveredByTargetProject {
+		} else {
 			lost = append(lost, a)
 		}
 	}
-	return lost
+	return lost, kept
 }
 
+func hasAccountAccess(access []coreapi.DetachAccessEntry) bool {
+	return slices.ContainsFunc(access, func(a coreapi.DetachAccessEntry) bool { return a.SubjectType == granteeTypeAccount })
+}
+
+// detachAccessColumns is the grant tables' layout, so an account reads the
+// same here as in `repo grant list`.
 var (
 	detachPreconditionColumns = []string{"PRECONDITION", "RESULT", "DETAIL"}
-	detachAccessColumns       = []string{"SUBJECT", colHeaderName, colHeaderRole, colHeaderSource}
+	detachAccessColumns       = []string{colHeaderGrantee, colHeaderName, colHeaderRole, colHeaderSource, colHeaderType}
 )
 
 func detachPreconditionRow(p coreapi.DetachPrecondition) []string {
@@ -454,14 +403,12 @@ func detachPreconditionRow(p coreapi.DetachPrecondition) []string {
 	return []string{p.Precondition, result, p.Detail.Or("")}
 }
 
-// detachNames maps an account ID to the repo's people entry for it. The
-// detach API names every subject by ID only, and a column of ULIDs is not
-// something a reader can check before removing access.
+// detachNames maps an account ID to the repo's people entry for it: the
+// detach API names every subject by ID only.
 type detachNames map[string]coreapi.ResourcePerson
 
-// lookupDetachNames reads the repo's people once. It is best-effort: a failed
-// or truncated read leaves the subjects it missed shown by ID, which is less
-// readable but never wrong.
+// lookupDetachNames reads the repo's people once, best-effort: a subject it
+// misses is shown by ID, which is less readable but never wrong.
 func lookupDetachNames(ctx context.Context, c *coreapi.Client, repoID string) detachNames {
 	people, _, err := fetchPagesBounded(ctx, coreListFetchBudget, func(ctx context.Context, cursor string) ([]coreapi.ResourcePerson, string, error) {
 		params := coreapi.ListRepoPeopleParams{RepoId: repoID, PageSize: coreapi.NewOptInt32(500)}
@@ -484,62 +431,41 @@ func lookupDetachNames(ctx context.Context, c *coreapi.Client, repoID string) de
 	return names
 }
 
-// subject names an access entry the way the grant commands name a grantee:
-// an account by its provider:handle, anything else (or an account the people
-// listing did not return) by type and ID.
-func (n detachNames) subject(a coreapi.DetachAccessEntry) string {
-	if p, ok := n[a.SubjectId]; ok && a.SubjectType == granteeTypeAccount {
-		if handle := p.Handle.Or(""); handle != "" {
-			return handle
-		}
+func (n detachNames) person(a coreapi.DetachAccessEntry) coreapi.ResourcePerson {
+	if a.SubjectType != granteeTypeAccount {
+		return coreapi.ResourcePerson{}
 	}
-	return a.SubjectType + ":" + a.SubjectId
+	return n[a.SubjectId]
+}
+
+func (n detachNames) grantee(a coreapi.DetachAccessEntry) string {
+	return granteeNameOr(n.person(a).Handle.Or(""), a.SubjectId)
 }
 
 func (n detachNames) row(a coreapi.DetachAccessEntry) []string {
-	name := "-"
-	if p, ok := n[a.SubjectId]; ok && a.SubjectType == granteeTypeAccount {
-		name = cmp.Or(p.DisplayName.Or(""), "-")
-	}
-	return []string{n.subject(a), name, a.Role, a.Source}
+	return []string{n.grantee(a), orDash(granteeDisplayName(n.person(a).DisplayName)), a.Role, a.Source, a.SubjectType}
 }
 
-// sorted orders entries by how they read, so a long list can be scanned for
-// a name.
-func (n detachNames) sorted(entries []coreapi.DetachAccessEntry) []coreapi.DetachAccessEntry {
-	out := slices.Clone(entries)
-	slices.SortStableFunc(out, func(a, b coreapi.DetachAccessEntry) int {
-		return cmp.Compare(strings.ToLower(n.subject(a)), strings.ToLower(n.subject(b)))
-	})
-	return out
-}
-
-// writeDetachAccess prints one titled group of access entries; an empty group
-// prints nothing.
+// writeDetachAccess prints one titled group of access entries, sorted by
+// grantee; an empty group prints nothing.
 func writeDetachAccess(w io.Writer, title string, names detachNames, entries []coreapi.DetachAccessEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	sorted := slices.Clone(entries)
+	slices.SortStableFunc(sorted, func(a, b coreapi.DetachAccessEntry) int {
+		return cmp.Compare(strings.ToLower(names.grantee(a)), strings.ToLower(names.grantee(b)))
+	})
 	fmt.Fprintf(w, "%s (%d):\n", title, len(entries))
-	if err := printTable(w, detachAccessColumns, names.sorted(entries), names.row); err != nil {
+	if err := printTable(w, detachAccessColumns, sorted, names.row); err != nil {
 		return err
 	}
 	fmt.Fprintln(w)
 	return nil
 }
 
-// renderDetachPlan prints the plan as the command's output: --json as the
-// wire result, the human view as the two tables a reader decides on.
-func renderDetachPlan(cmd *cobra.Command, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult, names detachNames) error {
-	if jsonRequested(cmd) {
-		return printJSON(cmd.OutOrStdout(), plan)
-	}
-	return writeDetachPlan(cmd.OutOrStdout(), ref, target, plan, names)
-}
-
-// writeDetachPlan prints the preconditions, then the access split by what the
-// detach does to it: who loses access is what a reader has to check, so it
-// comes first and is not interleaved with who keeps it.
+// writeDetachPlan prints the preconditions, then who loses access and who
+// keeps it, as separate groups: the first is what a reader has to check.
 func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreapi.DetachRepoResult, names detachNames) error {
 	fmt.Fprintf(w, "Detach plan: %s → %s\n\n", ref.qualified(), target)
 	if err := printTable(w, detachPreconditionColumns, plan.Preconditions, detachPreconditionRow); err != nil {
@@ -550,11 +476,11 @@ func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreap
 		fmt.Fprintln(w, "No access sources.")
 		fmt.Fprintln(w)
 	}
-	lost := detachLostAccess(plan.Access)
+	lost, kept := splitDetachAccess(plan.Access)
 	if err := writeDetachAccess(w, "Loses access", names, lost); err != nil {
 		return err
 	}
-	if err := writeDetachAccess(w, "Keeps access", names, detachKeptAccess(plan.Access)); err != nil {
+	if err := writeDetachAccess(w, "Keeps access", names, kept); err != nil {
 		return err
 	}
 	if plan.Eligible {
@@ -566,14 +492,18 @@ func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreap
 	return nil
 }
 
+// slashPath spells a wire address ("et/acme/web") the way refs are typed.
+func slashPath(s string) string {
+	return "/" + strings.TrimPrefix(s, "/")
+}
+
 // renderDetachResult prints a real detach's answer. Every status but complete
-// leaves the repository frozen, so each says so and what happens next.
-//
-// resumable is what a state read said about a stall, nil when none was made.
-func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoResult, names detachNames, resumable *bool) error {
+// leaves the repository frozen, so each says so. state is the last state read,
+// nil when none was made: only it says whether a stall resumes on its own.
+func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoResult, names detachNames, state *coreapi.RepoDetachState) error {
 	native := ref.qualified()
 	if name := res.NativeName.Or(""); name != "" {
-		native = "/" + strings.TrimPrefix(name, "/")
+		native = slashPath(name)
 	}
 	switch status := res.Status.Or(""); status {
 	case detachStatusComplete:
@@ -582,11 +512,9 @@ func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoR
 		fmt.Fprintf(w, "Detach of %s is in progress: it is now %s, and writes stay frozen until the rewire finishes.\n", ref.qualified(), native)
 	case detachStatusStalled:
 		resumer := "the rewire is resumed"
-		switch {
-		case resumable == nil:
-		case *resumable:
+		if state != nil && state.Resumable {
 			resumer = "the server's sweep resumes the rewire"
-		default:
+		} else if state != nil {
 			resumer = "an admin of the target project resumes the rewire"
 		}
 		fmt.Fprintf(w, "Detach of %s stalled: it is now %s, and writes stay frozen until %s.\n", ref.qualified(), native, resumer)
@@ -596,7 +524,7 @@ func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoR
 	if len(res.ReleasedAddresses) > 0 {
 		released := make([]string, len(res.ReleasedAddresses))
 		for i, a := range res.ReleasedAddresses {
-			released[i] = "/" + strings.TrimPrefix(a, "/")
+			released[i] = slashPath(a)
 		}
 		fmt.Fprintf(w, "Released: %s\n", strings.Join(released, ", "))
 	}

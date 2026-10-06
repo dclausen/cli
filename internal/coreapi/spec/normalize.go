@@ -296,54 +296,27 @@ var readModelNullableFields = map[string][]string{
 // is already nullable upstream no longer has a bare $ref and is left alone.
 // Returns the number of fields rewritten.
 func allowReadModelNulls(doc map[string]any) int {
-	components, ok := doc["components"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	schemas, ok := components["schemas"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	count := 0
-	for schemaName, fields := range readModelNullableFields {
-		schema, ok := schemas[schemaName].(map[string]any)
+	return forEachListedProperty(doc, readModelNullableFields, func(props map[string]any, field string) bool {
+		prop, ok := props[field].(map[string]any)
 		if !ok {
-			continue
+			return false
 		}
-		props, ok := schema["properties"].(map[string]any)
-		if !ok {
-			continue
+		ref, ok := prop["$ref"].(string)
+		if !ok || len(prop) != 1 {
+			return false
 		}
-		for _, field := range fields {
-			prop, ok := props[field].(map[string]any)
-			if !ok {
-				continue
-			}
-			ref, ok := prop["$ref"].(string)
-			if !ok || len(prop) != 1 {
-				continue
-			}
-			props[field] = map[string]any{"anyOf": []any{
-				map[string]any{"$ref": ref},
-				map[string]any{"type": "null"},
-			}}
-			count++
-		}
-	}
-	return count
+		props[field] = map[string]any{"anyOf": []any{
+			map[string]any{"$ref": ref},
+			map[string]any{"type": "null"},
+		}}
+		return true
+	})
 }
 
 // loosenReadModelRequired removes each field named in readModelOptionalFields
 // from its schema's "required" list. Returns the number of fields removed.
 func loosenReadModelRequired(doc map[string]any) int {
-	components, ok := doc["components"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	schemas, ok := components["schemas"].(map[string]any)
-	if !ok {
-		return 0
-	}
+	schemas := componentSchemas(doc)
 	count := 0
 	for schemaName, fields := range readModelOptionalFields {
 		schema, ok := schemas[schemaName].(map[string]any)
@@ -375,16 +348,34 @@ func loosenReadModelRequired(doc map[string]any) int {
 // loosened; a missing schema or field is skipped (a spec refresh that renames
 // or removes one simply loosens nothing there).
 func loosenReadModelEnums(doc map[string]any) int {
-	components, ok := doc["components"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	schemas, ok := components["schemas"].(map[string]any)
-	if !ok {
-		return 0
-	}
+	return forEachListedProperty(doc, readModelEnumFields, func(props map[string]any, field string) bool {
+		prop, ok := props[field].(map[string]any)
+		if !ok {
+			return false
+		}
+		if _, had := prop["enum"]; !had {
+			return false
+		}
+		delete(prop, "enum")
+		return true
+	})
+}
+
+// componentSchemas returns doc's components.schemas, or nil when the document
+// has none.
+func componentSchemas(doc map[string]any) map[string]any {
+	components, _ := doc["components"].(map[string]any)
+	schemas, _ := components["schemas"].(map[string]any)
+	return schemas
+}
+
+// forEachListedProperty calls fn for each field listed, by schema name, in
+// fields whose schema has a properties map, and counts the calls that report
+// a change. Schemas and fields the document lacks are skipped.
+func forEachListedProperty(doc map[string]any, fields map[string][]string, fn func(props map[string]any, field string) bool) int {
+	schemas := componentSchemas(doc)
 	count := 0
-	for schemaName, fields := range readModelEnumFields {
+	for schemaName, names := range fields {
 		schema, ok := schemas[schemaName].(map[string]any)
 		if !ok {
 			continue
@@ -393,13 +384,8 @@ func loosenReadModelEnums(doc map[string]any) int {
 		if !ok {
 			continue
 		}
-		for _, field := range fields {
-			prop, ok := props[field].(map[string]any)
-			if !ok {
-				continue
-			}
-			if _, had := prop["enum"]; had {
-				delete(prop, "enum")
+		for _, field := range names {
+			if fn(props, field) {
 				count++
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
@@ -92,14 +93,13 @@ var openPromptTerminal = func() (promptTerminal, error) {
 // explain a prompt the user watched disappear, into a stream they are not
 // reading.
 func runPromptForm(cmd *cobra.Command, form *huh.Form) (render io.Writer, err error) {
-	return runPromptFormAfter(cmd, form, nil)
+	return runPromptFormWithPreamble(cmd, form, nil)
 }
 
-// runPromptFormAfter is runPromptForm with a preamble: before, when set, writes
-// what the question needs the reader to have seen onto the same writer the
-// form renders on, so the explanation follows the prompt rather than the
-// command's output (see "The prompt moves; the result does not").
-func runPromptFormAfter(cmd *cobra.Command, form *huh.Form, before func(io.Writer) error) (render io.Writer, err error) {
+// runPromptFormWithPreamble is runPromptForm that first writes preamble, when
+// set, on the writer the form renders on: what the question asks about follows
+// the prompt rather than the command's output.
+func runPromptFormWithPreamble(cmd *cobra.Command, form *huh.Form, preamble func(io.Writer) error) (render io.Writer, err error) {
 	render = cmd.ErrOrStderr()
 	if !interactive.IsTerminalWriter(render) {
 		term, terr := openPromptTerminal()
@@ -118,8 +118,8 @@ func runPromptFormAfter(cmd *cobra.Command, form *huh.Form, before func(io.Write
 			form = form.WithInput(term.in)
 		}
 	}
-	if before != nil {
-		if err := before(render); err != nil {
+	if preamble != nil {
+		if err := preamble(render); err != nil {
 			return render, err
 		}
 	}
@@ -253,4 +253,50 @@ func appendResolved(dirs []string, dir string) []string {
 		return append(dirs, resolved)
 	}
 	return append(dirs, dir)
+}
+
+// confirmPrompt asks one yes/no question through runPromptFormWithPreamble.
+// action names the operation in its messages ("Revocation", "Detach").
+// A decline, or an abort inside the form, is an answer: (false, nil), with
+// "<action> cancelled." on the prompt's writer. A context cancelled out from
+// under it is an interruption, not an answer: it comes back as an error
+// wrapping ctx.Err(), which main matches to exit the way every other Ctrl+C
+// does (quietly, 130, breaking an enclosing shell loop) rather than exiting 0
+// having done nothing. plugin_confirm.go has the same shape;
+// confirmControlPlaneDeletion's nilerr skip is the outlier. That is checked on both sides of the form, because huh opens the TTY
+// regardless of context state, and before the form error is classified,
+// because handleFormCancellation would read context.Canceled as an abort.
+func confirmPrompt(cmd *cobra.Command, action, title, description string, preamble func(io.Writer) error) (bool, error) {
+	if err := promptInterrupted(cmd, action); err != nil {
+		return false, err
+	}
+	confirmed := false
+	prompt := huh.NewConfirm().Title(title).Value(&confirmed)
+	if description != "" {
+		prompt = prompt.Description(description)
+	}
+	render, err := runPromptFormWithPreamble(cmd, NewAccessibleForm(huh.NewGroup(prompt)), preamble)
+	if ierr := promptInterrupted(cmd, action); ierr != nil {
+		return false, ierr
+	}
+	if err != nil {
+		if cerr := handleFormCancellation(render, action, err); cerr != nil {
+			return false, cerr
+		}
+		return false, nil
+	}
+	if !confirmed {
+		fmt.Fprintf(render, "%s cancelled.\n", action)
+		return false, nil
+	}
+	return true, nil
+}
+
+// promptInterrupted reports a command context cancelled out from under a
+// confirmation (see confirmPrompt).
+func promptInterrupted(cmd *cobra.Command, action string) error {
+	if err := cmd.Context().Err(); err != nil {
+		return fmt.Errorf("%s cancelled: %w", strings.ToLower(action), err)
+	}
+	return nil
 }

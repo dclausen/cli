@@ -293,16 +293,19 @@ the commands are always runnable in every build.
   keyed by the placement ID from `/mirrors/placements`, and with several
   placements it sends the first so the server's `single-placement`
   precondition explains the refusal. Every run asks for the dry-run plan first,
-  and tables show its access split into who loses and who keeps it, accounts
-  named by handle and display name from one best-effort `GET
+  and tables show its access split into who loses and who keeps it, in the
+  grant tables' layout, accounts named by handle and display name from one
+  best-effort `GET
   /repos/{repoId}/people` read before the write (the API names subjects by ID
   only; `--json` keeps the IDs and skips the read);
   an ineligible plan stops before the write with the failed precondition slugs
   (under `--json`, after printing the plan). A real detach is confirmed through
-  `runPromptFormAfter`, which writes the plan on the prompt's own writer ahead
-  of the form; `--yes`/`-y` skips it (there is no `--force`: nothing
+  `confirmPrompt` (shared with `grant remove`'s revoke prompt), which writes the
+  plan on the prompt's own writer ahead of the form; `--yes`/`-y` (`addYesFlag`)
+  skips it (there is no `--force`: nothing
   overrides an ineligible plan), and without a terminal the command
-  refuses before any request. `--json` prints the plan on `--dry-run` or a
+  refuses before any request (tests reach the prompt with `ENTIRE_TEST_TTY`).
+  `--json` prints the plan on `--dry-run` or a
   refusal, and the result otherwise. An `in_progress` or `stalled` answer is
   waited on through `GET /repos/{repoId}/detach` (`--no-wait`, `--timeout`,
   sharing `mirrorPollInterval` with `add`): a resumable stall keeps the wait
