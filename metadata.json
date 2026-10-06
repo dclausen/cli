@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.10.6",
+  "checkpoint_id": "01M494Q2B0C3X7ND8K2NZHENPE",
+  "strategy": "manual-commit",
+  "branch": "disable-prompt-sync",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "cmd/entire/cli/checkpoint/open.go",
+    "cmd/entire/cli/checkpoint/prompt_omission.go",
+    "cmd/entire/cli/checkpoint/prompt_omission_test.go",
+    "cmd/entire/cli/integration_test/sync_prompts_test.go",
+    "cmd/entire/cli/settings/settings.go",
+    "cmd/entire/cli/settings/settings_sync_prompts_test.go",
+    "cmd/entire/cli/settings/sync_prompts.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 172,
+    "cache_creation_tokens": 225660,
+    "cache_read_tokens": 6729193,
+    "output_tokens": 43833,
+    "api_call_count": 84
+  }
+}
