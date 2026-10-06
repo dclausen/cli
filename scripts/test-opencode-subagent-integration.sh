@@ -17,6 +17,10 @@
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario nested       # a child that delegates again (subagent_depth 2)
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario background   # one background child (experimental flag)
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario resume       # one child resumed via task_id for a second call
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario subtask      # a `subtask: true` command (hooks keyed by part id)
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario abort        # abort the parent mid-task over `opencode serve` (Esc in the TUI)
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario subtask-abort # the same, for a `subtask: true` command
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario background-resume # resume a background child while it still runs
 #
 # Env:
 #   OPENCODE_MODEL   model for `opencode run` (default anthropic/claude-haiku-4-5)
@@ -102,7 +106,14 @@ if [ "$SCENARIO" = nested ]; then
 {"$schema": "https://opencode.ai/config.json", "subagent_depth": 2, "permission": {"external_directory": "allow"}, "agent": {"general": {"permission": {"task": "allow"}}}}
 JSON
 fi
-if [ "$SCENARIO" = background ]; then export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; fi
+if [ "$SCENARIO" = background ] || [ "$SCENARIO" = background-resume ]; then export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; fi
+if [ "$SCENARIO" = subtask ] || [ "$SCENARIO" = subtask-abort ]; then
+  # A command run as a subtask goes through SessionPrompt.handleSubtask, whose
+  # tool hooks carry the task part's id rather than its callID.
+  SUBTASK_TEMPLATE="Create docs/red.md containing one paragraph about the colour red. Do not commit and do not ask for confirmation."
+  [ "$SCENARIO" = subtask-abort ] && SUBTASK_TEMPLATE="First run the shell command \`sleep 60\`, then create docs/red.md containing one paragraph about the colour red. Do not commit and do not ask for confirmation."
+  jq -n --arg t "$SUBTASK_TEMPLATE" '{"$schema": "https://opencode.ai/config.json", "permission": {"external_directory": "allow"}, "command": {"redtask": {"template": $t, "agent": "general", "subtask": true}}}' > "$REPO/opencode.json"
+fi
 
 # Reuse an @opencode-ai/plugin tree that pins the running version: the user's
 # global one, else PROBE_PLUGIN_DEPS (a directory holding package.json and
@@ -174,16 +185,64 @@ case "$SCENARIO" in
     PROMPT="Use the general subagent (the task tool with subagent_type general and background set to true) exactly once to create docs/red.md containing one paragraph about the colour red. After launching it, run the shell command \`sleep 60\` so it has time to finish, then finish. Do not create or edit the file yourself, do not delegate again, do not commit, and do not ask for confirmation." ;;
   resume)
     PROMPT="Use the general subagent (the task tool with subagent_type general) in the foreground to create docs/red.md containing one paragraph about the colour red. When it finishes, call the task tool a second time with subagent_type general and task_id set to the task id that first call returned, asking the same subagent to create docs/blue.md containing one paragraph about the colour blue. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
-  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background|resume)" >&2; exit 2 ;;
+  subtask|subtask-abort)
+    PROMPT="" ;;
+  background-resume)
+    PROMPT="Step 1: call the task tool with subagent_type general and background set to true, with this instruction: 'First run the shell command \`sleep 20\`, then create docs/red.md containing one paragraph about the colour red.' Step 2: immediately after it launches, while it is still running, call the task tool again with subagent_type general, background set to true, and task_id set to the task id step 1 returned, with this instruction: 'Also create docs/blue.md containing one paragraph about the colour blue.' Step 3: run the shell command \`sleep 90\` so both have time to finish, then finish. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
+  abort)
+    PROMPT="Use the general subagent (the task tool with subagent_type general) exactly once, in the foreground, and give it exactly this instruction: 'First run the shell command \`sleep 60\`, then create docs/red.md containing one paragraph about the colour red.' Wait for it to finish. Do not create or edit any file yourself, do not delegate again, do not commit, and do not ask for confirmation." ;;
+  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background|resume|subtask|abort|subtask-abort|background-resume)" >&2; exit 2 ;;
 esac
 echo "scenario: $SCENARIO"
+
+# abort_mid_task drives `opencode serve` over HTTP, the way the TUI does:
+# start the task, wait until its child is bound and working, then abort the
+# parent (what Esc sends) and shut the server down.
+abort_mid_task() {
+  local port=$((20000 + RANDOM % 20000)) base sid
+  base="http://127.0.0.1:$port"
+  ( cd "$REPO" && exec env -u ENTIRE_TEST_TTY PWD="$REPO" "$AGENT_BIN" serve --port "$port" </dev/null ) >"$WORK/run.stdout" 2>"$WORK/run.stderr" &
+  local server=$!
+  # set -e can end the script mid-function; never leave `serve` running.
+  # shellcheck disable=SC2064 # expand now: $server is local to this function
+  trap "kill $server 2>/dev/null || true" EXIT
+  for _ in $(seq 1 60); do curl -fsS "$base/session" >/dev/null 2>&1 && break; sleep 0.5; done
+  sid="$(curl -fsS -X POST "$base/session" -H 'content-type: application/json' -d '{}' | jq -r .id)"
+  local provider="${MODEL%%/*}" model="${MODEL#*/}"
+  if [ "$SCENARIO" = subtask-abort ]; then
+    curl -fsS -X POST "$base/session/$sid/command" -H 'content-type: application/json' \
+      -d "$(jq -n --arg m "$MODEL" '{command: "redtask", arguments: "", model: $m}')" >/dev/null 2>&1 &
+  else
+    curl -fsS -X POST "$base/session/$sid/prompt_async" -H 'content-type: application/json' \
+      -d "$(jq -n --arg p "$provider" --arg m "$model" --arg t "$PROMPT" '{model: {providerID: $p, modelID: $m}, parts: [{type: "text", text: $t}]}')" >/dev/null
+  fi
+  # Wait for the child to start its shell call, so the abort lands mid-task.
+  for _ in $(seq 1 240); do
+    jq -e 'select(.kind=="tool.execute.before" and .payload.input.tool=="bash")' "$CAPTURES/events.jsonl" >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+  sleep 2
+  curl -fsS -X POST "$base/session/$sid/abort" >/dev/null && echo "aborted $sid"
+  sleep 5
+  # Dispose the instance so the plugin sees server.instance.disposed (its
+  # session-end); a signal to `serve` may not deliver it.
+  curl -fsS -X POST "$base/instance/dispose?directory=$REPO" >/dev/null 2>&1 || true
+  sleep 2
+  kill "$server" 2>/dev/null; wait "$server" 2>/dev/null || true
+}
+
 case "$MODE" in
   run)
+    if [ "$SCENARIO" = abort ] || [ "$SCENARIO" = subtask-abort ]; then abort_mid_task
+    elif [ "$SCENARIO" = subtask ]; then
+      ( cd "$REPO" && env -u ENTIRE_TEST_TTY PWD="$REPO" "$AGENT_BIN" run --model "$MODEL" --command redtask </dev/null ) >"$WORK/run.stdout" 2>"$WORK/run.stderr" || warn "opencode run" "exit $? — see $WORK/run.stderr"
+    else
     echo "opencode run --model $MODEL <prompt>  (in $REPO)"
     # </dev/null: `opencode run` reads a non-TTY stdin to the end before it
     # creates the session, so an inherited pipe that never closes (a
     # backgrounded shell) stalls it right after "init" with nothing captured.
     ( cd "$REPO" && env -u ENTIRE_TEST_TTY PWD="$REPO" "$AGENT_BIN" run --model "$MODEL" "$PROMPT" </dev/null ) >"$WORK/run.stdout" 2>"$WORK/run.stderr" || warn "opencode run" "exit $? — see $WORK/run.stderr"
+    fi
     ;;
   manual)
     echo "Open another terminal, then:  cd $REPO && opencode"
@@ -230,6 +289,12 @@ if [ "$WITH_ENTIRE" = 1 ]; then
   for f in "$REPO"/.entire/tmp/*.json; do [ -e "$f" ] && ls -la "$f"; done 2>/dev/null || echo "(none)"
   echo "-- pending task records before the commit"
   ( cd "$REPO" && entire checkpoint list --pending 2>&1 | head -20 ) || true
+  echo "-- subagent hooks Entire handled (one start and one stop per task call)"
+  cat "$REPO"/.entire/logs/*.log 2>/dev/null | grep -E '"msg":"subagent (started|completed)"' | jq -c '{msg, tool_use_id, agent_id}' || true
+  echo "-- task records in session state before the commit (completed: false = still in flight)"
+  for f in "$(git -C "$REPO" rev-parse --absolute-git-dir)"/entire-sessions/*.json; do
+    [ -e "$f" ] && jq -c '.task_records[]? | {tool_use_id, agent_id, completed: ((.completed_at // "0001-01-01T00:00:00Z") | startswith("0001") | not)}' "$f"
+  done
   echo "-- commit and inspect checkpoint"
   ( cd "$REPO" && git add -A && git commit -q -m "Add red.md via subagent" 2>&1 && sleep 2 && git log -1 --format='%B' | grep -i entire; entire checkpoint list 2>&1 | head -20 ) || true
   echo "-- task records in the checkpoint"
