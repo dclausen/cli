@@ -347,6 +347,7 @@ func TestTrustInventory_SkillsAndCommandsAreListed(t *testing.T) {
 		".pi/prompts/review.md":            "x",
 		".pi/extensions/entire/notes.txt":  "x",
 		".codex/prompts/review.md":         "x",
+		".codex/agents/explorer.toml":      "x",
 		".claude/agents/reviewer.md":       "x",
 		".claude/plugins/local/hooks.json": "{}",
 	})
@@ -359,13 +360,14 @@ func TestTrustInventory_SkillsAndCommandsAreListed(t *testing.T) {
 	}
 	for _, want := range []string{
 		".claude/commands/review.md", ".claude/skills/review", ".claude/agents/reviewer.md",
-		".claude/plugins/local", ".agents/skills/lint", ".codex/prompts/review.md", ".pi/prompts/review.md",
+		".claude/plugins/local", ".agents/skills/lint", ".codex/prompts/review.md", ".codex/agents/explorer.toml",
+		".pi/prompts/review.md",
 	} {
 		if !got[want] {
 			t.Errorf("missing skill entry %q; got %v", want, got)
 		}
 	}
-	if len(got) != 7 {
+	if len(got) != 8 {
 		t.Errorf("skill entries should be one per item, got %v", got)
 	}
 }

@@ -427,8 +427,9 @@ func codexTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 	return append(out, instructionDirEntries(files, agentName, codexInstructionDirs)...), nil
 }
 
-// codexInstructionDirs hold Codex skills and prompts a review can load.
-var codexInstructionDirs = []string{".codex/skills", ".codex/prompts", ".agents/skills"}
+// codexInstructionDirs hold Codex skills, prompts, and subagents a review can
+// load.
+var codexInstructionDirs = []string{".codex/skills", ".codex/prompts", ".codex/agents", ".agents/skills"}
 
 // codexHookFeatureFlags only switch hooks on (older Entire versions and Codex
 // releases before hooks were on by default needed them). The hooks they enable
