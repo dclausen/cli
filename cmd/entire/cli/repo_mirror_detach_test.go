@@ -144,7 +144,7 @@ func TestRepoMirrorDetach_WaitsForCompletion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, fake.stateGets, "a resumable stall keeps the wait going")
 	assert.Contains(t, stderr, "Detaching /gh/octocat/hello-world into /et/acme/hello-world. This can take a few minutes")
-	assert.NotContains(t, stderr, "step", "internal step names mean nothing to a reader")
+	assert.NotContains(t, stderr, "step", "core's internal steps mean nothing to a reader")
 	assert.Contains(t, stdout, "✓ Detached /gh/octocat/hello-world into /et/acme/hello-world")
 
 	fake.stateGets = 0
@@ -532,7 +532,7 @@ func TestAwaitDetach_CancelIsAnInterruption(t *testing.T) {
 	cancel()
 	_, err := awaitDetach(ctx, detachStateFunc(func(context.Context, coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error) {
 		return nil, context.Canceled
-	}), testDetachMirrorULID, 0, func(int64) {})
+	}), testDetachMirrorULID, 0)
 	require.ErrorIs(t, err, context.Canceled)
 	var silent *SilentError
 	require.ErrorAs(t, err, &silent, "main re-raises the signal instead of printing")
@@ -576,31 +576,4 @@ func TestRepoMirrorDetach_JSONSkipsTheNameLookup(t *testing.T) {
 	_, _, err := execDetach(t, url, "--dry-run", "--json")
 	require.NoError(t, err)
 	assert.Zero(t, fake.peopleGets)
-}
-
-// Progress is reported once per newly finished step, and never for a state
-// that carries no step.
-//
-// Not parallel: shortens the package-level poll interval.
-func TestAwaitDetach_ReportsEachStepOnce(t *testing.T) {
-	useFastMirrorPolling(t)
-	states := []string{
-		`{"status":"in_progress","releasedAddresses":[],"resumable":false,"frozen":true}`,
-		`{"status":"in_progress","step":5,"stepName":"group-rewrite","releasedAddresses":[],"resumable":false,"frozen":true}`,
-		`{"status":"in_progress","step":5,"stepName":"group-rewrite","releasedAddresses":[],"resumable":false,"frozen":true}`,
-		`{"status":"in_progress","releasedAddresses":[],"resumable":false,"frozen":true}`,
-		`{"status":"complete","step":9,"stepName":"done","releasedAddresses":[],"resumable":false,"frozen":false}`,
-	}
-	calls := 0
-	getter := detachStateFunc(func(context.Context, coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error) {
-		var st coreapi.RepoDetachState
-		err := st.UnmarshalJSON([]byte(states[min(calls, len(states)-1)]))
-		calls++
-		return &st, err
-	})
-	var got []int64
-	state, err := awaitDetach(t.Context(), getter, testDetachMirrorULID, 0, func(step int64) { got = append(got, step) })
-	require.NoError(t, err)
-	assert.Equal(t, "complete", state.Status)
-	assert.Equal(t, []int64{5, 9}, got)
 }

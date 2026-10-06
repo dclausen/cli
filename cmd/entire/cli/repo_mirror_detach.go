@@ -28,11 +28,6 @@ const (
 	detachStatusStalled    = "stalled"
 )
 
-// detachSteps is the step a completed detach reports (core's
-// repodetach.StepComplete). Steps up to the group rewrite finish inside the
-// real call, so a state read reports 4 to 9.
-const detachSteps = 9
-
 type mirrorDetachOptions struct {
 	project string
 	name    string
@@ -203,9 +198,7 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 	)
 	if !opts.noWait && detachUnfinished(res.Status.Or("")) {
 		update("Moving the repository")
-		state, waitErr = awaitDetach(cmd.Context(), c, repoID, opts.timeout, func(step int64) {
-			update(fmt.Sprintf("Moving the repository (%d of %d steps done)", step, detachSteps))
-		})
+		state, waitErr = awaitDetach(cmd.Context(), c, repoID, opts.timeout)
 		if state != nil {
 			// Report where the detach ended, not where it started.
 			res.Status = coreapi.NewOptString(state.Status)
@@ -286,9 +279,8 @@ type detachStateGetter interface {
 
 // awaitDetach polls until the rewire completes or stalls in a way the server
 // will not resume on its own (a resumable stall is picked up by core's sweep).
-// It returns the last state read, also on a timeout, and calls progress once
-// per newly finished step.
-func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration, progress func(step int64)) (*coreapi.RepoDetachState, error) {
+// It returns the last state read, also on a timeout.
+func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration) (*coreapi.RepoDetachState, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -299,7 +291,6 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 
 	var last *coreapi.RepoDetachState
 	var consecutiveErrs int
-	reported := int64(-1)
 	for {
 		state, err := c.GetRepoDetach(ctx, coreapi.GetRepoDetachParams{RepoId: repoID})
 		switch {
@@ -315,10 +306,6 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 			return last, errDetachNotRecorded
 		default:
 			consecutiveErrs = 0
-			if step, ok := state.Step.Get(); ok && step != reported {
-				reported = step
-				progress(step)
-			}
 			last = state
 			switch state.Status {
 			case detachStatusInProgress:

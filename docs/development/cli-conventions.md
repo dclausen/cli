@@ -308,8 +308,8 @@ the commands are always runnable in every build.
   `--json` prints the plan on `--dry-run` or a
   refusal, and the result otherwise. The real call announces that it takes
   a few minutes and runs `startUpdatableSpinner` from the call itself (which
-  catches the mirror up with GitHub) through the wait, as "N of 9 steps done"
-  rather than core's step names. An `in_progress` or `stalled` answer is
+  catches the mirror up with GitHub) through the wait; core's internal steps
+  are not shown. An `in_progress` or `stalled` answer is
   waited on through `GET /repos/{repoId}/detach` (`--no-wait`, `--timeout`,
   sharing `mirrorPollInterval` with `add`): a resumable stall keeps the wait
   going because core's sweep resumes it, a non-resumable one ends it non-zero,
