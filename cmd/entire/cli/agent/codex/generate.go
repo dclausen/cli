@@ -84,6 +84,11 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 
 // knownFeatures returns the feature names the installed codex lists, from
 // `codex features list` (one "<name> <stage> <enabled>" row per feature).
+//
+// Output that does not list probeAnchorFeature is an error, not a short
+// list: a codex that changed the format would otherwise parse as knowing none
+// of generateTextDisabledFeatures, and filtering against that would drop
+// every --disable instead of falling back to the full list.
 func (c *CodexAgent) knownFeatures(ctx context.Context) (map[string]bool, error) {
 	out, _, _, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", []string{"features", "list"}, "")
 	if err != nil {
@@ -95,11 +100,15 @@ func (c *CodexAgent) knownFeatures(ctx context.Context) (map[string]bool, error)
 			known[fields[0]] = true
 		}
 	}
-	if len(known) == 0 {
-		return nil, errors.New("codex features list: no features")
+	if !known[probeAnchorFeature] {
+		return nil, errors.New("codex features list: output does not list " + probeAnchorFeature)
 	}
 	return known, nil
 }
+
+// probeAnchorFeature is a feature every codex Entire supports lists, so its
+// absence means `codex features list` output was not parsed as intended.
+const probeAnchorFeature = "shell_tool"
 
 // generateTextArgs builds the codex argv for one text-generation call.
 //

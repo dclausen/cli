@@ -104,3 +104,18 @@ func TestGenerateText_TooOldForIgnoreUserConfigFailsClosed(t *testing.T) {
 		t.Errorf("exec runs = %d, want 1 (no retry without the flag)", len(execs))
 	}
 }
+
+// Probe output that names none of the real features (a codex release that
+// changes the `features list` format) is a failed probe, not an empty set of
+// known features: the full list is passed rather than none.
+func TestGenerateText_UnrecognizedProbeOutputDisablesEverything(t *testing.T) {
+	t.Parallel()
+	var execs [][]string
+	ag := &CodexAgent{CommandRunner: fakeCodex([]string{`{"features":["shell_tool","unified_exec"]}`}, "summary", "", &execs)}
+	if _, err := ag.GenerateText(context.Background(), "prompt", ""); err != nil {
+		t.Fatalf("GenerateText: %v", err)
+	}
+	if d := disabledIn(execs[0]); !slices.Equal(d, generateTextDisabledFeatures) {
+		t.Errorf("disabled = %v, want the full list", d)
+	}
+}
