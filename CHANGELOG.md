@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Breaking changes and migrations
 
 - `entire repo mirror get` is removed; `entire repo view` is now the one repository view for both forges, listing name, visibility and every cluster holding a copy with its role, clone URL and status. It takes `/et/<project>/<repo>`, `/gh/<owner>/<repo>` or an `entire://` clone URL; the repo ULID and bare name with `--project` are no longer accepted. The CLUSTER column now prints the public host that `--cluster` accepts, and primary and mirror rows share one status vocabulary (`ready`, `processing`) ([#2547](https://github.com/entireio/cli/pull/2547))
-- A trailing `.git` is never part of a repo name: every ref parser drops it, so `/et/p/foo` and `/et/p/foo.git` address one repository, and `entire repo create` refuses names ending in `.git` in any letter case. This reverts the 0.11.3 rule that treated the suffix as part of a native repo name ([#2616](https://github.com/entireio/cli/pull/2616), [#2630](https://github.com/entireio/cli/pull/2630))
+- A trailing `.git` is never part of a repo name: every ref parser drops it, so `/et/p/foo` and `/et/p/foo.git` address one repository, and `entire repo create` refuses names ending in `.git` in any letter case. This reverts the 0.11.2 rule that treated the suffix as part of a native repo name ([#2616](https://github.com/entireio/cli/pull/2616), [#2630](https://github.com/entireio/cli/pull/2630))
 
 ### Added
 
@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - `entire review` no longer loads execution-capable agent config from the reviewed checkout: Claude Code ignores project settings, hooks, MCP servers, commands and skills; pi ignores project-local extensions; Codex runs `--target` reviews with the checkout marked untrusted ([#2598](https://github.com/entireio/cli/pull/2598))
-- Claude Code turns that end on an API error (`StopFailure`: rate limit, overload, auth or billing failure, max output tokens) now end the turn, instead of leaving the session `ACTIVE` until the next prompt ([#2656](https://github.com/entireio/cli/pull/2656))
+- Claude Code turns that end on an API error (`StopFailure`: rate limit, overload, auth or billing failure, max output tokens) now end the turn, instead of leaving the session `ACTIVE` until the next prompt. Existing installs need to re-run `entire enable` to add the new hook; until then `entire doctor` reports the Claude Code hook config as outdated ([#2656](https://github.com/entireio/cli/pull/2656))
 - Session resume, attach and transcript lookup honor each agent's home relocation variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `FACTORY_HOME_OVERRIDE`, pi's dirs), including a `CLAUDE_CONFIG_DIR` set in Claude's own settings. Relative values are refused and reported by `entire status` ([#2375](https://github.com/entireio/cli/pull/2375))
 - Subagent capture: Claude Code background subagents now reach checkpoints, task records carry token usage, files and Codex completion before commit, Codex child transcripts resolve when the parent commits before its own Stop, and an aborted Codex turn counts as ended ([#2644](https://github.com/entireio/cli/pull/2644), [#2647](https://github.com/entireio/cli/pull/2647), [#2645](https://github.com/entireio/cli/pull/2645), [#2652](https://github.com/entireio/cli/pull/2652))
 - Read-only review sessions are no longer condensed into another session's mid-turn commit ([#2617](https://github.com/entireio/cli/pull/2617))
