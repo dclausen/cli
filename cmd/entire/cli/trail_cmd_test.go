@@ -483,7 +483,7 @@ func TestRunTrailListAll_ValidatesOptionsBeforeAuth(t *testing.T) {
 
 func TestTrailRootPrintsHelp(t *testing.T) {
 	t.Parallel()
-	cmd := newTrailCmd()
+	cmd := newTrailCmdForMode(true)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
@@ -2152,7 +2152,7 @@ func TestPrintTrailListEmptyDefaultStatusNamesFilterAndHints(t *testing.T) {
 	for _, want := range []string{
 		"No open trails found.",
 		"Use --status any to see trails in other statuses.",
-		"entire trail link",
+		"entire trail create",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("output missing %q, got:\n%s", want, text)

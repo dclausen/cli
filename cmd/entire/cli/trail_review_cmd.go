@@ -488,6 +488,9 @@ func runTrailReviewSetStatus(cmd *cobra.Command, selector string, commentID, sta
 }
 
 func authenticatedTrailReviewTarget(cmd *cobra.Command, selector string) (*api.Client, trailReviewTarget, error) {
+	if !usesProjectTrails(cmd) {
+		return authenticatedLegacyTrailReviewTarget(cmd, selector)
+	}
 	selected, err := resolveTrailWorkingContext(cmd, selector, trailBranchFlag(cmd), false)
 	if err != nil {
 		return nil, trailReviewTarget{}, err

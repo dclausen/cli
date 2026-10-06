@@ -49,7 +49,11 @@ func listWorkingTrailApprovals(cmd *cobra.Command, selector, branch string, json
 	if jsonOut {
 		return printJSON(cmd.OutOrStdout(), toTrailApprovalsResponseJSON(out))
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Approvals for %s\n", selected.description())
+	if selected.Target != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Approvals for %s\n", selected.description())
+	} else if len(out.Approvals) == 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "No approvals on %s\n", selected.description())
+	}
 	renderTrailApprovals(cmd.OutOrStdout(), out.Approvals)
 	return nil
 }

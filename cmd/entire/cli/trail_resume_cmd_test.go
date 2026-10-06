@@ -203,7 +203,7 @@ func TestBuildTrailResumeContextSortsCheckpointSessions(t *testing.T) {
 		t.Fatalf("DefaultResume = %#v, want new-session", ctx.DefaultResume)
 	}
 	wantCommands := []string{
-		"entire trail finding 575 --branch feature/trail-resume --json",
+		"entire trail finding 575 --json",
 		"entire trail resume 575 --branch feature/trail-resume",
 		"entire trail resume 575 --branch feature/trail-resume --checkpoint aaaaaaaaaaaa",
 		"entire trail resume 575 --branch feature/trail-resume --session new-session",
@@ -230,7 +230,7 @@ func TestBuildTrailResumeContextWithRepoIncludesRepoInResumeCommands(t *testing.
 	}, nil, "", 0, trailResumeFindingsContext{}, "gh/entireio/cli")
 
 	wantCommands := []string{
-		"entire trail finding 575 --repo gh/entireio/cli --branch feature/trail-resume --json",
+		"entire trail finding 575 --json",
 		"entire trail resume 575 --repo gh/entireio/cli --branch feature/trail-resume",
 	}
 	if len(ctx.Commands) != len(wantCommands) {

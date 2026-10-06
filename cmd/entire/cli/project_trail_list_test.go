@@ -172,7 +172,7 @@ func TestProjectTrailListValidatesFlagsBeforeIO(t *testing.T) {
 func TestProjectTrailListAgentHelpScope(t *testing.T) {
 	t.Parallel()
 	root := &cobra.Command{Use: "entire"}
-	root.AddCommand(newTrailCmd())
+	root.AddCommand(newTrailCmdForMode(true))
 	cmd, _, err := root.Find([]string{"trail", "list"})
 	require.NoError(t, err)
 	out := renderAgentHelpCommand(cmd, "gh/acme/widget", true)
