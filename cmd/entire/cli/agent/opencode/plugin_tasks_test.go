@@ -147,6 +147,25 @@ func childStatus(status string) map[string]any {
 	}}
 }
 
+// backgroundResult is the synthetic part OpenCode injects into the launching
+// session when a background job ends.
+func backgroundResult(state string) map[string]any {
+	return map[string]any{"event": map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{"part": map[string]any{
+			"id": "prt_result", "messageID": "msg_result", "sessionID": "ses_parent", "type": "text", "synthetic": true,
+			"text": `<task id="ses_child" state="` + state + `">` + "\n<summary>Background task " + state + "</summary>",
+		}},
+	}}
+}
+
+func sessionAborted(sessionID string) map[string]any {
+	return map[string]any{"event": map[string]any{
+		"type":       "session.error",
+		"properties": map[string]any{"sessionID": sessionID, "error": map[string]any{"name": "MessageAbortedError"}},
+	}}
+}
+
 // TestPlugin_TaskStartAndStopPair pins that every subagent-start is matched by
 // exactly one subagent-stop under the same tool_use_id, across OpenCode's call
 // paths: the model's task tool (hooks keyed by callID) and a command subtask
@@ -290,6 +309,92 @@ func TestPlugin_TaskStartAndStopPair(t *testing.T) {
 			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1", "subagent-stop:c2"},
 		},
 		{
+			name: "failed job drops the queued run: its result ends the joined call",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				childStatus("idle"),
+				backgroundResult("error"),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1", "subagent-stop:c2"},
+		},
+		{
+			name: "aborting the parent ends the calls queued on its background child",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				childStatus("idle"),
+				// no idle follows for c2: its queued run was dropped
+				sessionAborted(parent),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1", "subagent-stop:c2"},
+		},
+		{
+			name: "aborting the parent mid joined run ends the joined call at the child's idle",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				childStatus("idle"),
+				childStatus("busy"),
+				// the job is cancelled but the executing joined run is not
+				sessionAborted(parent),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1"},
+		},
+		{
+			name: "aborting the parent mid joined run: the child's idle then ends the joined call",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				before(parent, "c3"),
+				taskPart(parent, "p3", "c3", child, "running"),
+				after("c3", child, true),
+				childStatus("idle"),
+				childStatus("busy"),
+				sessionAborted(parent),
+				// c3's queued run was dropped with the job, so this idle ends both
+				childStatus("idle"),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-start:c3", "subagent-stop:c1", "subagent-stop:c2", "subagent-stop:c3"},
+		},
+		{
+			name: "completed job's result after the last idle stops nothing more",
+			steps: []map[string]any{
+				before(parent, "c1"),
+				taskPart(parent, "p1", "c1", child, "running"),
+				after("c1", child, true),
+				childStatus("busy"),
+				before(parent, "c2"),
+				taskPart(parent, "p2", "c2", child, "running"),
+				after("c2", child, true),
+				childStatus("idle"),
+				childStatus("busy"),
+				childStatus("idle"),
+				backgroundResult("completed"),
+			},
+			want: []string{"subagent-start:c1", "subagent-start:c2", "subagent-stop:c1", "subagent-stop:c2"},
+		},
+		{
 			name: "background call held while a foreground call on its child fails",
 			steps: []map[string]any{
 				before(parent, "c1"),
@@ -367,5 +472,32 @@ func TestPlugin_ReusedCallIDStillStops(t *testing.T) {
 	want := "subagent-start:functions.task:0@ses_child,subagent-stop:functions.task:0@ses_child,subagent-stop:functions.task:0@ses_child2"
 	if strings.Join(got, ",") != want {
 		t.Errorf("hooks = %v, want %s", got, want)
+	}
+}
+
+// TestPlugin_MissedBeforeHookUsesThePartStart pins that a task whose
+// tool.execute.before the plugin never saw (loaded mid-call) still reports
+// OpenCode's own call start, from the task part, rather than none.
+func TestPlugin_MissedBeforeHookUsesThePartStart(t *testing.T) {
+	t.Parallel()
+	running := map[string]any{"event": map[string]any{
+		"type": "message.part.updated",
+		"properties": map[string]any{"part": map[string]any{
+			"id": "p1", "messageID": "msg_p1", "sessionID": "ses_parent", "type": "tool", "tool": "task", "callID": "c1",
+			"state": map[string]any{
+				"status": "running", "input": map[string]any{},
+				"metadata": map[string]any{"sessionId": "ses_child"},
+				"time":     map[string]any{"start": 1708300001},
+			},
+		}},
+	}}
+	hooks := runPluginTaskScenario(t, []map[string]any{running, after("c1", "ses_child", false)})
+	if len(hooks) != 2 {
+		t.Fatalf("hooks = %v, want a start and a stop", hooks)
+	}
+	for _, h := range hooks {
+		if h.StartedAt != 1708300001 {
+			t.Errorf("%s started_at = %d, want the part's start 1708300001", h.key(), h.StartedAt)
+		}
 	}
 }

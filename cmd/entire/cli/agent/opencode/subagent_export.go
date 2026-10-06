@@ -58,14 +58,15 @@ func (a *OpenCodeAgent) exportSubagent(ctx context.Context, childID, toolUseID s
 		return "", err
 	}
 	if kept == 0 {
-		// The child always gets the call's prompt as a message, so an empty
-		// slice means the timestamps disagree with the call start. Declaring
-		// the full export over-attributes; declaring nothing loses the work.
+		// The plugin's started_at and OpenCode's message times come from the
+		// same clock, so no prompt at or after the call start means the call
+		// never prompted the child: a joined call whose queued run OpenCode
+		// dropped when the job failed or was cancelled. It produced nothing;
+		// declaring the full export would hand it every other call's work.
 		logging.Warn(logging.WithComponent(ctx, "lifecycle"),
-			"opencode: no child messages after the task call started; declaring the full export",
+			"opencode: task call never prompted its child; declaring an empty transcript",
 			slog.String("subagent_id", childID),
 			slog.String("tool_use_id", toolUseID))
-		return full, nil
 	}
 
 	name := entireTmpName + "/" + childID + "." + toolUseID + ".json"

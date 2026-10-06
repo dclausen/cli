@@ -33,6 +33,9 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   // grandchild's task is recorded on the top-level session, the only one
   // Entire tracks, keyed by its own callID like any other task.
   const rootOf = new Map<string, string>()
+  // child session ID -> the session that launched it, so aborting a session
+  // can end the background calls it launched.
+  const parentOf = new Map<string, string>()
   // task callIDs already announced via subagent-start (the running part
   // update repeats). Never pruned, so a late running update cannot announce a
   // task again after its stop.
@@ -67,6 +70,10 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   // held call when it follows a busy period: an errored run reports idle
   // twice.
   const busySessions = new Set<string>()
+  // Children whose held stops all end at their next idle: an abort reached
+  // them mid-run. Cancelling a job does not cancel a joined run already
+  // executing, so the child's own idle, not the abort, is when it ends.
+  const drainAtIdle = new Set<string>()
 
   /**
    * Build the shell command for a hook invocation.
@@ -165,6 +172,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
   function trackChild(childID: string, parentID: string) {
     childSessions.add(childID)
     if (!rootOf.has(childID)) rootOf.set(childID, rootOf.get(parentID) ?? parentID)
+    if (!parentOf.has(childID)) parentOf.set(childID, parentID)
   }
 
   // topLevelSession maps a session to the top-level session it belongs to.
@@ -186,7 +194,9 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     if (!sessionID) return
     announcedTasks.add(part.callID)
     trackChild(part.state.metadata.sessionId, sessionID)
-    const startedAt = taskStartedAt.get(part.callID) ?? taskStartedAt.get(part.id) ?? 0
+    // Without the before hook (the plugin loaded mid-call), the part's own
+    // start, OpenCode's clock before the child's prompt, still bounds it.
+    const startedAt = taskStartedAt.get(part.callID) ?? taskStartedAt.get(part.id) ?? part.state?.time?.start ?? 0
     if (stoppedBeforeStart.delete(part.callID) || stoppedBeforeStart.delete(part.id)) {
       forgetTaskKeys(part)
       return
@@ -255,6 +265,34 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
     if (!payload) return
     if (payloads.length === 0) backgroundTasks.delete(childID)
     callHookSync("subagent-stop", payload)
+  }
+
+  // drainBackgroundTasks fires every held subagent-stop for a child whose
+  // background job is over. A job that fails or is cancelled drops the runs
+  // still queued on it, so their calls get no idle of their own; left held,
+  // the next resume of the child would end them at its idle instead.
+  function drainBackgroundTasks(childID: string) {
+    const payloads = backgroundTasks.get(childID)
+    if (!payloads) return
+    backgroundTasks.delete(childID)
+    for (const payload of payloads) callHookSync("subagent-stop", payload)
+  }
+
+  // A background job's end reaches the session that launched it as a
+  // synthetic text part: <task id="<child>" state="completed|error">.
+  const backgroundResult = /^<task id="([^"]+)" state="(completed|error)">/
+
+  // backgroundSessionAborted ends the held calls of an aborted session and of
+  // the children it launched (Esc cancels its background jobs and reports no
+  // result): at once for an idle child, at its next idle for a busy one.
+  function backgroundSessionAborted(sessionID: string) {
+    const targets = [sessionID]
+    for (const [childID, parentID] of parentOf) if (parentID === sessionID) targets.push(childID)
+    for (const target of targets) {
+      if (!backgroundTasks.has(target)) continue
+      if (busySessions.has(target)) drainAtIdle.add(target)
+      else drainBackgroundTasks(target)
+    }
   }
 
   function resetSessionTracking(sessionID: string) {
@@ -344,10 +382,30 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
         if (event.type === "message.part.updated") {
           announceTask(props?.part)
           stopFailedTask(props?.part)
+          const part = props?.part
+          // Only a part in a tracked session: synthetic text also carries
+          // attachment contents, which could spell the same envelope.
+          const sid = part?.sessionID
+          const tracked = sid === currentSessionID || childSessions.has(sid) || [...parentOf.values()].includes(sid)
+          if (tracked && part?.type === "text" && part.synthetic === true && typeof part.text === "string") {
+            const result = backgroundResult.exec(part.text)
+            if (result) drainBackgroundTasks(result[1])
+          }
+        }
+        // An aborted message, reported on session.error, or on the message
+        // itself when the run was interrupted outside the processor.
+        if (event.type === "session.error" && props?.error?.name === "MessageAbortedError" && props?.sessionID) {
+          backgroundSessionAborted(props.sessionID)
+        }
+        if (event.type === "message.updated" && info?.error?.name === "MessageAbortedError" && info?.sessionID) {
+          backgroundSessionAborted(info.sessionID)
         }
         if (event.type === "session.status" && props?.sessionID) {
           if (props?.status?.type !== "idle") busySessions.add(props.sessionID)
-          else if (busySessions.delete(props.sessionID)) finishBackgroundTask(props.sessionID)
+          else if (busySessions.delete(props.sessionID)) {
+            if (drainAtIdle.delete(props.sessionID)) drainBackgroundTasks(props.sessionID)
+            else finishBackgroundTask(props.sessionID)
+          }
         }
         const eventSessionID: string | undefined =
           props?.sessionID ?? info?.sessionID ?? info?.id ?? props?.part?.sessionID
@@ -477,6 +535,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             pendingInjection = null
             childSessions.clear()
             rootOf.clear()
+            parentOf.clear()
             announcedTasks.clear()
             taskStartedAt.clear()
             liveTasks.clear()
@@ -487,6 +546,7 @@ export const EntirePlugin: Plugin = async ({ directory }) => {
             // SessionEnd sweep, which completes every live task record.
             backgroundTasks.clear()
             busySessions.clear()
+            drainAtIdle.clear()
             // Use sync variant: this is the last event before process exit.
             callHookSync("session-end", {
               session_id: sessionID,

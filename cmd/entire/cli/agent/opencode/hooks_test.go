@@ -507,7 +507,8 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		// background: the stop is held until the child's own session goes idle
 		`if (output?.metadata?.background === true) {`,
 		`backgroundTasks.set(childID, [...(backgroundTasks.get(childID) ?? []), payload])`,
-		`else if (busySessions.delete(props.sessionID)) finishBackgroundTask(props.sessionID)`,
+		`else if (busySessions.delete(props.sessionID)) {`,
+		`else finishBackgroundTask(props.sessionID)`,
 		`finishBackgroundTask(props.sessionID)`,
 		`subagent_id: childID`,
 		`tool_use_id: input.callID`,
@@ -516,7 +517,7 @@ func TestInstallHooks_SubagentHooksFireFromParentTaskSignals(t *testing.T) {
 		// resumed child's export can be cut to this call
 		`"tool.execute.before": async (input) => {`,
 		`taskStartedAt.set(input.callID, Date.now())`,
-		`taskStartedAt.get(part.callID) ?? taskStartedAt.get(part.id) ?? 0`,
+		`taskStartedAt.get(part.callID) ?? taskStartedAt.get(part.id) ?? part.state?.time?.start ?? 0`,
 		`started_at: startedAt`,
 		// a background result injected as a synthetic user part is not a prompt
 		`prompt: part.synthetic === true ? "" : (part.text ?? "")`,

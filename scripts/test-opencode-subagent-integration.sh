@@ -21,6 +21,7 @@
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario abort        # abort the parent mid-task over `opencode serve` (Esc in the TUI)
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario subtask-abort # the same, for a `subtask: true` command
 #   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario background-resume # resume a background child while it still runs
+#   scripts/test-opencode-subagent-integration.sh --run-cmd --scenario background-abort  # the same, then abort the parent while the joined call is queued
 #
 # Env:
 #   OPENCODE_MODEL   model for `opencode run` (default anthropic/claude-haiku-4-5)
@@ -106,7 +107,7 @@ if [ "$SCENARIO" = nested ]; then
 {"$schema": "https://opencode.ai/config.json", "subagent_depth": 2, "permission": {"external_directory": "allow"}, "agent": {"general": {"permission": {"task": "allow"}}}}
 JSON
 fi
-if [ "$SCENARIO" = background ] || [ "$SCENARIO" = background-resume ]; then export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; fi
+if [ "$SCENARIO" = background ] || [ "$SCENARIO" = background-resume ] || [ "$SCENARIO" = background-abort ]; then export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; fi
 if [ "$SCENARIO" = subtask ] || [ "$SCENARIO" = subtask-abort ]; then
   # A command run as a subtask goes through SessionPrompt.handleSubtask, whose
   # tool hooks carry the task part's id rather than its callID.
@@ -187,11 +188,13 @@ case "$SCENARIO" in
     PROMPT="Use the general subagent (the task tool with subagent_type general) in the foreground to create docs/red.md containing one paragraph about the colour red. When it finishes, call the task tool a second time with subagent_type general and task_id set to the task id that first call returned, asking the same subagent to create docs/blue.md containing one paragraph about the colour blue. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
   subtask|subtask-abort)
     PROMPT="" ;;
+  background-abort)
+    PROMPT="Step 1: call the task tool with subagent_type general and background set to true, with this instruction: 'First run the shell command \`sleep 60\`, then create docs/red.md containing one paragraph about the colour red.' Step 2: immediately after it launches, while it is still running, call the task tool again with subagent_type general, background set to true, and task_id set to the task id step 1 returned, with this instruction: 'Also create docs/blue.md containing one paragraph about the colour blue.' Step 3: run the shell command \`sleep 120\`, then finish. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
   background-resume)
     PROMPT="Step 1: call the task tool with subagent_type general and background set to true, with this instruction: 'First run the shell command \`sleep 20\`, then create docs/red.md containing one paragraph about the colour red.' Step 2: immediately after it launches, while it is still running, call the task tool again with subagent_type general, background set to true, and task_id set to the task id step 1 returned, with this instruction: 'Also create docs/blue.md containing one paragraph about the colour blue.' Step 3: run the shell command \`sleep 90\` so both have time to finish, then finish. Do not create or edit any file yourself, do not commit, and do not ask for confirmation." ;;
   abort)
     PROMPT="Use the general subagent (the task tool with subagent_type general) exactly once, in the foreground, and give it exactly this instruction: 'First run the shell command \`sleep 60\`, then create docs/red.md containing one paragraph about the colour red.' Wait for it to finish. Do not create or edit any file yourself, do not delegate again, do not commit, and do not ask for confirmation." ;;
-  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background|resume|subtask|abort|subtask-abort|background-resume)" >&2; exit 2 ;;
+  *) echo "unknown scenario: $SCENARIO (single|concurrent|readonly|nested|background|resume|subtask|abort|subtask-abort|background-resume|background-abort)" >&2; exit 2 ;;
 esac
 echo "scenario: $SCENARIO"
 
@@ -216,9 +219,15 @@ abort_mid_task() {
     curl -fsS -X POST "$base/session/$sid/prompt_async" -H 'content-type: application/json' \
       -d "$(jq -n --arg p "$provider" --arg m "$model" --arg t "$PROMPT" '{model: {providerID: $p, modelID: $m}, parts: [{type: "text", text: $t}]}')" >/dev/null
   fi
-  # Wait for the child to start its shell call, so the abort lands mid-task.
+  # Wait for the child to start its shell call, so the abort lands mid-task;
+  # for background-abort, also for the joined call to be queued.
+  local want_after=0
+  [ "$SCENARIO" = background-abort ] && want_after=2
   for _ in $(seq 1 240); do
-    jq -e 'select(.kind=="tool.execute.before" and .payload.input.tool=="bash")' "$CAPTURES/events.jsonl" >/dev/null 2>&1 && break
+    if jq -e 'select(.kind=="tool.execute.before" and .payload.input.tool=="bash")' "$CAPTURES/events.jsonl" >/dev/null 2>&1 &&
+      [ "$(jq -c 'select(.kind=="tool.execute.after" and .payload.input.tool=="task")' "$CAPTURES/events.jsonl" 2>/dev/null | wc -l | tr -d ' ')" -ge "$want_after" ]; then
+      break
+    fi
     sleep 0.5
   done
   sleep 2
@@ -233,7 +242,7 @@ abort_mid_task() {
 
 case "$MODE" in
   run)
-    if [ "$SCENARIO" = abort ] || [ "$SCENARIO" = subtask-abort ]; then abort_mid_task
+    if [ "$SCENARIO" = abort ] || [ "$SCENARIO" = subtask-abort ] || [ "$SCENARIO" = background-abort ]; then abort_mid_task
     elif [ "$SCENARIO" = subtask ]; then
       ( cd "$REPO" && env -u ENTIRE_TEST_TTY PWD="$REPO" "$AGENT_BIN" run --model "$MODEL" --command redtask </dev/null ) >"$WORK/run.stdout" 2>"$WORK/run.stderr" || warn "opencode run" "exit $? — see $WORK/run.stderr"
     else

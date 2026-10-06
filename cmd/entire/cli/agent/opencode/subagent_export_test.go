@@ -205,3 +205,28 @@ func TestFetchSubagentTranscript_ReExportOfEarlierCallExcludesLaterCalls(t *test
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/repo/docs/red.md"}, files, "the later call's blue.md must not be attributed to the first call")
 }
+
+// TestFetchSubagentTranscript_NeverPromptedCallDeclaresNothing covers a call
+// joined onto a background child whose queued run OpenCode dropped (the job
+// failed or was cancelled): the child has no prompt from it. Its record must
+// get an empty transcript, not the child's whole export.
+func TestFetchSubagentTranscript_NeverPromptedCallDeclaresNothing(t *testing.T) {
+	// Not parallel: t.Chdir and stubExport.
+	t.Chdir(t.TempDir())
+	paths.ClearWorktreeRootCache()
+	t.Cleanup(paths.ClearWorktreeRootCache)
+	stubExport(t, func(_ context.Context, root *os.Root, _, outputName string) error {
+		return root.WriteFile(outputName, []byte(resumedChildExportFixture), 0o600)
+	})
+
+	ag := &OpenCodeAgent{}
+	path, err := ag.FetchSubagentTranscript(context.Background(), "ses_child", "call_dropped", time.UnixMilli(9000), time.Time{})
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(path, filepath.Join(paths.EntireTmpDir, "ses_child.call_dropped.json")), path)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Empty(t, messageIDs(t, data))
+	files, _, err := ag.ExtractModifiedFilesFromOffset(context.Background(), path, 0)
+	require.NoError(t, err)
+	assert.Empty(t, files, "the other calls' files must not be attributed to the dropped call")
+}

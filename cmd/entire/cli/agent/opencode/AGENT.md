@@ -130,7 +130,7 @@ top-level session.
 | Native signal | Entire EventType | Notes |
 |---------------|------------------|-------|
 | `session.created` / `session.updated` with `info.parentID` set, and any task-tool metadata naming a child | (suppressed plugin-side) | These populate `childSessions`. `session.idle` / `session.status` carry only `properties.sessionID` (no `info.parentID` to check) and are instead suppressed by membership in that same `childSessions` set; no `session-start`/`turn-start`/`turn-end` is ever fired for a child. |
-| `tool.execute.before` with `tool == "task"` | (plugin-side only) | Records `Date.now()` per hook key, sent as `started_at` on both subagent hooks (see `task_id` resumption below). The hook key is the `callID`, except for a command subtask (below). |
+| `tool.execute.before` with `tool == "task"` | (plugin-side only) | Records `Date.now()` per hook key, sent as `started_at` on both subagent hooks (see `task_id` resumption below). The hook key is the `callID`, except for a command subtask (below). A plugin that missed this hook (loaded mid-call) sends the task part's `state.time.start` instead, so a start Entire records is always OpenCode's own clock. |
 | `message.part.updated`, task part `status: running` with `metadata.sessionId` | `SubagentStart` (`subagent-start` hook) | First moment the child ID is bound to the `callID`. `ToolUseID = callID`, `SessionID = top-level session` (the parent, or for a nested call the session the chain descends from), `SubagentID = metadata.sessionId`, `SubagentType`/`TaskDescription` from `args`. `DeferredCompletion: true`, since completion arrives separately from `subagent-stop`. The plugin keeps this payload until the task stops; every stop path takes it, so a task stops at most once. |
 | `tool.execute.after` with `tool == "task"` | `SubagentEnd` (`subagent-stop` hook) | `SessionID = top-level session`, `ToolUseID = callID` (the announced one), `SubagentID = output.metadata.sessionId`, `Final: true`, `CompletionWithoutLaunch: true`. The event declares no transcript. The capture, after its skip checks, exports the child via `opencode export` (`FetchSubagentTranscript`) and declares it (`.entire/tmp/<childID>.<callID>.json`, cut to this call's messages; `<childID>.json` when `started_at` is unknown); files and token usage come from that export. A failed export completes the record transcript-unavailable, and condensation exports again. If this hook runs before the running part was announced, the stop fires under the hook key and the late announcement is skipped, so no task is left open. |
 | `message.part.updated`, announced task part `status: error` | `SubagentEnd` (`subagent-stop` hook) | Same payload as above. OpenCode skips `tool.execute.after` when the call is aborted (Esc, `opencode run` teardown) or its execute throws, and marks the part `error` instead (`Tool execution aborted` / `Cancelled`). A call that failed before its child was bound was never announced and fires nothing. |
@@ -162,7 +162,16 @@ guard. A resume via `task_id` that joins a running background child
 (`BackgroundJob.extend`, "Background task updated") is queued behind the
 current run and runs as its own busy → idle cycle, so each idle that follows a
 busy period fires the oldest held stop; an errored run's second idle fires
-nothing. The parent's turn may end first; the record then stays in flight,
+nothing. A job that fails or is cancelled drops the runs still queued on it,
+so the plugin also fires every held stop for a child when its job ends: on
+the launching session's synthetic `<task id="<child>" state="completed|error">`
+result, or on a `MessageAbortedError` (from `session.error` or an aborted
+`message.updated`) for the child or the session that launched it (Esc cancels
+its background jobs without a result). Cancelling a job does not cancel a
+joined run that is already executing, so for a busy child the drain waits for
+its next idle. The dropped calls never prompted the child, so their export
+slice is empty rather than the full export. Only result parts in sessions the
+plugin tracks count, since synthetic text also carries attachment contents. The parent's turn may end first; the record then stays in flight,
 and a commit in between stores the transcript so far (condensation
 re-exports the child). The same re-export, capped at 10 s, lets a commit see
 the running child's edits when deciding whether this IDLE session co-authored
@@ -213,6 +222,11 @@ lives in the child's.
   child is therefore already stopping when the error part arrives (observed:
   the child's `idle` precedes the parent's error part), and a stop-time export
   then holds all of its work.
+- **Two parallel task calls resuming the same child**: when one message resumes
+  one child twice, the foreground call runs first and the second is queued
+  behind it as a background update; the plugin ends the queued call at the
+  first run's idle, so its own run's work lands in no record. Needs the model
+  to resume one child twice in a single message; not handled.
 - **Model-specific `callID` format**: opaque and not globally unique; the child
   session ID is the safe cross-process key.
 - **Nested subagents** are off by default (`subagent_depth: 1`); when enabled,

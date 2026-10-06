@@ -224,10 +224,12 @@ func TestOpenCodeSubagentInFlightAtSessionEndKeepsItsFiles(t *testing.T) {
 	parent := env.NewOpenCodeSession()
 	child := env.NewOpenCodeSession()
 	const toolUseID = "call_inflight"
+	// CreateOpenCodeTranscript stamps the child's prompt at 1708300001.
+	const callStart = int64(1708300001)
 
 	require.NoError(t, env.SimulateOpenCodeSessionStart(parent.ID, parent.TranscriptPath))
 	require.NoError(t, env.SimulateOpenCodeTurnStart(parent.ID, parent.TranscriptPath, "create docs/late.md in the background"))
-	require.NoError(t, env.SimulateOpenCodeSubagentStart(parent.ID, toolUseID, child.ID, "general", "Create docs/late.md"))
+	require.NoError(t, env.SimulateOpenCodeSubagentStartAt(parent.ID, toolUseID, child.ID, "general", "Create docs/late.md", callStart))
 
 	env.WriteFile("docs/late.md", "late\n")
 	env.CopyTranscriptToEntireTmp(child.ID, child.CreateOpenCodeTranscript("Create docs/late.md", []FileChange{{Path: "docs/late.md", Content: "late\n"}}))
