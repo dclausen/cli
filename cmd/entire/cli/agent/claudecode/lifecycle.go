@@ -391,9 +391,9 @@ func waitForTranscriptFlush(ctx context.Context, transcriptPath string, hookStar
 const finalMessageTailBytes = 256 << 10
 
 // finalMessageWritten reports whether the transcript's tail holds the turn's
-// final assistant message: an end_turn assistant entry whose text is finalText
-// (or its last block, when the message has several text blocks), with no user
-// entry after it. Any user entry — a prompt or a tool result — means a later
+// final assistant message: the latest end_turn text block ends finalText (all
+// of it, or its last block when the message has several), with no user entry
+// after it. Any user entry — a prompt or a tool result — means a later
 // step followed, so an earlier turn that ended with the same words never
 // matches.
 func finalMessageWritten(path, finalText string) bool {
@@ -433,11 +433,16 @@ func finalMessageWritten(path, finalText string) bool {
 			if json.Unmarshal(entry.Message, &msg) != nil || msg.StopReason != "end_turn" {
 				continue
 			}
+			// The latest text block decides: an earlier block that happens to
+			// match must not stand once a later, different block is written.
+			last := ""
 			for _, block := range msg.Content {
-				text := strings.TrimSpace(block.Text)
-				if block.Type == transcript.ContentTypeText && text != "" && strings.HasSuffix(want, text) {
-					found = true
+				if text := strings.TrimSpace(block.Text); block.Type == transcript.ContentTypeText && text != "" {
+					last = text
 				}
+			}
+			if last != "" {
+				found = strings.HasSuffix(want, last)
 			}
 		}
 	}

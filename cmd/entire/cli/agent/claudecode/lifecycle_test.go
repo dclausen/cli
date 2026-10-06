@@ -730,6 +730,8 @@ func TestFinalMessageWritten(t *testing.T) {
 		{"same words ended the previous turn", []string{textFinalLine, userPromptLine, toolUseLine}, "ok", false},
 		{"different final text", []string{userPromptLine, textFinalLine}, "not ok at all", false},
 		{"last of several text blocks", []string{userPromptLine, textFinalLine}, "Here is the answer.\n\nok", true},
+		{"later text block differs (one entry)", []string{userPromptLine, `{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"ok"},{"type":"text","text":"done"}]}}`}, "ok", false},
+		{"later text entry differs", []string{userPromptLine, textFinalLine, `{"type":"assistant","message":{"id":"msg_b","stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}`}, "ok", false},
 		{"final line still being written", []string{userPromptLine, textFinalLine[:40]}, "ok", false},
 		{"no stop_reason (older streaming placeholder)", []string{userPromptLine, `{"type":"assistant","message":{"stop_reason":null,"content":[{"type":"text","text":"ok"}]}}`}, "ok", false},
 	}
