@@ -732,6 +732,9 @@ func TestFinalMessageWritten(t *testing.T) {
 		{"last of several text blocks", []string{userPromptLine, textFinalLine}, "Here is the answer.\n\nok", true},
 		{"later text block differs (one entry)", []string{userPromptLine, `{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"ok"},{"type":"text","text":"done"}]}}`}, "ok", false},
 		{"later text entry differs", []string{userPromptLine, textFinalLine, `{"type":"assistant","message":{"id":"msg_b","stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}`}, "ok", false},
+		{"later message started with thinking", []string{userPromptLine, textFinalLine, `{"type":"assistant","message":{"id":"msg_c","stop_reason":"end_turn","content":[{"type":"thinking","thinking":""}]}}`}, "ok", false},
+		{"later message is a tool call", []string{userPromptLine, textFinalLine, `{"type":"assistant","message":{"id":"msg_c","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{}}]}}`}, "ok", false},
+		{"trailing block of the matched message", []string{userPromptLine, textFinalLine, `{"type":"assistant","message":{"id":"msg_b","stop_reason":"end_turn","content":[{"type":"thinking","thinking":""}]}}`}, "ok", true},
 		{"final line still being written", []string{userPromptLine, textFinalLine[:40]}, "ok", false},
 		{"no stop_reason (older streaming placeholder)", []string{userPromptLine, `{"type":"assistant","message":{"stop_reason":null,"content":[{"type":"text","text":"ok"}]}}`}, "ok", false},
 	}

@@ -393,7 +393,7 @@ const finalMessageTailBytes = 256 << 10
 // finalMessageWritten reports whether the transcript's tail holds the turn's
 // final assistant message: the latest end_turn text block ends finalText (all
 // of it, or its last block when the message has several), with no user entry
-// after it. Any user entry — a prompt or a tool result — means a later
+// and no entry of a later assistant message after it. Any user entry — a prompt or a tool result — means a later
 // step followed, so an earlier turn that ended with the same words never
 // matches.
 func finalMessageWritten(path, finalText string) bool {
@@ -415,6 +415,7 @@ func finalMessageWritten(path, finalText string) bool {
 
 	want := strings.TrimSpace(finalText)
 	found := false
+	matchedID := ""
 	for _, line := range strings.Split(string(buf), "\n") {
 		var entry transcript.Line
 		// A partial first line (cut by the tail window) or a line still being
@@ -427,22 +428,30 @@ func finalMessageWritten(path, finalText string) bool {
 			found = false
 		case transcript.TypeAssistant:
 			var msg struct {
+				ID         string                    `json:"id"`
 				StopReason string                    `json:"stop_reason"`
 				Content    []transcript.ContentBlock `json:"content"`
 			}
-			if json.Unmarshal(entry.Message, &msg) != nil || msg.StopReason != "end_turn" {
+			if json.Unmarshal(entry.Message, &msg) != nil {
 				continue
 			}
-			// The latest text block decides: an earlier block that happens to
-			// match must not stand once a later, different block is written.
 			last := ""
 			for _, block := range msg.Content {
 				if text := strings.TrimSpace(block.Text); block.Type == transcript.ContentTypeText && text != "" {
 					last = text
 				}
 			}
-			if last != "" {
+			switch {
+			case msg.StopReason == "end_turn" && last != "":
+				// The latest final text block decides: an earlier block that
+				// happens to match must not stand once a later one is written.
 				found = strings.HasSuffix(want, last)
+				matchedID = msg.ID
+			case msg.ID == "" || msg.ID != matchedID:
+				// Any entry of a later message (thinking, tool use) means the
+				// matched one was not the turn's last. Further blocks of the
+				// matched message itself keep the match.
+				found = false
 			}
 		}
 	}
