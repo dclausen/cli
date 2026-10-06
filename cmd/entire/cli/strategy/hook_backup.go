@@ -282,7 +282,28 @@ func isPreCommitWrapper(root *os.Root, name, hook string) bool {
 		return bytes.Contains(data, []byte(sig))
 	})
 	return signed && bytes.Contains(data, []byte("hook-impl")) &&
-		bytes.Contains(data, []byte("--hook-type="+hook+")")) && bytes.Contains(data, []byte("--hook-dir"))
+		hasHookTypeArg(data, hook) && bytes.Contains(data, []byte("--hook-dir"))
+}
+
+// hasHookTypeArg finds --hook-type=<hook> as a whole token, however the
+// template quotes it: `--hook-type=commit-msg)` (Bash) or `'--hook-type=commit-msg'`
+// (pre-commit 2.x's Python template).
+func hasHookTypeArg(data []byte, hook string) bool {
+	arg := []byte("--hook-type=" + hook)
+	for {
+		i := bytes.Index(data, arg)
+		if i < 0 {
+			return false
+		}
+		data = data[i+len(arg):]
+		if len(data) == 0 || !isHookNameByte(data[0]) {
+			return true
+		}
+	}
+}
+
+func isHookNameByte(b byte) bool {
+	return b == '-' || b == '_' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 // reclaimFromPreCommit undoes `pre-commit install` moving Entire's hook to
