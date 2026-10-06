@@ -287,7 +287,28 @@ the commands are always runnable in every build.
   native-mirror routes are home-core-scoped and answer 421 for a repo in another
   jurisdiction, which `coreapi`'s transport follows and re-authenticates on its
   own, so they run on the plain active-context client with no cluster-fronting
-  detour. `remote add <remote-name> [repo]` is the whole `remote` subtree: it
+  detour. `mirror detach <repo> --project` serves
+  `/gh/` refs only and is the one mirror verb that converts rather than places:
+  it turns the mirror's sole placement into a native repo of the project. It is
+  keyed by the placement ID from `/mirrors/placements`, and with several
+  placements it sends the first so the server's `single-placement`
+  precondition explains the refusal. Every run asks for the dry-run plan first;
+  an ineligible plan stops before the write with the failed precondition slugs
+  (under `--json`, after printing the plan). A real detach is confirmed through
+  `runPromptFormAfter`, which writes the plan on the prompt's own writer ahead
+  of the form; `--force`/`--yes` skips it, and without a terminal the command
+  refuses before any request. `--json` prints the plan on `--dry-run` or a
+  refusal, and the result otherwise. An `in_progress` or `stalled` answer is
+  waited on through `GET /repos/{repoId}/detach` (`--no-wait`, `--timeout`,
+  sharing `mirrorPollInterval` with `add`): a resumable stall keeps the wait
+  going because core's sweep resumes it, a non-resumable one ends it non-zero,
+  and the final state is merged into the result so `--json` reports where it
+  ended. Once the write happened the `/gh/` ref answers "moved", so re-running
+  the command cannot reach the detach: every exit that leaves it unfinished
+  prints the `entire api` call that follows (or resumes) it, and a polling
+  failure is rendered in place so the problem detail does not hide that the
+  detach ran. The precondition, access and status enums are loosened in
+  `normalize.go`, since core documents them as growing. `remote add <remote-name> [repo]` is the whole `remote` subtree: it
   writes one git remote in the *current clone* (local git config only — it
   creates nothing server-side). It serves both forges: for a native repo the
   placements are its primary plus each **ready** mirror. One URL per remote

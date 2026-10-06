@@ -460,6 +460,41 @@ func TestListOrgInvitations_UnknownEnumValuesPassThrough(t *testing.T) {
 	}
 }
 
+// TestDetachRepo_UnknownEnumValuesPassThrough: the detach result's precondition
+// slugs, access source/subject type, and status are documented as growing sets
+// that `entire repo mirror detach` prints, so a new value must decode.
+func TestDetachRepo_UnknownEnumValuesPassThrough(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"dryRun":false,"eligible":true,"requestedBy":"01H0000000000000000000000A","targetProject":"01H000000000000000000000P1","name":"web","preconditions":[{"precondition":"no-open-trails","passed":true}],"access":[{"subjectType":"bot","subjectId":"x","role":"reader","source":"plugin","coveredByTargetProject":true}],"status":"queued"}`)); err != nil {
+			t.Errorf("writing test response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewClient(srv.URL, bearerOnlySource{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	out, err := c.DetachRepo(context.Background(), &DetachRepoBody{TargetProject: "01H000000000000000000000P1"}, DetachRepoParams{RepoId: "01H0000000000000000000000R"})
+	if err != nil {
+		t.Fatalf("DetachRepo with unknown enum values must not fail (forward-compat), got: %v", err)
+	}
+	if got := out.Preconditions[0].Precondition; got != "no-open-trails" {
+		t.Errorf("Precondition = %q, want the unknown value passed through", got)
+	}
+	if got := out.Access[0]; got.SubjectType != "bot" || got.Source != "plugin" {
+		t.Errorf("Access = %+v, want the unknown values passed through", got)
+	}
+	if got := out.Status.Or(""); got != "queued" {
+		t.Errorf("Status = %q, want the unknown value passed through", got)
+	}
+}
+
 // TestListOrgMembers_UnknownEnumValuesPassThrough is the same contract for
 // Membership, which `entire org grant list` prints the same way.
 func TestListOrgMembers_UnknownEnumValuesPassThrough(t *testing.T) {

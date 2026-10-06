@@ -615,7 +615,7 @@ func revokeGrant(cmd *cobra.Command, subject string, revoke func() error) error 
 // account the server sent none for; those show "-".
 var (
 	orgMemberColumns = []string{colHeaderGrantee, colHeaderName, colHeaderRole, colHeaderStatus}
-	grantColumns     = []string{colHeaderGrantee, colHeaderName, colHeaderRole, "SOURCE", "TYPE"}
+	grantColumns     = []string{colHeaderGrantee, colHeaderName, colHeaderRole, colHeaderSource, colHeaderType}
 )
 
 func orgMemberRow(m coreapi.OrgMemberListItem) []string {

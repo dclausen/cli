@@ -92,6 +92,14 @@ var openPromptTerminal = func() (promptTerminal, error) {
 // explain a prompt the user watched disappear, into a stream they are not
 // reading.
 func runPromptForm(cmd *cobra.Command, form *huh.Form) (render io.Writer, err error) {
+	return runPromptFormAfter(cmd, form, nil)
+}
+
+// runPromptFormAfter is runPromptForm with a preamble: before, when set, writes
+// what the question needs the reader to have seen onto the same writer the
+// form renders on, so the explanation follows the prompt rather than the
+// command's output (see "The prompt moves; the result does not").
+func runPromptFormAfter(cmd *cobra.Command, form *huh.Form, before func(io.Writer) error) (render io.Writer, err error) {
 	render = cmd.ErrOrStderr()
 	if !interactive.IsTerminalWriter(render) {
 		term, terr := openPromptTerminal()
@@ -108,6 +116,11 @@ func runPromptForm(cmd *cobra.Command, form *huh.Form) (render io.Writer, err er
 		}
 		if term.in != nil {
 			form = form.WithInput(term.in)
+		}
+	}
+	if before != nil {
+		if err := before(render); err != nil {
+			return render, err
 		}
 	}
 	// Returned unwrapped: every caller classifies it, matching huh's own
