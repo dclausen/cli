@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,4 +147,56 @@ func TestMaterializeTaskRecords_FetchedTranscriptIsRedactedAndStored(t *testing.
 	stored := string(payloads[0].Transcript.Bytes())
 	require.NotContains(t, stored, taskTranscriptSecret)
 	require.Contains(t, stored, "REDACTED")
+}
+
+// analyzingFetchingAgent is a fetchingAgent that is also a transcript
+// analyzer: its transcript is one modified file path per line.
+type analyzingFetchingAgent struct{ fetchingAgent }
+
+func (a *analyzingFetchingAgent) GetTranscriptPosition(string) (int, error) { return 0, nil }
+
+func (a *analyzingFetchingAgent) ExtractModifiedFilesFromOffset(_ context.Context, path string, _ int) ([]string, int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	files := strings.Fields(string(data))
+	return files, len(files), nil
+}
+
+// TestLiveTaskFilesInCommit_FetchesInFlightTranscript pins that a running
+// subagent with no transcript on disk (OpenCode's in-flight record) is
+// re-exported for the co-authorship check, and that a failed export is no
+// evidence rather than an error.
+func TestLiveTaskFilesInCommit_FetchesInFlightTranscript(t *testing.T) {
+	t.Parallel()
+	committed := map[string]struct{}{"docs/red.md": {}}
+
+	tests := []struct {
+		name    string
+		content string
+		err     error
+		want    bool
+	}{
+		{name: "subagent wrote a committed file", content: "docs/red.md", want: true},
+		{name: "subagent wrote other files", content: "docs/blue.md", want: false},
+		{name: "export failed", err: errors.New("opencode export: boom"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			ag := &analyzingFetchingAgent{fetchingAgent{dir: dir, content: tt.content, err: tt.err}}
+			state := &SessionState{
+				SessionID:    "ses_parent",
+				WorktreePath: dir,
+				TaskRecords: []session.TaskRecord{
+					{ToolUseID: "call_1", AgentID: "ses_child", StartedAt: time.Now()},
+				},
+			}
+			got := liveTaskFilesInCommitFor(context.Background(), ag, state, committed)
+			require.Equal(t, tt.want, got)
+			require.Equal(t, []string{"ses_child"}, ag.fetched, "the in-flight record must be fetched")
+		})
+	}
 }
