@@ -2087,7 +2087,7 @@
             "type": "string"
           },
           "requestedBy": {
-            "description": "Account the checks apply to. Only a platform admin may set it.",
+            "description": "Account the checks apply to. Defaults to the caller. Only a platform admin may set another account.",
             "type": "string"
           },
           "targetProject": {
@@ -5258,7 +5258,7 @@
             "type": "array"
           },
           "resumable": {
-            "description": "True when the rewire stopped and the core's sweep resumes it after the step in step. False on a stalled detach that needs a platform admin to call the detach with requestedBy.",
+            "description": "True when the rewire stopped and the core's sweep resumes it after the step in step. False on a stalled detach that needs a call to the detach from an admin of the repo's project or a platform admin.",
             "type": "boolean"
           },
           "status": {
@@ -12497,7 +12497,7 @@
     },
     "/repos/{repoId}/detach": {
       "get": {
-        "description": "Reports whether a detach of the repository is recorded, in progress, stalled, or complete, and its last finished step. Poll it after a detach answers in_progress or stalled: in_progress turns into complete when step 9 finishes. A stalled detach with resumable true reads in_progress again once the core's sweep resumes it. One with resumable false needs a platform admin to call the detach with requestedBy. A requester who cannot see the repository gets 404. No other permission is needed.",
+        "description": "Reports whether a detach of the repository is recorded, in progress, stalled, or complete, and its last finished step. Poll it after a detach answers in_progress or stalled: in_progress turns into complete when step 9 finishes. A stalled detach with resumable true reads in_progress again once the core's sweep resumes it. The sweep skips one with resumable false; a call to the detach from an admin of the repo's project or a platform admin resumes it. A requester who cannot see the repository gets 404. No other permission is needed.",
         "operationId": "getRepoDetach",
         "parameters": [
           {
@@ -12546,7 +12546,7 @@
         ]
       },
       "post": {
-        "description": "Converts the sole placement of a GitHub mirror into a native repository of the target project. Until general availability, a real detach admits only a platform admin acting with requestedBy; every other caller can run the dry run. A dry run changes nothing and returns a snapshot: the detach checks every precondition again. A real detach freezes writes, waits for the mirror to match GitHub's refs, and rewires the repository. It answers complete, in_progress while the rewire runs on, or stalled when the rewire stopped; the repository stays frozen until it finishes. An in_progress or stalled answer carries statusUrl, the path of GET /repos/{repoId}/detach. Poll it until it reads complete. A stalled detach reads in_progress again once the sweep or a call resumes it. A call on a detach that stopped after its group rewrite resumes it and skips the preconditions. A requester who fails the authorization rule, or a repo whose GitHub App is not installed, gets a refusal instead of a plan, so the github-app-installed and requester-authorized results always pass in a returned plan. import-complete fails until the placement's data plane marks its initial import complete. A mirror with no completed sync since the mark was introduced needs a resync first; if the check still fails after the sync, ask support.",
+        "description": "Converts the sole placement of a GitHub mirror into a native repository of the target project. The checks apply to the caller. Only a platform admin with an undelegated credential may set requestedBy to run them for another account. A dry run changes nothing and returns a snapshot: the detach checks every precondition again. A real detach freezes writes, waits for the mirror to match GitHub's refs, and rewires the repository. It answers complete, in_progress while the rewire runs on, or stalled when the rewire stopped; the repository stays frozen until it finishes. An in_progress or stalled answer carries statusUrl, the path of GET /repos/{repoId}/detach. Poll it until it reads complete. A stalled detach reads in_progress again once the sweep or a call resumes it. A call on a detach that stopped after its group rewrite resumes it and skips the preconditions. A requester who fails the authorization rule, or a repo whose GitHub App is not installed, gets a refusal instead of a plan, so the github-app-installed and requester-authorized results always pass in a returned plan. import-complete fails until the placement's data plane marks its initial import complete. A mirror with no completed sync since the mark was introduced needs a resync first; if the check still fails after the sync, ask support.",
         "operationId": "detachRepo",
         "parameters": [
           {

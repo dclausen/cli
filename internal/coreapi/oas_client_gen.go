@@ -219,9 +219,9 @@ type Invoker interface {
 	DetachMyHandle(ctx context.Context, params DetachMyHandleParams) error
 	// DetachRepo invokes detachRepo operation.
 	//
-	// Converts the sole placement of a GitHub mirror into a native repository of the target project.
-	// Until general availability, a real detach admits only a platform admin acting with requestedBy;
-	// every other caller can run the dry run. A dry run changes nothing and returns a snapshot: the
+	// Converts the sole placement of a GitHub mirror into a native repository of the target project. The
+	// checks apply to the caller. Only a platform admin with an undelegated credential may set
+	// requestedBy to run them for another account. A dry run changes nothing and returns a snapshot: the
 	// detach checks every precondition again. A real detach freezes writes, waits for the mirror to
 	// match GitHub's refs, and rewires the repository. It answers complete, in_progress while the rewire
 	// runs on, or stalled when the rewire stopped; the repository stays frozen until it finishes. An
@@ -332,9 +332,9 @@ type Invoker interface {
 	// Reports whether a detach of the repository is recorded, in progress, stalled, or complete, and its
 	// last finished step. Poll it after a detach answers in_progress or stalled: in_progress turns into
 	// complete when step 9 finishes. A stalled detach with resumable true reads in_progress again once
-	// the core's sweep resumes it. One with resumable false needs a platform admin to call the detach
-	// with requestedBy. A requester who cannot see the repository gets 404. No other permission is
-	// needed.
+	// the core's sweep resumes it. The sweep skips one with resumable false; a call to the detach from
+	// an admin of the repo's project or a platform admin resumes it. A requester who cannot see the
+	// repository gets 404. No other permission is needed.
 	//
 	// GET /repos/{repoId}/detach
 	GetRepoDetach(ctx context.Context, params GetRepoDetachParams) (*RepoDetachState, error)
@@ -4066,9 +4066,9 @@ func (c *Client) sendDetachMyHandle(ctx context.Context, params DetachMyHandlePa
 
 // DetachRepo invokes detachRepo operation.
 //
-// Converts the sole placement of a GitHub mirror into a native repository of the target project.
-// Until general availability, a real detach admits only a platform admin acting with requestedBy;
-// every other caller can run the dry run. A dry run changes nothing and returns a snapshot: the
+// Converts the sole placement of a GitHub mirror into a native repository of the target project. The
+// checks apply to the caller. Only a platform admin with an undelegated credential may set
+// requestedBy to run them for another account. A dry run changes nothing and returns a snapshot: the
 // detach checks every precondition again. A real detach freezes writes, waits for the mirror to
 // match GitHub's refs, and rewires the repository. It answers complete, in_progress while the rewire
 // runs on, or stalled when the rewire stopped; the repository stays frozen until it finishes. An
@@ -5693,9 +5693,9 @@ func (c *Client) sendGetRepoCIDelivery(ctx context.Context, params GetRepoCIDeli
 // Reports whether a detach of the repository is recorded, in progress, stalled, or complete, and its
 // last finished step. Poll it after a detach answers in_progress or stalled: in_progress turns into
 // complete when step 9 finishes. A stalled detach with resumable true reads in_progress again once
-// the core's sweep resumes it. One with resumable false needs a platform admin to call the detach
-// with requestedBy. A requester who cannot see the repository gets 404. No other permission is
-// needed.
+// the core's sweep resumes it. The sweep skips one with resumable false; a call to the detach from
+// an admin of the repo's project or a platform admin resumes it. A requester who cannot see the
+// repository gets 404. No other permission is needed.
 //
 // GET /repos/{repoId}/detach
 func (c *Client) GetRepoDetach(ctx context.Context, params GetRepoDetachParams) (*RepoDetachState, error) {

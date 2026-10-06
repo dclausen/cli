@@ -6115,7 +6115,7 @@ type DetachRepoBody struct {
 	DryRun bool `json:"dryRun"`
 	// Native repository name. Defaults to the GitHub repository name.
 	Name OptString `json:"name"`
-	// Account the checks apply to. Only a platform admin may set it.
+	// Account the checks apply to. Defaults to the caller. Only a platform admin may set another account.
 	RequestedBy OptString `json:"requestedBy"`
 	// Project ID that owns the native repository after the detach.
 	TargetProject   string `json:"targetProject"`
@@ -19374,7 +19374,8 @@ type RepoDetachState struct {
 	// The gh/<owner>/<repo> addresses that answer moved.
 	ReleasedAddresses []string `json:"releasedAddresses"`
 	// True when the rewire stopped and the core's sweep resumes it after the step in step. False on a
-	// stalled detach that needs a platform admin to call the detach with requestedBy.
+	// stalled detach that needs a call to the detach from an admin of the repo's project or a platform
+	// admin.
 	Resumable bool `json:"resumable"`
 	// None: no detach is recorded. in_progress: the repository is native and frozen while the rewire
 	// runs. stalled: the rewire stopped and the repository stays frozen. complete: every step finished.
