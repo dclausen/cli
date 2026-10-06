@@ -93,7 +93,7 @@ func TestTrustGate(t *testing.T) {
 			wantErr:     errTrustRefused,
 			wantOut: []string{
 				"Not run: this review needs the user's approval.",
-				"would run 5 commands on this machine (" + command + " --show-config lists them)",
+				"the review agent would load its hooks, MCP servers and settings, running 5 commands on this machine (" + command + " --show-config lists them)",
 				"Do not approve on their behalf.",
 				"  " + command + " --trust-target " + trustTestHead,
 			},
@@ -203,18 +203,21 @@ func TestTrustConfirmText(t *testing.T) {
 		t.Errorf("header line = %q", lines[0])
 	}
 	// The branch's own entries fill the visible slots before Entire's hooks.
-	if !strings.Contains(lines[2], "npm test") || !strings.Contains(lines[3], "node tools/mcp.js") || !strings.Contains(lines[4], "env PATH") {
+	if !strings.Contains(lines[1], "The review agent loads this branch's hooks, MCP servers, settings and skills.") {
+		t.Errorf("missing what the review agent loads:\n%s", description)
+	}
+	if !strings.Contains(lines[3], "npm test") || !strings.Contains(lines[4], "node tools/mcp.js") || !strings.Contains(lines[5], "env PATH") {
 		t.Errorf("visible entries are not the branch's own first:\n%s", description)
 	}
-	if !strings.Contains(lines[5], "(+2 more: entire review --target 1449 --show-config)") {
-		t.Errorf("overflow line = %q", lines[5])
+	if !strings.Contains(lines[6], "(+2 more: entire review --target 1449 --show-config)") {
+		t.Errorf("overflow line = %q", lines[6])
 	}
 
 	hooksOnly := TrustInventory{Entries: []TrustEntry{{Kind: TrustKindHook, Name: "Stop", Command: "entire hooks claude-code stop", Entire: true}}}
 	if title, _ := trustConfirmText(subject, hooksOnly, "x"); title != "Run this branch's hooks during the review?" {
 		t.Errorf("hooks-only title = %q", title)
 	}
-	if title, body := trustConfirmText(subject, TrustInventory{}, "x"); title != "Review this branch?" || !strings.Contains(body, "Nothing from this branch runs on your machine") {
+	if title, body := trustConfirmText(subject, TrustInventory{}, "x"); title != "Review this branch?" || !strings.Contains(body, "nothing from it runs on your machine") {
 		t.Errorf("nothing title/body = %q / %q", title, body)
 	}
 }

@@ -330,7 +330,7 @@ func printTrustRefusal(errOut io.Writer, what, command, head string) {
 	if what == trustWhatNothing {
 		fmt.Fprintf(errOut, "The code is by someone else (%s --show-config shows what the review reads).\n", command)
 	} else {
-		fmt.Fprintf(errOut, "The code is by someone else, and the review would run %s on this machine (%s --show-config lists them).\n", what, command)
+		fmt.Fprintf(errOut, "The code is by someone else, and the review agent would load its hooks, MCP servers and settings, running %s on this machine (%s --show-config lists them).\n", what, command)
 	}
 	fmt.Fprintln(errOut, "Stop and show the user this message. Do not approve on their behalf.")
 	fmt.Fprintln(errOut, "Only after the user explicitly approves, run:")
@@ -355,14 +355,14 @@ func trustConfirmText(subject TrustSubject, inv TrustInventory, command string) 
 	switch {
 	case len(entries) == 0:
 		title = "Review this branch?"
-		b.WriteString("Nothing from this branch runs on your machine; the reviewer reads its code and instructions.")
+		b.WriteString("The review agent reads this branch's code and instructions; nothing from it runs on your machine.")
 		return title, b.String()
 	case inv.onlyEntireHooks():
 		title = "Run this branch's hooks during the review?"
-		b.WriteString("These hooks run on your machine during the review:\n")
+		b.WriteString("The review agent loads this branch's hooks. These run on your machine:\n")
 	default:
 		title = "Run this branch's commands during the review?"
-		b.WriteString("These run on your machine during the review:\n")
+		b.WriteString("The review agent loads this branch's hooks, MCP servers, settings and skills.\nThese run on your machine:\n")
 	}
 	for i, e := range entries {
 		if i == trustConfirmVisible {
