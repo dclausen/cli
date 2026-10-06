@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -495,7 +497,6 @@ func TestCheckpointSyncAllowedForRemote_SameForgeRepository(t *testing.T) {
 		{"mirror of a different repo", "entire://aws-eu-central-1.entire.io/gh/acme/gadgets"},
 		{"Entire-native repository", "entire://aws-eu-central-1.entire.io/et/acme/widgets"},
 		{"unknown host with the same path", "https://git.example.com/acme/widgets.git"},
-		{"SSH host alias", "git@github-work:acme/widgets.git"},
 	}
 	for _, tc := range rejected {
 		t.Run("rejected: "+tc.name, func(t *testing.T) {
@@ -551,6 +552,136 @@ func TestCheckpointSyncAllowedForRemote_SameForgeRepository(t *testing.T) {
 		setGitConfig(t, dir, "remote.github.pushurl", "git@github.com:other/widgets.git")
 		t.Chdir(dir)
 		assert.False(t, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+	})
+}
+
+// An SSH host alias (`Host github-work` / `HostName github.com`) reaches the
+// same repository as the plain GitHub URL, so it must match like one; an alias
+// for another host must not. ssh -G is faked so the developer's real
+// ~/.ssh/config cannot decide the outcome.
+//
+// Not parallel: uses t.Chdir() and InstallFakeSSH.
+func TestCheckpointSyncAllowedForRemote_SSHHostAlias(t *testing.T) {
+	testutil.IsolateGitConfigEnv(t)
+	testutil.InstallFakeSSH(t, map[string]string{
+		"github-work": "github.com",
+		"gitlab-work": "gitlab.example.com",
+	})
+	ctx := context.Background()
+
+	tests := []struct {
+		name, elected, push string
+		want                bool
+	}{
+		{"alias push to the elected GitHub repository", "git@github.com:acme/widgets.git", "git@github-work:acme/widgets.git", true},
+		{"elected alias, mirror push", "git@github-work:acme/widgets.git", "entire://aws-eu-central-1.entire.io/gh/acme/widgets", true},
+		{"alias to another host", "git@github.com:acme/widgets.git", "git@gitlab-work:acme/widgets.git", false},
+		{"alias to GitHub, different repository", "git@github.com:acme/widgets.git", "git@github-work:acme/gadgets.git", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			testutil.InitRepo(t, dir)
+			testutil.WriteFile(t, dir, "f.txt", "init")
+			testutil.GitAdd(t, dir, "f.txt")
+			testutil.GitCommit(t, dir, "init")
+			testutil.AddRemote(t, dir, "github", tc.elected)
+			testutil.AddRemote(t, dir, "origin", tc.push)
+			testutil.WriteCheckpointPushRemoteSetting(t, dir, "github")
+			t.Chdir(dir)
+			assert.Equal(t, tc.want, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+		})
+	}
+}
+
+// A push through the mirror lands in the elected repository, so the elected
+// remote's tracking ref must follow; otherwise `entire status` keeps counting
+// those checkpoints as unpushed and the next push to the elected remote
+// re-sends them.
+//
+// Not parallel: uses t.Chdir()
+func TestAdvanceSyncRemoteTrackingRef(t *testing.T) {
+	testutil.IsolateGitConfigEnv(t)
+	ctx := context.Background()
+	v1 := plumbing.NewBranchReferenceName(paths.MetadataBranchName)
+	pushedRef := "refs/remotes/origin/" + paths.MetadataBranchName
+	electedRef := "refs/remotes/github/" + paths.MetadataBranchName
+
+	// initRepo returns a repo whose elected "github" remote and "origin" push
+	// remote use originURL, plus two commits: older is an ancestor of newer.
+	initRepo := func(t *testing.T, originURL string) (dir, older, newer string) {
+		t.Helper()
+		dir = t.TempDir()
+		testutil.InitRepo(t, dir)
+		testutil.WriteFile(t, dir, "f.txt", "one")
+		testutil.GitAdd(t, dir, "f.txt")
+		testutil.GitCommit(t, dir, "one")
+		older = testutil.GetHeadHash(t, dir)
+		testutil.WriteFile(t, dir, "f.txt", "two")
+		testutil.GitAdd(t, dir, "f.txt")
+		testutil.GitCommit(t, dir, "two")
+		newer = testutil.GetHeadHash(t, dir)
+		testutil.AddRemote(t, dir, "github", "git@github.com:acme/widgets.git")
+		testutil.AddRemote(t, dir, "origin", originURL)
+		testutil.WriteCheckpointPushRemoteSetting(t, dir, "github")
+		testutil.RunGit(t, dir, "update-ref", pushedRef, newer)
+		return dir, older, newer
+	}
+	resolve := func(t *testing.T, dir, ref string) string {
+		t.Helper()
+		out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref).Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	}
+	const mirrorURL = "entire://aws-eu-central-1.entire.io/gh/acme/widgets"
+
+	t.Run("fast-forwards a stale elected tracking ref", func(t *testing.T) {
+		dir, older, newer := initRepo(t, mirrorURL)
+		testutil.RunGit(t, dir, "update-ref", electedRef, older)
+		t.Chdir(dir)
+		advanceSyncRemoteTrackingRef(ctx, "origin", v1)
+		assert.Equal(t, newer, resolve(t, dir, electedRef))
+	})
+
+	t.Run("creates an absent elected tracking ref", func(t *testing.T) {
+		dir, _, newer := initRepo(t, mirrorURL)
+		t.Chdir(dir)
+		advanceSyncRemoteTrackingRef(ctx, "origin", v1)
+		assert.Equal(t, newer, resolve(t, dir, electedRef))
+	})
+
+	t.Run("leaves a non-fast-forward alone", func(t *testing.T) {
+		dir, older, newer := initRepo(t, mirrorURL)
+		// The elected ref is ahead of what the push recorded.
+		testutil.RunGit(t, dir, "update-ref", electedRef, newer)
+		testutil.RunGit(t, dir, "update-ref", pushedRef, older)
+		t.Chdir(dir)
+		advanceSyncRemoteTrackingRef(ctx, "origin", v1)
+		assert.Equal(t, newer, resolve(t, dir, electedRef))
+	})
+
+	t.Run("leaves another repository's tracking ref alone", func(t *testing.T) {
+		dir, older, _ := initRepo(t, "entire://aws-eu-central-1.entire.io/gh/acme/gadgets")
+		testutil.RunGit(t, dir, "update-ref", electedRef, older)
+		t.Chdir(dir)
+		advanceSyncRemoteTrackingRef(ctx, "origin", v1)
+		assert.Equal(t, older, resolve(t, dir, electedRef))
+	})
+
+	t.Run("status count drops to zero after the advance", func(t *testing.T) {
+		dir, older, newer := initRepo(t, mirrorURL)
+		testutil.RunGit(t, dir, "update-ref", v1.String(), newer)
+		testutil.RunGit(t, dir, "update-ref", electedRef, older)
+		t.Chdir(dir)
+		before, err := CountUnpushedCheckpoints(ctx, "github")
+		require.NoError(t, err)
+		require.Equal(t, 1, before)
+		advanceSyncRemoteTrackingRef(ctx, "origin", v1)
+		after, err := CountUnpushedCheckpoints(ctx, "github")
+		require.NoError(t, err)
+		assert.Zero(t, after)
 	})
 }
 
