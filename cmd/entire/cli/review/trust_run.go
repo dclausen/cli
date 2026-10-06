@@ -22,6 +22,11 @@ func registerTrustFlags(cmd *cobra.Command, trustTarget *string, showConfig, sho
 	cmd.Flags().StringVar(trustTarget, "trust-target", "", "approve reviewing code by someone else at this commit SHA (the review loads the checkout's hooks, MCP servers, and settings)")
 	cmd.Flags().BoolVar(showConfig, "show-config", false, "list what the review would run (hooks, MCP servers, settings) and exit without running it")
 	cmd.Flags().BoolVar(showConfigJSON, "json", false, "with --show-config: print JSON")
+	// Validate before any mode dispatch, so --list --json or --configure with
+	// a malformed --trust-target fail instead of silently ignoring the flag.
+	cmd.PreRunE = func(*cobra.Command, []string) error {
+		return reviewGateOptions{TrustTarget: *trustTarget, ShowConfig: *showConfig, ShowConfigJSON: *showConfigJSON}.validate()
+	}
 }
 
 // validate rejects malformed gate flags before any work starts.

@@ -213,3 +213,18 @@ func TestRunReview_BaseAtHeadDoesNotSkipGate(t *testing.T) {
 		t.Fatalf("--base at head skipped the gate (err=%v, called=%v)", err, reviewer.called)
 	}
 }
+
+// Gate flags are validated before any mode runs, so they are never silently
+// ignored by --list, --configure, and the other modes.
+func TestRunReview_GateFlagsValidatedForEveryMode(t *testing.T) {
+	_, deps, _ := setupForeignBranchRepo(t)
+	for _, args := range [][]string{{"--list", "--json"}, {"--list", "--trust-target", "abc"}} {
+		cmd := review.NewCommand(deps)
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Errorf("review %v succeeded; want a flag error", args)
+		}
+	}
+}

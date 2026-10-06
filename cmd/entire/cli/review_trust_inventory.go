@@ -16,6 +16,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -62,6 +63,19 @@ const (
 	// trustHooksKey is the settings key holding Claude Code hooks.
 	trustHooksKey = "hooks"
 )
+
+// Inspection runs on the branch's data before the user approves anything, so
+// it is bounded: a larger config file is reported as unknown rather than read,
+// a directory lists at most trustMaxItems items, and a tree with more than
+// trustMaxTreeEntries configuration entries fails the inspection (closed).
+const (
+	trustMaxFileBytes   = 1 << 20
+	trustMaxItems       = 100
+	trustMaxTreeEntries = 20000
+)
+
+// errTrustTooLarge reports a file over trustMaxFileBytes.
+var errTrustTooLarge = errors.New("too large to inspect")
 
 // trustRoots are the only paths the inventory reads.
 var trustRoots = []string{".claude", ".codex", ".pi", ".agents", ".mcp.json", trustClaudeMD, "CLAUDE.local.md", trustAgentsMD, "AGENTS.override.md"}
@@ -137,6 +151,9 @@ func readTrustFile(files trustFiles, agentName, rel string) (data []byte, entrie
 		return nil, nil, false, nil
 	case trustPathFile:
 		data, err := files.read(rel)
+		if errors.Is(err, errTrustTooLarge) {
+			return nil, []cliReview.TrustEntry{unknownTrustEntry(agentName, rel, errTrustTooLarge.Error())}, false, nil
+		}
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -344,6 +361,10 @@ func instructionDirEntries(files trustFiles, agentName string, dirs []string) []
 				continue
 			}
 			seen[item] = true
+			if len(seen) > trustMaxItems {
+				out = append(out, unknownTrustEntry(agentName, dir, fmt.Sprintf("more than %d items; not all listed", trustMaxItems)))
+				break
+			}
 			out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindSkill, Name: item, Command: dir + "/" + item, Source: dir})
 		}
 	}
@@ -457,10 +478,10 @@ func piTrustEntries(files trustFiles) ([]cliReview.TrustEntry, error) {
 		entire := false
 		if rel == pi.ExtensionRelPath {
 			data, err := files.read(rel)
-			if err != nil {
+			if err != nil && !errors.Is(err, errTrustTooLarge) {
 				return nil, err
 			}
-			entire = pi.IsEntireExtension(data)
+			entire = err == nil && pi.IsEntireExtension(data)
 		}
 		out = append(out, cliReview.TrustEntry{Agent: agentName, Kind: cliReview.TrustKindExtension, Name: path.Base(path.Dir(rel)), Command: rel, Source: rel, Entire: entire})
 	}
@@ -503,6 +524,7 @@ type gitTrustTree struct {
 type gitTrustTreeEntry struct {
 	mode    string
 	oid     string
+	size    int64
 	collide bool
 }
 
@@ -530,10 +552,13 @@ func loadGitTrustTree(ctx context.Context, repoRoot, commit string) (*gitTrustTr
 	if len(roots) == 0 {
 		return tree, nil
 	}
-	args := append([]string{"ls-tree", "-r", "-t", "-z", "--full-tree", "--end-of-options", commit, "--"}, roots...)
+	args := append([]string{"ls-tree", "-r", "-t", "-l", "-z", "--full-tree", "--end-of-options", commit, "--"}, roots...)
 	records, err := lsTreeRecords(ctx, repoRoot, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list configuration at %s: %w", commit, err)
+	}
+	if len(records) > trustMaxTreeEntries {
+		return nil, fmt.Errorf("more than %d configuration entries at %s", trustMaxTreeEntries, commit)
 	}
 	for _, rec := range records {
 		key := strings.ToLower(rec.name)
@@ -541,13 +566,15 @@ func loadGitTrustTree(ctx context.Context, repoRoot, commit string) (*gitTrustTr
 			tree.entries[key] = gitTrustTreeEntry{mode: gitModeSymlink, collide: true}
 			continue
 		}
-		tree.entries[key] = gitTrustTreeEntry{mode: rec.mode, oid: rec.oid}
+		tree.entries[key] = gitTrustTreeEntry{mode: rec.mode, oid: rec.oid, size: rec.size}
 	}
 	return tree, nil
 }
 
 type lsTreeRecord struct {
 	mode, oid, name string
+	// size is set by `ls-tree -l`; -1 for trees and when not requested.
+	size int64
 }
 
 func lsTreeRecords(ctx context.Context, repoRoot string, args ...string) ([]lsTreeRecord, error) {
@@ -562,10 +589,18 @@ func lsTreeRecords(ctx context.Context, repoRoot string, args ...string) ([]lsTr
 		}
 		meta, name, found := strings.Cut(record, "\t")
 		fields := strings.Fields(meta)
-		if !found || len(fields) != 3 {
+		if !found || (len(fields) != 3 && len(fields) != 4) {
 			return nil, fmt.Errorf("unexpected git ls-tree output %q", record)
 		}
-		records = append(records, lsTreeRecord{mode: fields[0], oid: fields[2], name: name})
+		size := int64(-1)
+		if len(fields) == 4 && fields[3] != "-" {
+			n, err := strconv.ParseInt(fields[3], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("unexpected git ls-tree size %q", record)
+			}
+			size = n
+		}
+		records = append(records, lsTreeRecord{mode: fields[0], oid: fields[2], name: name, size: size})
 	}
 	return records, nil
 }
@@ -593,6 +628,9 @@ func (t *gitTrustTree) read(rel string) ([]byte, error) {
 	entry, ok := t.entries[strings.ToLower(rel)]
 	if !ok || entry.collide {
 		return nil, fmt.Errorf("%s is not readable in the tree", rel)
+	}
+	if entry.size > trustMaxFileBytes {
+		return nil, errTrustTooLarge
 	}
 	out, err := gitexec.Run(t.ctx, t.repoRoot, "cat-file", "blob", entry.oid)
 	if err != nil {
@@ -659,6 +697,9 @@ func (d diskTrustFiles) kind(rel string) (trustPathKind, error) {
 }
 
 func (d diskTrustFiles) read(rel string) ([]byte, error) {
+	if info, err := d.root.Lstat(rel); err == nil && info.Size() > trustMaxFileBytes {
+		return nil, errTrustTooLarge
+	}
 	data, err := d.root.ReadFile(rel)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", rel, err)

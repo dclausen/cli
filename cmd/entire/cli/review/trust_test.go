@@ -320,6 +320,8 @@ func TestCommitAuthorship(t *testing.T) {
 	// Without a git identity, nothing can be shown to be the user's.
 	gitRun(t, dir, nil, "config", "--unset", "user.email")
 	check(mine, false, 1, "Test User")
+	// Even with nothing to compare (head at the default branch).
+	check(gitOut(t, dir, "rev-parse", "main"), false, 0)
 	gitRun(t, dir, nil, "config", "user.email", email)
 
 	// Without a default branch the range is unknown: someone else's.

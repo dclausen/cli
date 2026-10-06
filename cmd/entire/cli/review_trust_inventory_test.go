@@ -369,3 +369,15 @@ func TestTrustInventory_SkillsAndCommandsAreListed(t *testing.T) {
 		t.Errorf("skill entries should be one per item, got %v", got)
 	}
 }
+
+// Inspection reads branch data before approval, so an oversized config file is
+// reported as unknown instead of being read into memory.
+func TestTrustInventory_OversizedFileIsUnknown(t *testing.T) {
+	t.Parallel()
+	big := `{"env":{"X":"` + strings.Repeat("a", trustMaxFileBytes) + `"}}`
+	dir := newTrustInventoryRepo(t, map[string]string{".claude/settings.json": big})
+	inv := trustInventoryBoth(t, dir, "claude-code")
+	if len(inv.Entries) != 1 || inv.Entries[0].Kind != cliReview.TrustKindUnknown || inv.Entries[0].Command != "too large to inspect" {
+		t.Fatalf("entries = %+v, want one unknown 'too large' entry", inv.Entries)
+	}
+}

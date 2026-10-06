@@ -464,7 +464,9 @@ func addPinnedReviewWorktree(ctx context.Context, root, worktreePath, branch str
 		return fmt.Errorf("failed to create worktree: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	removeWorktree := func() {
-		remove := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", "--", worktreePath)
+		// Not ctx: a cancelled operation must still remove the half-made
+		// worktree, or a retry would reuse it without the pin check.
+		remove := exec.CommandContext(context.WithoutCancel(ctx), "git", "worktree", "remove", "--force", "--", worktreePath)
 		remove.Dir = root
 		_ = remove.Run() //nolint:errcheck // best effort; the caller reports the original failure
 	}

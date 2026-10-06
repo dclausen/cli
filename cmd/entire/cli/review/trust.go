@@ -28,6 +28,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 // Trust entry kinds, as shown in the warning and in --show-config.
@@ -178,7 +179,7 @@ func commitAuthorship(ctx context.Context, repoRoot, head string) (TrustSubject,
 		// user without an identity, which fails closed below.
 		email = ""
 	}
-	base, err := defaultBranchCommit(ctx, repoRoot)
+	base, err := defaultBranchCommit(repoRoot)
 	if err != nil {
 		logging.Debug(ctx, "review trust: default branch unknown, treating commits as someone else's", slog.String("error", err.Error()))
 		subject.Commits = -1
@@ -220,28 +221,30 @@ func commitAuthorship(ctx context.Context, repoRoot, head string) (TrustSubject,
 			subject.Authors = append(subject.Authors, name)
 		}
 	}
-	subject.Yours = yours
+	// Without an identity nothing is shown to be the user's, even an empty
+	// range: the gate must not depend on whether there is anything to compare.
+	subject.Yours = yours && email != ""
 	return subject, nil
 }
 
 // defaultBranchCommit resolves the user's default branch (origin/HEAD, then
 // origin/main, origin/master, main, master) to a commit. It never uses --base
 // or a trail's base, which the branch's author can steer.
-func defaultBranchCommit(ctx context.Context, repoRoot string) (string, error) {
+func defaultBranchCommit(repoRoot string) (string, error) {
 	repo, err := gitrepo.OpenPath(repoRoot)
 	if err != nil {
 		return "", fmt.Errorf("open repository: %w", err)
 	}
+	defer repo.Close()
 	ref, err := fallbackScopeRef(repo)
-	_ = repo.Close()
 	if err != nil {
 		return "", fmt.Errorf("find the default branch: %w", err)
 	}
-	out, err := gitexec.Run(ctx, repoRoot, "rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
+	hash, err := repo.ResolveRevision(plumbing.Revision(ref))
 	if err != nil {
 		return "", fmt.Errorf("resolve default branch %s: %w", ref, err)
 	}
-	return strings.TrimSpace(out), nil
+	return hash.String(), nil
 }
 
 // trustTargetPattern accepts a full commit SHA (SHA-1 or SHA-256). A short
@@ -253,7 +256,7 @@ func validateTrustTarget(value string) error {
 	if value == "" || trustTargetPattern.MatchString(value) {
 		return nil
 	}
-	return errors.New("--trust-target takes the full commit SHA that the approval message printed (40 hex characters)")
+	return errors.New("--trust-target takes the full commit SHA that the approval message printed (40 or 64 hex characters)")
 }
 
 func trustTargetMatches(value, head string) bool {
