@@ -18,6 +18,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/format/gitignore"
 
 	"github.com/entireio/cli/cmd/entire/cli/checkpoint/remote"
+	"github.com/entireio/cli/cmd/entire/cli/gitexec"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/jsonutil"
 	"github.com/entireio/cli/cmd/entire/cli/osroot"
@@ -334,7 +335,7 @@ func checkoutTrailWorktree(ctx context.Context, w, errW io.Writer, branch string
 	if trailNumber <= 0 {
 		return fmt.Errorf("trail for branch %q has no number yet; cannot check out into a worktree", branch)
 	}
-	_, err := checkoutManagedBranchWorktree(ctx, w, errW, branch, force, false, func(root string) string {
+	_, err := checkoutManagedBranchWorktree(ctx, w, errW, branch, force, false, nil, func(root string) string {
 		return defaultTrailWorktreePath(root, branch, trailNumber)
 	})
 	return err
@@ -343,10 +344,23 @@ func checkoutTrailWorktree(ctx context.Context, w, errW io.Writer, branch string
 // checkoutReviewWorktree returns a worktree containing branch. Unlike trail
 // checkout, review can use a branch with no trail and can run in an existing
 // worktree outside Entire's managed directory.
-func checkoutReviewWorktree(ctx context.Context, w, errW io.Writer, branch string) (string, error) {
-	return checkoutManagedBranchWorktree(ctx, w, errW, branch, false, true, func(root string) string {
+//
+// A new worktree is added without a checkout, its HEAD verified against pin
+// (the commit the trust gate inspected), and only then populated. untrusted
+// is set when the branch has commits by someone else: the checkout then runs
+// with no git hooks, no LFS smudge (a branch .lfsconfig could point LFS at its
+// own server), and no submodule recursion, and .worktreeinclude files are not
+// copied in.
+func checkoutReviewWorktree(ctx context.Context, w, errW io.Writer, branch, pin string, untrusted bool) (string, error) {
+	return checkoutManagedBranchWorktree(ctx, w, errW, branch, false, true, &reviewCheckout{pin: pin, untrusted: untrusted}, func(root string) string {
 		return defaultReviewWorktreePath(root, branch)
 	})
+}
+
+// reviewCheckout configures a review worktree add; nil means a trail checkout.
+type reviewCheckout struct {
+	pin       string
+	untrusted bool
 }
 
 func checkoutManagedBranchWorktree(
@@ -354,6 +368,7 @@ func checkoutManagedBranchWorktree(
 	w, errW io.Writer,
 	branch string,
 	force, reuseExternal bool,
+	review *reviewCheckout,
 	worktreePathForRoot func(string) string,
 ) (string, error) {
 	if err := ValidateBranchName(ctx, branch); err != nil {
@@ -411,16 +426,68 @@ func checkoutManagedBranchWorktree(
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o750); err != nil {
 		return "", fmt.Errorf("failed to create worktree parent: %w", err)
 	}
-	add := exec.CommandContext(ctx, "git", "worktree", "add", worktreePath, branch)
-	add.Dir = root
-	if output, err := add.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("failed to create worktree: %s: %w", strings.TrimSpace(string(output)), err)
+	if review != nil {
+		if err := addPinnedReviewWorktree(ctx, root, worktreePath, branch, *review); err != nil {
+			return "", err
+		}
+	} else {
+		add := exec.CommandContext(ctx, "git", "worktree", "add", worktreePath, branch)
+		add.Dir = root
+		if output, err := add.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to create worktree: %s: %w", strings.TrimSpace(string(output)), err)
+		}
 	}
-	if err := copyWorktreeIncludeFiles(ctx, errW, root, worktreePath); err != nil {
-		fmt.Fprintf(errW, "warning: could not copy %s files: %v\n", worktreeIncludeFile, err)
+	if review == nil || !review.untrusted {
+		if err := copyWorktreeIncludeFiles(ctx, errW, root, worktreePath); err != nil {
+			fmt.Fprintf(errW, "warning: could not copy %s files: %v\n", worktreeIncludeFile, err)
+		}
 	}
 	printTrailWorktreeLocation(w, errW, "Worktree ready at "+worktreePath, worktreePath)
 	return worktreePath, nil
+}
+
+// addPinnedReviewWorktree adds worktreePath for branch without checking files
+// out, aborts if the branch no longer points at review.pin, and then checks
+// the files out. Nothing from the branch is written to disk, and no hook runs,
+// until the commit is known to be the one the trust gate inspected.
+func addPinnedReviewWorktree(ctx context.Context, root, worktreePath, branch string, review reviewCheckout) error {
+	hooksDir, err := os.MkdirTemp("", "entire-review-no-hooks-")
+	if err != nil {
+		return fmt.Errorf("create empty hooks directory: %w", err)
+	}
+	defer os.RemoveAll(hooksDir)
+
+	add := exec.CommandContext(ctx, "git", "-c", "core.hooksPath="+hooksDir,
+		"worktree", "add", "--no-checkout", worktreePath, branch)
+	add.Dir = root
+	if output, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to create worktree: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	removeWorktree := func() {
+		remove := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", "--", worktreePath)
+		remove.Dir = root
+		_ = remove.Run() //nolint:errcheck // best effort; the caller reports the original failure
+	}
+	head, err := gitexec.HeadSHA(ctx, worktreePath)
+	if err != nil || !strings.EqualFold(head, review.pin) {
+		removeWorktree()
+		return fmt.Errorf("branch %q moved to a different commit before it was checked out; run the review again", branch)
+	}
+
+	args := []string{"checkout", "-f", "HEAD"}
+	if review.untrusted {
+		args = append([]string{"-c", "core.hooksPath=" + hooksDir, "-c", "submodule.recurse=false"}, args...)
+	}
+	checkout := exec.CommandContext(ctx, "git", args...)
+	checkout.Dir = worktreePath
+	if review.untrusted {
+		checkout.Env = append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
+	}
+	if output, err := checkout.CombinedOutput(); err != nil {
+		removeWorktree()
+		return fmt.Errorf("failed to check out worktree: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
 }
 
 // printTrailWorktreeLocation reports where the worktree lives. On a terminal

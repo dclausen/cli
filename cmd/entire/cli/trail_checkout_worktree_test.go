@@ -457,7 +457,7 @@ func TestCheckoutReviewWorktree_CreatesWorktreeWithoutTrail(t *testing.T) {
 	t.Chdir(repoDir)
 
 	var out, errOut bytes.Buffer
-	worktreePath, err := checkoutReviewWorktree(context.Background(), &out, &errOut, "feature/review")
+	worktreePath, err := checkoutReviewWorktree(context.Background(), &out, &errOut, "feature/review", branchHeadForTest(t, "feature/review"), false)
 	if err != nil {
 		t.Fatalf("checkoutReviewWorktree: %v; stderr: %s", err, errOut.String())
 	}
@@ -483,7 +483,7 @@ func TestRemoveReviewTargetKeepsDirtyWorktree(t *testing.T) {
 	runGit(t, repoDir, "branch", "feature/dirty-review")
 	t.Chdir(repoDir)
 
-	worktreePath, err := checkoutReviewWorktree(context.Background(), io.Discard, io.Discard, "feature/dirty-review")
+	worktreePath, err := checkoutReviewWorktree(context.Background(), io.Discard, io.Discard, "feature/dirty-review", branchHeadForTest(t, "feature/dirty-review"), false)
 	if err != nil {
 		t.Fatalf("checkoutReviewWorktree: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestCheckoutReviewWorktreeRejectsStaleExternalWorktree(t *testing.T) {
 	}
 	t.Chdir(repoDir)
 
-	_, err := checkoutReviewWorktree(context.Background(), io.Discard, io.Discard, "feature/stale-external")
+	_, err := checkoutReviewWorktree(context.Background(), io.Discard, io.Discard, "feature/stale-external", branchHeadForTest(t, "feature/stale-external"), false)
 	if err == nil || !strings.Contains(err.Error(), "git worktree prune") {
 		t.Fatalf("checkoutReviewWorktree error = %v, want stale worktree error", err)
 	}
@@ -766,5 +766,31 @@ func TestCheckoutTrailWorktree_UnknownBranch(t *testing.T) {
 	err := checkoutTrailWorktree(context.Background(), &out, &errOut, "feature/nope", false, 3)
 	if err == nil || !strings.Contains(err.Error(), "not found locally or on origin") {
 		t.Fatalf("error = %v, want branch-not-found", err)
+	}
+}
+
+func branchHeadForTest(t *testing.T, branch string) string {
+	t.Helper()
+	return gitOutputInDir(t, ".", "rev-parse", "refs/heads/"+branch)
+}
+
+// A branch that moved after the trust gate pinned it must not be checked out:
+// the add stops before any file is written and the worktree is removed.
+func TestCheckoutReviewWorktreeRejectsMovedBranch(t *testing.T) {
+	repoDir := newTrailWorktreeTestRepo(t)
+	runGit(t, repoDir, "branch", "feature/moved")
+	t.Chdir(repoDir)
+	pinned := branchHeadForTest(t, "feature/moved")
+	testutil.WriteFile(t, repoDir, "new.txt", "x")
+	testutil.GitAdd(t, repoDir, "new.txt")
+	testutil.GitCommit(t, repoDir, "move main")
+	runGit(t, repoDir, "branch", "-f", "feature/moved", "HEAD")
+
+	_, err := checkoutReviewWorktree(context.Background(), io.Discard, io.Discard, "feature/moved", pinned, true)
+	if err == nil || !strings.Contains(err.Error(), "moved to a different commit") {
+		t.Fatalf("checkoutReviewWorktree error = %v, want moved-branch error", err)
+	}
+	if _, err := os.Stat(defaultReviewWorktreePath(repoDir, "feature/moved")); !os.IsNotExist(err) {
+		t.Fatalf("worktree for a moved branch was left behind (stat err %v)", err)
 	}
 }

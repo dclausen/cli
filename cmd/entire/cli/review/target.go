@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitexec"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -26,40 +28,159 @@ type TargetWorktree struct {
 	Created bool
 }
 
+// ResolvedTarget is a review target resolved to a local branch whose head is
+// pinned before anything is checked out.
+type ResolvedTarget struct {
+	Branch  string
+	HeadSHA string
+	// ExistingWorktree is the worktree the branch is already checked out in,
+	// or "" when the review will create one.
+	ExistingWorktree string
+}
+
+// ErrTargetCancelled is returned by ResolveTarget when the user declines a
+// prompt while the target is resolved (for example, fetching the branch).
+var ErrTargetCancelled = errors.New("review target cancelled")
+
 type reviewWorktreeRunner func(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error
 
-func runTargetReview(ctx context.Context, cmd *cobra.Command, target string, childArgs []string, cleanupWorktree, modeSelected bool, deps Deps) error {
-	if modeSelected {
+// targetReviewRequest carries the --target invocation.
+type targetReviewRequest struct {
+	Target          string
+	Positional      []string
+	ProfileOverride string
+	CleanupWorktree bool
+	ShowConfig      bool
+	ShowConfigJSON  bool
+	// ModeSelected is set when a non-run mode (--configure, --list, ...) was
+	// also passed; --target only applies to running a review.
+	ModeSelected bool
+	Gate         reviewGateOptions
+}
+
+func runTargetReview(ctx context.Context, cmd *cobra.Command, req targetReviewRequest, deps Deps) error {
+	if req.ModeSelected {
 		return errors.New("--target can only be used when running a review")
 	}
-	if deps.PrepareTarget == nil {
+	if err := req.Gate.validate(); err != nil {
+		return err
+	}
+	if deps.ResolveTarget == nil || deps.CheckoutTarget == nil {
 		return errors.New("review target checkout is unavailable")
 	}
 	callerWorktree, err := paths.WorktreeRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve caller worktree: %w", err)
 	}
-	prepared, err := deps.PrepareTarget(ctx, cmd.OutOrStdout(), cmd.ErrOrStderr(), target)
+	errOut := cmd.ErrOrStderr()
+
+	profileName := req.ProfileOverride
+	if len(req.Positional) == 1 {
+		profileName = req.Positional[0]
+	}
+	var agents []string
+	forwardProfile := ""
+	if req.ShowConfig {
+		agents = showConfigAgents(ctx, profileName, req.Gate.AgentOverride)
+	} else {
+		// Resolve the profile here, in the user's checkout, so first-run setup
+		// and the chooser never run inside (or save into) the branch's worktree,
+		// and so the gate knows which agents' configuration to inspect.
+		selection, selErr := resolveReviewProfile(ctx, cmd, profileName, deps)
+		if selErr != nil || selection.done {
+			return selErr
+		}
+		agents = profileAgentNames(selection.profile, req.Gate.AgentOverride)
+		if profileName == "" {
+			forwardProfile = selection.name
+		}
+	}
+
+	resolved, err := deps.ResolveTarget(ctx, cmd.OutOrStdout(), errOut, req.Target)
+	if errors.Is(err, ErrTargetCancelled) {
+		fmt.Fprintln(errOut, "Review cancelled. Nothing was checked out or run.")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+
+	source := TrustSource{RepoRoot: callerWorktree, Commit: resolved.HeadSHA}
+	if resolved.ExistingWorktree != "" {
+		// A reused worktree runs what is on its disk, including uncommitted and
+		// ignored files, so inspect that rather than the commit.
+		worktreeHead, headErr := gitexec.HeadSHA(ctx, resolved.ExistingWorktree)
+		if headErr != nil || worktreeHead != resolved.HeadSHA {
+			cmd.SilenceUsage = true
+			fmt.Fprintf(errOut, "Not run: the worktree for %s at %s is not at %s.\n",
+				sanitizeDisplay(req.Target), resolved.ExistingWorktree, shortSHA(resolved.HeadSHA))
+			return wrapReviewSilentError(deps.NewSilentError, errors.New("reused worktree out of sync"))
+		}
+		source = TrustSource{WorktreeRoot: resolved.ExistingWorktree}
+	}
+	subject, inv, err := inspectReview(ctx, callerWorktree, resolved.HeadSHA, source, agents, req.ShowConfig, deps)
+	if err != nil {
+		return trustInspectionFailed(cmd, deps, err)
+	}
+	subject.Label = req.Target
+	subject.Branch = resolved.Branch
+
+	if req.ShowConfig {
+		return printTrustConfig(cmd.OutOrStdout(), subject, inv, req.ShowConfigJSON)
+	}
+	if err := runTrustGate(ctx, cmd, req.Gate, subject, inv, deps); err != nil {
+		if errors.Is(err, errTrustCancelled) {
+			return nil
+		}
+		return err
+	}
+
+	prepared, err := deps.CheckoutTarget(ctx, cmd.OutOrStdout(), errOut, resolved, !subject.Yours)
+	if err != nil {
+		return err
+	}
+	// The branch could have moved between the gate and the checkout. Nothing
+	// has run in the worktree yet, so a mismatch is caught before it matters.
+	if checkedOut, headErr := gitexec.HeadSHA(ctx, prepared.Path); headErr != nil || checkedOut != resolved.HeadSHA {
+		if prepared.Created && deps.RemoveTarget != nil {
+			_ = deps.RemoveTarget(ctx, prepared.Path) //nolint:errcheck // best effort; the abort below is what matters
+		}
+		cmd.SilenceUsage = true
+		fmt.Fprintf(errOut, "Not run: %s moved to a different commit while it was being checked out. Run the review again.\n", sanitizeDisplay(req.Target))
+		return wrapReviewSilentError(deps.NewSilentError, errors.New("review target moved"))
+	}
+
 	env := []string{envReviewFindingsWorktree + "=" + callerWorktree}
-	if err := runReviewInWorktree(ctx, deps.RunInWorktree, prepared.Path, childArgs, env, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+	childArgs := reviewTargetChildArgs(cmd, req.Positional, resolved.HeadSHA, forwardProfile)
+	if err := runReviewInWorktree(ctx, deps.RunInWorktree, prepared.Path, childArgs, env, cmd.InOrStdin(), cmd.OutOrStdout(), errOut); err != nil {
 		return wrapReviewSilentError(deps.NewSilentError, err)
 	}
-	return finishTargetReview(ctx, cmd, prepared, cleanupWorktree, deps.RemoveTarget)
+	return finishTargetReview(ctx, cmd, prepared, req.CleanupWorktree, deps.RemoveTarget)
 }
 
-func reviewTargetChildArgs(cmd *cobra.Command, positional []string) []string {
-	args := make([]string, 0, len(positional)+cmd.Flags().NFlag()+1)
+// reviewTargetChildFlagsDropped are handled by the parent and never reach
+// the re-run inside the worktree.
+var reviewTargetChildFlagsDropped = []string{"target", "cleanup-worktree", "show-config", "json", "trust-target"}
+
+// reviewTargetChildArgs builds the re-run's arguments. The parent forwards the
+// pinned head as --trust-target so the child skips the gate it already passed,
+// and the profile it chose, so the child never prompts for one.
+func reviewTargetChildArgs(cmd *cobra.Command, positional []string, headSHA, profile string) []string {
+	args := make([]string, 0, len(positional)+cmd.Flags().NFlag()+3)
 	args = append(args, "review")
 	args = append(args, positional...)
 	cmd.Flags().Visit(func(flag *pflag.Flag) {
-		if flag.Name == "target" || flag.Name == "cleanup-worktree" {
+		if slices.Contains(reviewTargetChildFlagsDropped, flag.Name) {
 			return
 		}
 		args = append(args, "--"+flag.Name+"="+flag.Value.String())
 	})
+	if profile != "" {
+		args = append(args, "--profile="+profile)
+	}
+	if headSHA != "" {
+		args = append(args, "--trust-target="+headSHA)
+	}
 	return args
 }
 

@@ -1,0 +1,408 @@
+package review
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"charm.land/huh/v2"
+	"github.com/spf13/cobra"
+
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
+)
+
+const trustTestHead = "9bd5931e1a2b3c4d5e6f708192a3b4c5d6e7f809"
+
+func trustTestInventory() TrustInventory {
+	return TrustInventory{Entries: []TrustEntry{
+		{Agent: "claude-code", Kind: TrustKindHook, Name: "SessionStart", Command: "entire hooks claude-code session-start", Source: ".claude/settings.json", Entire: true},
+		{Agent: "claude-code", Kind: TrustKindHook, Name: "Stop", Command: "npm test", Source: ".claude/settings.json"},
+		{Agent: "claude-code", Kind: TrustKindMCP, Name: "docs", Command: "node tools/mcp.js", Source: ".mcp.json"},
+		{Agent: "claude-code", Kind: TrustKindHook, Name: "Stop", Command: "entire hooks claude-code stop", Source: ".claude/settings.json", Entire: true},
+		{Agent: "claude-code", Kind: TrustKindSetting, Name: "env PATH", Command: `"./bin"`, Source: ".claude/settings.json"},
+	}}
+}
+
+func foreignSubject() TrustSubject {
+	return TrustSubject{Label: "1449", Branch: "fix/summary", HeadSHA: trustTestHead, Commits: 7, Authors: []string{"alice"}}
+}
+
+func TestTrustGate(t *testing.T) {
+	t.Parallel()
+
+	const command = "entire review --target 1449"
+	tests := []struct {
+		name        string
+		subject     TrustSubject
+		trust       string
+		interactive bool
+		agentCaller string
+		confirm     func() (bool, error)
+		wantErr     error
+		wantOut     []string
+		wantNotOut  []string
+		wantConfirm bool
+	}{
+		{
+			name:       "own commits run silently",
+			subject:    TrustSubject{HeadSHA: trustTestHead, Yours: true},
+			wantNotOut: []string{"Not run", "Running"},
+		},
+		{
+			name:    "own commits with trust-target notes it is not needed",
+			subject: TrustSubject{HeadSHA: trustTestHead, Yours: true},
+			trust:   trustTestHead,
+			wantOut: []string{"--trust-target not needed: every commit under review is yours."},
+		},
+		{
+			name:    "matching trust-target runs",
+			subject: foreignSubject(),
+			trust:   trustTestHead,
+			wantOut: []string{"Running the review of 9bd5931e1a2b as approved (5 commands)."},
+		},
+		{
+			name:        "matching trust-target from an agent runs",
+			subject:     foreignSubject(),
+			trust:       strings.ToUpper(trustTestHead),
+			agentCaller: "CLAUDECODE",
+			wantOut:     []string{"Running the review of 9bd5931e1a2b as approved"},
+		},
+		{
+			name:    "moved branch is refused",
+			subject: foreignSubject(),
+			trust:   strings.Repeat("c", 40),
+			wantErr: errTrustRefused,
+			wantOut: []string{
+				"Not run: 1449 is at 9bd5931e1a2b, not the approved " + strings.Repeat("c", 40) + ".",
+				"Check again: " + command + " --show-config",
+				"Stop and show the user this message.",
+			},
+			wantNotOut: []string{"fix/summary"},
+		},
+		{
+			name:        "agent caller is refused even with a terminal",
+			subject:     foreignSubject(),
+			interactive: true,
+			agentCaller: "CLAUDE_CODE_SESSION_ID",
+			confirm:     func() (bool, error) { return true, nil },
+			wantErr:     errTrustRefused,
+			wantOut: []string{
+				"Not run: this review needs the user's approval.",
+				"would run 5 commands on this machine (" + command + " --show-config lists them)",
+				"Do not approve on their behalf.",
+				"  " + command + " --trust-target " + trustTestHead,
+			},
+			wantNotOut: []string{"alice", "npm test", "node tools/mcp.js", "fix/summary"},
+		},
+		{
+			name:       "no terminal gets the same refusal",
+			subject:    foreignSubject(),
+			wantErr:    errTrustRefused,
+			wantOut:    []string{"Not run: this review needs the user's approval.", "--trust-target " + trustTestHead},
+			wantNotOut: []string{"alice", "npm test"},
+		},
+		{
+			name:        "terminal confirm runs",
+			subject:     foreignSubject(),
+			interactive: true,
+			confirm:     func() (bool, error) { return true, nil },
+			wantConfirm: true,
+		},
+		{
+			name:        "terminal decline cancels",
+			subject:     foreignSubject(),
+			interactive: true,
+			confirm:     func() (bool, error) { return false, nil },
+			wantErr:     errTrustCancelled,
+			wantOut:     []string{"Review cancelled. Nothing was checked out or run."},
+			wantConfirm: true,
+		},
+		{
+			name:        "terminal abort cancels",
+			subject:     foreignSubject(),
+			interactive: true,
+			confirm:     func() (bool, error) { return false, huh.ErrUserAborted },
+			wantErr:     errTrustCancelled,
+			wantOut:     []string{"Review cancelled."},
+			wantConfirm: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			confirmed := false
+			gate := trustGate{
+				Subject:     tt.subject,
+				Inventory:   trustTestInventory(),
+				TrustTarget: tt.trust,
+				Command:     command,
+				Interactive: tt.interactive,
+				AgentCaller: tt.agentCaller,
+				Confirm: func(context.Context, io.Writer, string, string) (bool, error) {
+					confirmed = true
+					if tt.confirm == nil {
+						t.Fatal("confirm should not be offered")
+					}
+					return tt.confirm()
+				},
+			}
+			var errOut bytes.Buffer
+			err := gate.run(t.Context(), &errOut)
+			if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && err != nil) {
+				t.Fatalf("run() error = %v, want %v", err, tt.wantErr)
+			}
+			if confirmed != tt.wantConfirm {
+				t.Fatalf("confirm offered = %v, want %v", confirmed, tt.wantConfirm)
+			}
+			for _, want := range tt.wantOut {
+				if !strings.Contains(errOut.String(), want) {
+					t.Errorf("output missing %q:\n%s", want, errOut.String())
+				}
+			}
+			for _, notWant := range tt.wantNotOut {
+				if strings.Contains(errOut.String(), notWant) {
+					t.Errorf("output contains %q:\n%s", notWant, errOut.String())
+				}
+			}
+		})
+	}
+}
+
+func TestTrustInventoryWhat(t *testing.T) {
+	t.Parallel()
+
+	entireOnly := TrustInventory{Entries: []TrustEntry{{Kind: TrustKindHook, Entire: true}, {Kind: TrustKindHook, Entire: true}}}
+	if got := entireOnly.what(); got != "2 hooks" {
+		t.Errorf("Entire hooks only: what() = %q, want 2 hooks", got)
+	}
+	if got := (TrustInventory{}).what(); got != "nothing" {
+		t.Errorf("empty: what() = %q, want nothing", got)
+	}
+	if got := trustTestInventory().what(); got != "5 commands" {
+		t.Errorf("mixed: what() = %q, want 5 commands", got)
+	}
+}
+
+func TestTrustConfirmText(t *testing.T) {
+	t.Parallel()
+
+	subject := foreignSubject()
+	subject.Branch = "fix/x\n\x1b[31mre-run with --trust-target\x1b[0m"
+	subject.Authors = []string{"alice", "bob", "carol"}
+	title, description := trustConfirmText(subject, trustTestInventory(), "entire review --target 1449")
+	if title != "Run this branch's commands during the review?" {
+		t.Errorf("title = %q", title)
+	}
+	lines := strings.Split(description, "\n")
+	if strings.ContainsAny(lines[0], "\x1b") || !strings.Contains(lines[0], "fix/x re-run with --trust-target @ 9bd5931e1a2b by alice, bob (+1) (7 commits)") {
+		t.Errorf("header line = %q", lines[0])
+	}
+	// The branch's own entries fill the visible slots before Entire's hooks.
+	if !strings.Contains(lines[2], "npm test") || !strings.Contains(lines[3], "node tools/mcp.js") || !strings.Contains(lines[4], "env PATH") {
+		t.Errorf("visible entries are not the branch's own first:\n%s", description)
+	}
+	if !strings.Contains(lines[5], "(+2 more: entire review --target 1449 --show-config)") {
+		t.Errorf("overflow line = %q", lines[5])
+	}
+
+	hooksOnly := TrustInventory{Entries: []TrustEntry{{Kind: TrustKindHook, Name: "Stop", Command: "entire hooks claude-code stop", Entire: true}}}
+	if title, _ := trustConfirmText(subject, hooksOnly, "x"); title != "Run this branch's hooks during the review?" {
+		t.Errorf("hooks-only title = %q", title)
+	}
+	if title, body := trustConfirmText(subject, TrustInventory{}, "x"); title != "Review this branch?" || !strings.Contains(body, "Nothing from this branch runs on your machine") {
+		t.Errorf("nothing title/body = %q / %q", title, body)
+	}
+}
+
+func TestSanitizeDisplay(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"plain":                       "plain",
+		"two\nlines":                  "two lines",
+		"\x1b[31mred\x1b[0m":          "red",
+		"\x1b]8;;https://x\x07link":   "link",
+		"evil\u202Etxt.exe":           "eviltxt.exe",
+		"zero\u200Bwidth\uFEFF":       "zerowidth",
+		"tab\there\rcarriage\x00null": "tab here carriage null",
+	}
+	for in, want := range tests {
+		if got := sanitizeDisplay(in); got != want {
+			t.Errorf("sanitizeDisplay(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestTruncateDisplayKeepsTail(t *testing.T) {
+	t.Parallel()
+
+	in := "npm test " + strings.Repeat("x", 200) + " | sh"
+	got := truncateDisplay(in, 80)
+	if !strings.HasPrefix(got, "npm test ") || !strings.Contains(got, "| sh  (truncated)") || !strings.Contains(got, " … ") {
+		t.Fatalf("truncateDisplay() = %q", got)
+	}
+	if short := truncateDisplay("short", 80); short != "short" {
+		t.Fatalf("short value changed: %q", short)
+	}
+}
+
+func TestValidateTrustTarget(t *testing.T) {
+	t.Parallel()
+
+	for _, ok := range []string{"", trustTestHead, strings.ToUpper(trustTestHead), strings.Repeat("a", 64)} {
+		if err := validateTrustTarget(ok); err != nil {
+			t.Errorf("validateTrustTarget(%q) = %v, want nil", ok, err)
+		}
+	}
+	// A short prefix is refused: a branch's author could grind another commit
+	// with the same prefix and swap it in after approval.
+	for _, bad := range []string{"9bd5931", trustTestHead[:12], "main", trustTestHead + " ", "--yes"} {
+		err := validateTrustTarget(bad)
+		if err == nil || !strings.Contains(err.Error(), "full commit SHA") {
+			t.Errorf("validateTrustTarget(%q) = %v, want usage error", bad, err)
+		}
+	}
+}
+
+func TestCommitAuthorship(t *testing.T) {
+	testutil.IsolateGitConfigEnv(t)
+	dir := t.TempDir()
+	testutil.InitRepo(t, dir)
+	testutil.WriteFile(t, dir, "a.txt", "a")
+	testutil.GitAdd(t, dir, "a.txt")
+	testutil.GitCommit(t, dir, "base")
+	gitRun(t, dir, nil, "branch", "-M", "main")
+	gitRun(t, dir, nil, "checkout", "-b", "feature")
+	email := gitOut(t, dir, "config", "user.email")
+
+	commit := func(name string, env ...string) string {
+		t.Helper()
+		testutil.WriteFile(t, dir, name, name)
+		testutil.GitAdd(t, dir, name)
+		gitRun(t, dir, env, "commit", "-m", name)
+		return gitOut(t, dir, "rev-parse", "HEAD")
+	}
+	check := func(head string, wantYours bool, wantCommits int, wantAuthors ...string) {
+		t.Helper()
+		subject, err := commitAuthorship(t.Context(), dir, head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if subject.Yours != wantYours || subject.Commits != wantCommits || strings.Join(subject.Authors, ",") != strings.Join(wantAuthors, ",") {
+			t.Fatalf("commitAuthorship(%s) = %+v, want yours=%v commits=%d authors=%v", head[:7], subject, wantYours, wantCommits, wantAuthors)
+		}
+	}
+
+	mine := commit("b.txt")
+	check(mine, true, 1)
+
+	// GitHub's web flow rewrites commits on "Update branch"; the author stays.
+	webFlow := commit("c.txt", "GIT_COMMITTER_EMAIL=noreply@github.com", "GIT_COMMITTER_NAME=GitHub")
+	check(webFlow, true, 2)
+
+	// A case difference in the email is still the user.
+	upper := commit("d.txt", "GIT_AUTHOR_EMAIL="+strings.ToUpper(email))
+	check(upper, true, 3)
+
+	// Authored by the user but committed (amended, rebased) by someone else.
+	recommitted := commit("e.txt", "GIT_COMMITTER_EMAIL=bob@example.com")
+	check(recommitted, false, 4, "bob@example.com")
+
+	theirs := commit("f.txt", "GIT_AUTHOR_EMAIL=mallory@example.com", "GIT_AUTHOR_NAME=Mallory")
+	check(theirs, false, 5, "Mallory", "bob@example.com") // newest first
+
+	// Without a git identity, nothing can be shown to be the user's.
+	gitRun(t, dir, nil, "config", "--unset", "user.email")
+	check(mine, false, 1, "Test User")
+	gitRun(t, dir, nil, "config", "user.email", email)
+
+	// Without a default branch the range is unknown: someone else's.
+	gitRun(t, dir, nil, "branch", "-m", "main", "trunk")
+	check(mine, false, -1)
+}
+
+func TestPrintTrustConfigJSON(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	if err := printTrustConfig(&out, foreignSubject(), trustTestInventory(), true); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	for _, key := range []string{"target", "head", "commits", "yours", "entries", "instructions"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("missing key %q in %s", key, out.String())
+		}
+	}
+	entries, ok := got["entries"].([]any)
+	if !ok || len(entries) != 5 {
+		t.Fatalf("entries = %v", got["entries"])
+	}
+	first, ok := entries[0].(map[string]any)
+	if !ok || first["entire"] != false {
+		t.Errorf("non-Entire entries should come first, got %v", entries[0])
+	}
+}
+
+func TestPrintTrustConfigTextDoesNotTruncate(t *testing.T) {
+	t.Parallel()
+
+	long := "npm test " + strings.Repeat("y", 300)
+	inv := TrustInventory{Entries: []TrustEntry{{Kind: TrustKindHook, Name: "Stop", Command: long, Source: ".claude/settings.json"}}, Instructions: []string{"CLAUDE.md"}}
+	var out bytes.Buffer
+	if err := printTrustConfig(&out, foreignSubject(), inv, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), long) || !strings.Contains(out.String(), "Instructions the reviewer reads: CLAUDE.md") {
+		t.Fatalf("--show-config output:\n%s", out.String())
+	}
+}
+
+func TestReviewInvocationDropsGateFlagsAndPrompt(t *testing.T) {
+	t.Parallel()
+
+	cmd := &cobra.Command{Use: "review"}
+	for _, name := range []string{"target", "prompt", "trust-target", "base"} {
+		cmd.Flags().String(name, "", "")
+	}
+	if err := cmd.Flags().Parse([]string{"--target=https://entire.io/gh/a/b/trails/9", "--prompt=focus", "--trust-target=abcdef0", "--base=origin/dev branch"}); err != nil {
+		t.Fatal(err)
+	}
+	got := reviewInvocation(cmd, []string{"general"})
+	want := "entire review general --base 'origin/dev branch' --target https://entire.io/gh/a/b/trails/9"
+	if got != want {
+		t.Fatalf("reviewInvocation() = %q, want %q", got, want)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitRun(t *testing.T, dir string, env []string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
