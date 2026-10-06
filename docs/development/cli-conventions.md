@@ -306,7 +306,10 @@ the commands are always runnable in every build.
   overrides an ineligible plan), and without a terminal the command
   refuses before any request (tests reach the prompt with `ENTIRE_TEST_TTY`).
   `--json` prints the plan on `--dry-run` or a
-  refusal, and the result otherwise. An `in_progress` or `stalled` answer is
+  refusal, and the result otherwise. The real call announces that it takes
+  a few minutes and runs `startUpdatableSpinner` from the call itself (which
+  catches the mirror up with GitHub) through the wait, as "N of 9 steps done"
+  rather than core's step names. An `in_progress` or `stalled` answer is
   waited on through `GET /repos/{repoId}/detach` (`--no-wait`, `--timeout`,
   sharing `mirrorPollInterval` with `add`): a resumable stall keeps the wait
   going because core's sweep resumes it, a non-resumable one ends it non-zero,

@@ -28,6 +28,11 @@ const (
 	detachStatusStalled    = "stalled"
 )
 
+// detachSteps is the step a completed detach reports (core's
+// repodetach.StepComplete). Steps up to the group rewrite finish inside the
+// real call, so a state read reports 4 to 9.
+const detachSteps = 9
+
 type mirrorDetachOptions struct {
 	project string
 	name    string
@@ -164,8 +169,14 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 		}
 
 		body.DryRun = false
+		errW := cmd.ErrOrStderr()
+		fmt.Fprintf(errW, "Detaching %s into %s. This can take a few minutes; writes to it stay frozen until it finishes.\n", ref.qualified(), target)
+		// The call itself catches the mirror up with GitHub before the rewire,
+		// so the spinner starts here, not at the wait.
+		update, stop := startUpdatableSpinner(errW, "Catching up with GitHub")
 		res, err := c.DetachRepo(ctx, &body, params)
 		if err != nil {
+			stop(false)
 			if !detachRefusedOutright(err) {
 				// No answer, a 5xx, or an interruption: the repo may have been
 				// frozen and rewired all the same.
@@ -173,7 +184,7 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 			}
 			return fmt.Errorf("detach %s: %w", ref.qualified(), err)
 		}
-		return finishDetach(cmd, c, ref, repoID, projectID, res, names, opts)
+		return finishDetach(cmd, c, ref, repoID, projectID, res, names, opts, update, stop)
 	})
 }
 
@@ -181,16 +192,19 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 // decides the exit. Every exit that leaves the repo frozen prints how to
 // follow it up: the /gh/ ref answers "moved" now, so re-running this command
 // cannot reach the detach.
-func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, repoID, projectID string, res *coreapi.DetachRepoResult, names detachNames, opts mirrorDetachOptions) error {
+//
+// update and stop drive the spinner the real call started; it is stopped
+// before anything is rendered.
+func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, repoID, projectID string, res *coreapi.DetachRepoResult, names detachNames, opts mirrorDetachOptions, update func(string), stop func(bool)) error {
 	errW := cmd.ErrOrStderr()
 	var (
 		state   *coreapi.RepoDetachState // nil without a state read
 		waitErr error
 	)
 	if !opts.noWait && detachUnfinished(res.Status.Or("")) {
-		fmt.Fprintf(errW, "Waiting for the detach of %s to complete…\n", ref.qualified())
-		state, waitErr = awaitDetach(cmd.Context(), c, repoID, opts.timeout, func(step int64, name string) {
-			fmt.Fprintf(errW, "  step %d finished (%s)\n", step, cmp.Or(name, "-"))
+		update("Moving the repository")
+		state, waitErr = awaitDetach(cmd.Context(), c, repoID, opts.timeout, func(step int64) {
+			update(fmt.Sprintf("Moving the repository (%d of %d steps done)", step, detachSteps))
 		})
 		if state != nil {
 			// Report where the detach ended, not where it started.
@@ -201,6 +215,8 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 		}
 	}
 
+	// Cleared rather than ticked: the result below says how it ended.
+	stop(false)
 	var err error
 	if jsonRequested(cmd) {
 		err = printJSON(cmd.OutOrStdout(), res)
@@ -272,7 +288,7 @@ type detachStateGetter interface {
 // will not resume on its own (a resumable stall is picked up by core's sweep).
 // It returns the last state read, also on a timeout, and calls progress once
 // per newly finished step.
-func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration, progress func(step int64, name string)) (*coreapi.RepoDetachState, error) {
+func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration, progress func(step int64)) (*coreapi.RepoDetachState, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -301,7 +317,7 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 			consecutiveErrs = 0
 			if step, ok := state.Step.Get(); ok && step != reported {
 				reported = step
-				progress(step, state.StepName.Or(""))
+				progress(step)
 			}
 			last = state
 			switch state.Status {

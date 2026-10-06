@@ -143,7 +143,8 @@ func TestRepoMirrorDetach_WaitsForCompletion(t *testing.T) {
 	stdout, stderr, err := execDetach(t, url, "--yes")
 	require.NoError(t, err)
 	assert.Equal(t, 3, fake.stateGets, "a resumable stall keeps the wait going")
-	assert.Contains(t, stderr, "Waiting for the detach")
+	assert.Contains(t, stderr, "Detaching /gh/octocat/hello-world into /et/acme/hello-world. This can take a few minutes")
+	assert.NotContains(t, stderr, "step", "internal step names mean nothing to a reader")
 	assert.Contains(t, stdout, "✓ Detached /gh/octocat/hello-world into /et/acme/hello-world")
 
 	fake.stateGets = 0
@@ -531,7 +532,7 @@ func TestAwaitDetach_CancelIsAnInterruption(t *testing.T) {
 	cancel()
 	_, err := awaitDetach(ctx, detachStateFunc(func(context.Context, coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error) {
 		return nil, context.Canceled
-	}), testDetachMirrorULID, 0, func(int64, string) {})
+	}), testDetachMirrorULID, 0, func(int64) {})
 	require.ErrorIs(t, err, context.Canceled)
 	var silent *SilentError
 	require.ErrorAs(t, err, &silent, "main re-raises the signal instead of printing")
@@ -598,7 +599,7 @@ func TestAwaitDetach_ReportsEachStepOnce(t *testing.T) {
 		return &st, err
 	})
 	var got []int64
-	state, err := awaitDetach(t.Context(), getter, testDetachMirrorULID, 0, func(step int64, _ string) { got = append(got, step) })
+	state, err := awaitDetach(t.Context(), getter, testDetachMirrorULID, 0, func(step int64) { got = append(got, step) })
 	require.NoError(t, err)
 	assert.Equal(t, "complete", state.Status)
 	assert.Equal(t, []int64{5, 9}, got)
