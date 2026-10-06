@@ -48,8 +48,12 @@ func trailContextBlurb() string {
 const projectTrailsEnv = "ENTIRE_PROJECT_TRAILS"
 const projectTrailsAnnotation = "entire_project_trails"
 
+func projectTrailsEnabled() bool {
+	return os.Getenv(projectTrailsEnv) == "1"
+}
+
 func newTrailCmd() *cobra.Command {
-	return newTrailCmdForMode(os.Getenv(projectTrailsEnv) == "1")
+	return newTrailCmdForMode(projectTrailsEnabled())
 }
 
 // Use the mode chosen at construction, not the current environment.

@@ -455,18 +455,20 @@ func normalizeToolUsePaths(files []string, eventCWD, repoRoot string) []string {
 	return FilterAndNormalizePaths(resolved, repoRoot)
 }
 
-// entireTrailContextInjection introduces project-level trails on the first turn
-// of a session. Keep the workflow short and defer command details to agent-help.
-// The repository context comes from the already-loaded scope, without IO.
 func entireTrailContextInjection(scope trailEnablementScope) string {
 	repo := ""
 	if scope.Forge != "" && scope.Owner != "" && scope.Repo != "" {
 		repo = trailEnablementRepoKey(scope.Forge, scope.Owner, scope.Repo)
 	}
 	var b strings.Builder
-	b.WriteString("Entire Trails is enabled. A trail captures project-level intent across repositories and branches—not just one branch. ")
-	b.WriteString("Start with `entire trail show` to find the current branch's trail. Reuse an existing trail when the work shares its intent; otherwise create one. ")
-	b.WriteString("Keep its description current with `entire trail update`. Use `entire agent-help trail` to discover commands and flags. ")
+	if projectTrailsEnabled() {
+		b.WriteString("Entire Trails is enabled. A trail captures project-level intent across repositories and branches—not just one branch. ")
+		b.WriteString("Start with `entire trail show` to find the current branch's trail. Reuse an existing trail when the work shares its intent; otherwise create one. ")
+		b.WriteString("Keep its description current with `entire trail update`. Use `entire agent-help trail` to discover commands and flags. ")
+	} else {
+		b.WriteString("Entire is enabled for this repo. Run `entire agent-help` to see what entire does and which subcommand to use, then `entire agent-help <command>` for that command's exact, current flags. ")
+		b.WriteString("Commits automatically capture the AI session as a checkpoint, so never create checkpoints by hand — just commit normally. Leave setup and destructive commands (enable, disable, clean, auth) to the user. ")
+	}
 	// Mirror agentHelpRepoBlock's defense-in-depth: this string is injected raw
 	// into the agent's model context (no escaping), so a repo key carrying control
 	// characters (e.g. an <sessionID>.trail-scope.json cache written by a pre-fix

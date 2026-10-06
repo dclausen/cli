@@ -1,12 +1,37 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
+func TestEntireTrailContextInjection_LegacyUnlessOptedIn(t *testing.T) {
+	for _, value := range []string{"unset", "", "0", "false", "true", "typo", " 1 "} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(projectTrailsEnv, value)
+			if value == "unset" {
+				if err := os.Unsetenv(projectTrailsEnv); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := entireTrailContextInjection(trailEnablementScope{Forge: "gh", Owner: "acme", Repo: "app"})
+			for _, want := range []string{"Entire is enabled for this repo.", "`entire agent-help`", "never create checkpoints by hand", "Leave setup and destructive commands", "gh/acme/app", "never ask the user for the repo name"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("legacy injection missing %q: %s", want, got)
+				}
+			}
+			for _, unwanted := range []string{"project-level intent", "Start with `entire trail show`", "`entire trail update`", "otherwise create one"} {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("legacy injection contains project guidance %q: %s", unwanted, got)
+				}
+			}
+		})
+	}
+}
+
 func TestEntireTrailContextInjection_ProjectTrailWorkflow(t *testing.T) {
-	t.Parallel()
+	t.Setenv(projectTrailsEnv, "1")
 
 	for _, tc := range []struct {
 		name  string
@@ -17,8 +42,6 @@ func TestEntireTrailContextInjection_ProjectTrailWorkflow(t *testing.T) {
 		{"partial scope", trailEnablementScope{Forge: "gh", Owner: "acme"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
 			got := entireTrailContextInjection(tc.scope)
 			for _, want := range []string{
 				"Entire Trails is enabled.",
