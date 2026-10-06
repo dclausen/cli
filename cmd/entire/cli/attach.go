@@ -329,7 +329,13 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 		return fmt.Errorf("failed to get git author: %w", err)
 	}
 
-	tokenUsage := agent.CalculateTokenUsage(logCtx, ag, transcriptData, 0, "")
+	// The checkpoint stores only tokens no earlier checkpoint of this session
+	// counted; session state keeps the whole-transcript total.
+	tokenUsage, tokenPos := strategy.AttachTokenUsage(logCtx, ag, existingState, transcriptData)
+	sessionUsage := tokenUsage
+	if existingState != nil {
+		sessionUsage = agent.CalculateTokenUsage(logCtx, ag, transcriptData, 0, "")
+	}
 
 	// attach writes checkpoints and historically never configured
 	// redaction; a scanner-config failure must fail the attach.
@@ -373,7 +379,7 @@ func runAttach(ctx context.Context, w, errW io.Writer, sessionID string, agentNa
 	}
 
 	// Create or update session state.
-	if err := saveAttachSessionState(logCtx, repo, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, tokenUsage, opts, reviewSkills); err != nil {
+	if err := saveAttachSessionState(logCtx, repo, existingState, sessionID, ag.Type(), transcriptPath, checkpointID, meta, sessionUsage, tokenPos, opts, reviewSkills); err != nil {
 		logging.Warn(logCtx, "failed to save session state", "error", err)
 	}
 
@@ -698,7 +704,7 @@ func resolveCheckpointID(ctx context.Context, headCommit *object.Commit) (id.Che
 // saveAttachSessionState creates or updates the session state file for the attached session.
 // If existingState is non-nil, it is updated in place (avoids a redundant disk load).
 // reviewSkills is the resolved skills list when opts.Review is true; ignored otherwise.
-func saveAttachSessionState(ctx context.Context, repo *git.Repository, existingState *session.State, sessionID string, agentType types.AgentType, transcriptPath string, checkpointID id.CheckpointID, meta transcriptMetadata, tokenUsage *agent.TokenUsage, opts attachOptions, reviewSkills []string) error {
+func saveAttachSessionState(ctx context.Context, repo *git.Repository, existingState *session.State, sessionID string, agentType types.AgentType, transcriptPath string, checkpointID id.CheckpointID, meta transcriptMetadata, sessionUsage *agent.TokenUsage, tokenPos int, opts attachOptions, reviewSkills []string) error {
 	stateStore, err := session.NewStateStore(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open session store: %w", err)
@@ -743,9 +749,16 @@ func saveAttachSessionState(ctx context.Context, repo *git.Repository, existingS
 	if meta.FirstPrompt != "" {
 		state.LastPrompt = meta.FirstPrompt
 	}
-	if tokenUsage != nil {
-		state.TokenUsage = tokenUsage
+	if sessionUsage != nil {
+		// Attach reads no subagent transcripts; keep the cumulative subagent
+		// total hooks recorded so the re-baseline below doesn't drop it.
+		if state.TokenUsage != nil {
+			sessionUsage.SubagentTokens = state.TokenUsage.SubagentTokens
+			sessionUsage.SubagentTokensComplete = state.TokenUsage.SubagentTokensComplete
+		}
+		state.TokenUsage = sessionUsage
 	}
+	strategy.ConsumeAttachTokenWindow(state, tokenPos)
 	if opts.Review {
 		state.Kind = session.KindAgentReview
 		state.ReviewSkills = reviewSkills

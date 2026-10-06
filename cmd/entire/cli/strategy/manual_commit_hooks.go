@@ -1882,7 +1882,7 @@ func (s *ManualCommitStrategy) condenseAndUpdateState(
 		// content was not. Keep its existing SaveStep count as the ownership
 		// pin used by cleanup and doctor until a home commit consumes it.
 		state.StepCount = pendingStepCount
-		state.CheckpointTranscriptStart = result.TotalTranscriptLines
+		state.AdvanceCheckpointWindow(result.TotalTranscriptLines)
 		state.CheckpointTranscriptSize = result.TranscriptSizeBaseline
 		logging.Info(logCtx, "session guest-condensed from a sibling worktree; shadow state untouched",
 			slog.String("strategy", "manual-commit"),
@@ -1901,7 +1901,7 @@ func (s *ManualCommitStrategy) condenseAndUpdateState(
 	state.BaseCommit = newHead
 	state.RealignAttributionBase(newHead)
 	resetCheckpointWindow(state)
-	state.CheckpointTranscriptStart = result.TotalTranscriptLines
+	state.AdvanceCheckpointWindow(result.TotalTranscriptLines)
 	state.CheckpointTranscriptSize = result.TranscriptSizeBaseline
 
 	// Clear attribution tracking — condensation already used these values

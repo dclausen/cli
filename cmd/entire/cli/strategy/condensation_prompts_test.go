@@ -83,7 +83,7 @@ func TestExtractSessionData_ResolvesPromptsWithEmptyTranscript(t *testing.T) {
 
 	s := &ManualCommitStrategy{}
 	data, err := s.extractSessionData(context.Background(), repo, hash, sessionID, nil,
-		agent.AgentTypeAntigravity, "", 0, false)
+		agent.AgentTypeAntigravity, "", 0, 0, false)
 	require.NoError(t, err)
 	require.Empty(t, data.Transcript, "sanity: this is the empty-transcript case")
 	require.Equal(t, []string{"the prompt that must survive"}, data.Prompts,

@@ -1004,7 +1004,7 @@ func (s *ManualCommitStrategy) extractOrCreateSessionData(ctx context.Context, r
 	case hasShadowBranch:
 		// Shadow branch exists (from SaveStep commits) — extract transcript and
 		// metadata from the branch tree, preferring the live transcript if fresher.
-		data, err := s.extractSessionData(ctx, repo, shadowHash, state.SessionID, state.FilesTouched, state.AgentType, state.TranscriptPath, state.CheckpointTranscriptStart, state.Phase.IsActive())
+		data, err := s.extractSessionData(ctx, repo, shadowHash, state.SessionID, state.FilesTouched, state.AgentType, state.TranscriptPath, state.CheckpointTranscriptStart, state.TokenStart(), state.Phase.IsActive())
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract session data: %w", err)
 		}
@@ -1241,6 +1241,34 @@ func resolveCondensedTokenUsage(ctx context.Context, ag agent.Agent, state *Sess
 		// applyBackfilledSessionTokenUsage, which needs the usage without it.
 		sessionData.TokenUsage = fillMissingSubagentTokensFrom(sessionData.TokenUsage, state.CheckpointTokenUsage)
 	}
+}
+
+// AttachTokenUsage returns the tokens `entire session attach` stores for a
+// session's transcript and the transcript end position in the agent's offset
+// units. With existing state it counts only what no checkpoint has counted yet
+// (from TokenStart), falling back to the pending hook-reported usage the way
+// condensation does; without state it counts the whole transcript. The caller
+// records pos with ConsumeAttachTokenWindow once the checkpoint is written.
+func AttachTokenUsage(ctx context.Context, ag agent.Agent, state *SessionState, transcript []byte) (*agent.TokenUsage, int) {
+	start := 0
+	if state != nil {
+		start = state.TokenStart()
+	}
+	usage := agent.CalculateTokenUsage(ctx, ag, transcript, start, "")
+	if state != nil && !hasTokenUsageData(usage) && hasTokenUsageData(state.CheckpointTokenUsage) {
+		usage = accumulateTokenUsage(nil, state.CheckpointTokenUsage)
+	}
+	return usage, countTranscriptItems(ag.Type(), string(transcript))
+}
+
+// ConsumeAttachTokenWindow marks the tokens an attach checkpoint stored as
+// counted: the token offset moves to pos and the pending window is reset, so
+// the session's next checkpoint does not count them again. The displayed
+// transcript window (CheckpointTranscriptStart) is left alone.
+func ConsumeAttachTokenWindow(state *SessionState, pos int) {
+	state.CheckpointTokenUsage = nil
+	state.RebaselineSubagentTokens()
+	state.SetTokenStart(pos)
 }
 
 func hasTokenUsageData(usage *agent.TokenUsage) bool {
@@ -1525,7 +1553,8 @@ func committedFilesExcludingMetadata(committedFiles map[string]struct{}) []strin
 // This handles the case where SaveStep was skipped (no code changes) but the transcript
 // continued growing — the shadow branch copy would be stale.
 // checkpointTranscriptStart is the line offset (JSONL agents) or message index (OpenCode) where the current checkpoint began.
-func (s *ManualCommitStrategy) extractSessionData(ctx context.Context, repo *git.Repository, shadowRef plumbing.Hash, sessionID string, filesTouched []string, agentType types.AgentType, liveTranscriptPath string, checkpointTranscriptStart int, isActive bool) (*ExtractedSessionData, error) {
+// tokenStart is the position tokens are counted from (SessionState.TokenStart), in the same units.
+func (s *ManualCommitStrategy) extractSessionData(ctx context.Context, repo *git.Repository, shadowRef plumbing.Hash, sessionID string, filesTouched []string, agentType types.AgentType, liveTranscriptPath string, checkpointTranscriptStart, tokenStart int, isActive bool) (*ExtractedSessionData, error) {
 	ag, _ := agent.GetByAgentType(agentType) //nolint:errcheck // ag may be nil for unknown agent types; callers use type assertions so nil is safe
 	commit, err := repo.CommitObject(shadowRef)
 	if err != nil {
@@ -1609,7 +1638,8 @@ func (s *ManualCommitStrategy) extractSessionData(ctx context.Context, repo *git
 	// Use tracked files from session state (not all files in tree)
 	data.FilesTouched = filesTouched
 
-	// Calculate token usage from the checkpoint-scoped transcript portion.
+	// Calculate token usage from the token offset: everything no earlier
+	// checkpoint counted, even when carry-forward widened the displayed window.
 	// Skill events annotate the stored raw transcript, which is full-session, so
 	// extract them from offset 0; consumers can filter by checkpoint_transcript_start
 	// if they only render the checkpoint-scoped slice.
@@ -1621,7 +1651,7 @@ func (s *ManualCommitStrategy) extractSessionData(ctx context.Context, repo *git
 		// cumulative snapshot needing the same rescoping SaveStep already did.
 		// CondenseSession fills the already-rescoped window total in instead;
 		// see fillMissingSubagentTokensFrom.
-		data.TokenUsage = agent.CalculateTokenUsage(ctx, ag, data.Transcript, checkpointTranscriptStart, "")
+		data.TokenUsage = agent.CalculateTokenUsage(ctx, ag, data.Transcript, tokenStart, "")
 		data.SkillEvents = agent.ExtractSkillEvents(ctx, ag, data.Transcript, 0)
 	}
 
@@ -1684,7 +1714,8 @@ func (s *ManualCommitStrategy) extractSessionDataFromLiveTranscript(ctx context.
 	// Resolve files touched: prefers hook-populated state, falls back to transcript extraction
 	data.FilesTouched = s.resolveFilesTouched(ctx, state)
 
-	// Calculate token usage from the checkpoint-scoped transcript portion.
+	// Calculate token usage from the token offset: everything no earlier
+	// checkpoint counted, even when carry-forward widened the displayed window.
 	// Skill events annotate the stored raw transcript, which is full-session, so
 	// extract them from offset 0; consumers can filter by checkpoint_transcript_start
 	// if they only render the checkpoint-scoped slice.
@@ -1846,7 +1877,7 @@ func calculateLiveTranscriptTokenUsage(
 	transcriptPath string,
 ) *agent.TokenUsage {
 	subagentsDir := liveSubagentsDir(ag, state, transcriptPath)
-	usage := agent.CalculateTokenUsage(ctx, ag, transcript, state.CheckpointTranscriptStart, subagentsDir)
+	usage := agent.CalculateTokenUsage(ctx, ag, transcript, state.TokenStart(), subagentsDir)
 	if usage == nil || usage.SubagentTokens == nil {
 		return usage
 	}
@@ -2166,7 +2197,7 @@ func (s *ManualCommitStrategy) CondenseSessionByID(ctx context.Context, sessionI
 		)
 
 		resetCheckpointWindow(state)
-		state.CheckpointTranscriptStart = result.TotalTranscriptLines
+		state.AdvanceCheckpointWindow(result.TotalTranscriptLines)
 		state.CheckpointTranscriptSize = result.TranscriptSizeBaseline
 		state.Phase = session.PhaseIdle
 		state.LastCheckpointID = result.CheckpointID
@@ -2341,7 +2372,7 @@ func (s *ManualCommitStrategy) CondenseAndMarkFullyCondensed(ctx context.Context
 		}
 
 		resetCheckpointWindow(state)
-		state.CheckpointTranscriptStart = result.TotalTranscriptLines
+		state.AdvanceCheckpointWindow(result.TotalTranscriptLines)
 		state.LastCheckpointID = result.CheckpointID
 		state.LastCheckpointCommitHash = state.BaseCommit
 		state.RealignAttributionBase(state.BaseCommit)
