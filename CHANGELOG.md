@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `review_prompt` and `investigate_topic` in checkpoint `metadata.json` are redacted like prompts ([#2596](https://github.com/entireio/cli/pull/2596))
 - Redaction no longer replaces Claude Code tool-use ids or Codex `agent_message` ciphertext with `REDACTED` ([#2648](https://github.com/entireio/cli/pull/2648))
 - Checkpoint ref push fallback is bounded to two minutes or five consecutive failures, unpushed refs stay queued and rotate so later refs get a turn, and fetch errors keep their underlying cause ([#2522](https://github.com/entireio/cli/pull/2522))
-- Protocol v2 pushes through `git-remote-entire` declare their size, so an oversized push is refused up front with a clear 413 message instead of uploading fully and failing with `unexpected disconnect` ([#2625](https://github.com/entireio/cli/pull/2625))
+- Protocol v2 pushes through `git-remote-entire` declare their size, so an oversized push is refused up front with a clear 413 message instead of uploading fully and failing with `the remote end hung up unexpectedly` ([#2625](https://github.com/entireio/cli/pull/2625))
 - Missing-checkpoint errors name the refs where the checkpoint can actually live under the configured backend, instead of always suggesting a fetch of `entire/checkpoints/v1` ([#2620](https://github.com/entireio/cli/pull/2620))
 - `entire import` derives ULID checkpoint IDs under the git-refs backend ([#2609](https://github.com/entireio/cli/pull/2609))
 - On Windows, `entire status` and `entire doctor` no longer report approved Codex hooks as needing approval ([#2607](https://github.com/entireio/cli/pull/2607))
