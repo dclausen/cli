@@ -34,7 +34,7 @@ type fakeDetachCore struct {
 	states     []string // GET /detach answers in order, raw JSON; the last repeats
 	stateGets  int
 	stateFails bool // GET /detach answers 503
-	realFails  bool // the real (non-dry-run) POST answers 409
+	realFails  int  // the real (non-dry-run) POST answers this status
 }
 
 func (f *fakeDetachCore) handler(t *testing.T) http.HandlerFunc {
@@ -62,8 +62,8 @@ func (f *fakeDetachCore) handler(t *testing.T) http.HandlerFunc {
 			f.bodies = append(f.bodies, body)
 			f.detachPath = append(f.detachPath, r.URL.Path)
 			f.mu.Unlock()
-			if !body.DryRun && f.realFails {
-				writeCoreProblem(t, w, http.StatusConflict, "another detach of this repo is running; retry later")
+			if !body.DryRun && f.realFails != 0 {
+				writeCoreProblem(t, w, f.realFails, "detach refused: retry later")
 				return
 			}
 			answer := f.result
@@ -370,10 +370,18 @@ func TestRenderDetachResult_Stalled(t *testing.T) {
 	require.NoError(t, res.UnmarshalJSON([]byte(`{"dryRun":false,"eligible":true,"requestedBy":"01ACCT","targetProject":"`+testProjectULID+`","name":"web",
 		"preconditions":[],"access":[],"status":"stalled","nativeName":"et/acme/web"}`)))
 	var b strings.Builder
-	require.NoError(t, renderDetachResult(&b, mirrorRepoRef{forge: mirrorCloneForge, owner: "o", repo: "web"}, &res, false))
+	ref := mirrorRepoRef{forge: mirrorCloneForge, owner: "o", repo: "web"}
+	resumable := true
+	require.NoError(t, renderDetachResult(&b, ref, &res, &resumable))
 	assert.Contains(t, b.String(), "until the server's sweep resumes the rewire")
 	assert.Contains(t, b.String(), "/et/acme/web")
 	assert.NotContains(t, b.String(), "No access was removed", "a resume does not know who lost access")
+
+	// Without a state read (--no-wait) nothing says who resumes it.
+	b.Reset()
+	require.NoError(t, renderDetachResult(&b, ref, &res, nil))
+	assert.Contains(t, b.String(), "until the rewire is resumed.")
+	assert.NotContains(t, b.String(), "sweep")
 }
 
 func TestDetachConfirmTitle(t *testing.T) {
@@ -426,16 +434,25 @@ func TestRepoMirrorDetach_UnexpectedStatuses(t *testing.T) {
 	require.ErrorContains(t, err, `unexpected status "queued"`)
 }
 
-// A refusal of the real call after the plan passed reports the server's reason.
+// A refusal of the real call after the plan passed reports the server's reason,
+// and only an outright refusal is taken to have changed nothing.
 //
 // Not parallel: swaps the package-level core-client seam.
 func TestRepoMirrorDetach_RealCallRefused(t *testing.T) {
 	fake, url := newDetachFixture(t, eligiblePlanJSON, completeResultJSON)
-	fake.realFails = true
-	stdout, _, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
-	require.ErrorContains(t, err, "another detach of this repo is running")
+	fake.realFails = http.StatusConflict
+	stdout, stderr, err := execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	require.ErrorContains(t, err, "detach refused: retry later")
 	assert.Empty(t, stdout)
+	assert.NotContains(t, stderr, "may have started", "a 4xx changed nothing")
 	require.Len(t, fake.bodies, 2)
+
+	// A 5xx (or no answer at all) leaves it unknown whether the repo was
+	// frozen and rewired, and the /gh/ ref may already answer moved.
+	fake.realFails = http.StatusServiceUnavailable
+	_, stderr, err = execDetach(t, url, "/gh/octocat/hello-world", "--project", "acme", "--yes")
+	require.Error(t, err)
+	assert.Contains(t, stderr, "The detach may have started. Follow the detach with: entire api /api/v1/repos/"+testDetachMirrorULID+"/detach")
 }
 
 // An ineligible real run under --json still hands a script one document, the

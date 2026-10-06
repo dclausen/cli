@@ -63,7 +63,8 @@ The detach result is the same shape: `entire repo mirror detach` displays each
 `DetachPrecondition.precondition` slug, each `DetachAccessEntry`'s `source` and
 `subjectType`, and `DetachRepoResult.status` and `RepoDetachState.status`, and the server documents both the
 precondition list and the status set as growing. Locked in by
-`TestDetachRepo_UnknownEnumValuesPassThrough`.
+`TestDetachRepo_UnknownEnumValuesPassThrough` and
+`TestGetRepoDetach_UnknownStatusPassesThrough`.
 Retire the allowlist entries as upstream loosens the corresponding fields.
 
 ## 2b. New read-model fields ship as `required`

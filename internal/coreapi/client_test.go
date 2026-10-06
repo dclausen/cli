@@ -495,6 +495,33 @@ func TestDetachRepo_UnknownEnumValuesPassThrough(t *testing.T) {
 	}
 }
 
+// TestGetRepoDetach_UnknownStatusPassesThrough is the same contract for the
+// state the detach wait polls.
+func TestGetRepoDetach_UnknownStatusPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"status":"rolling_back","releasedAddresses":[],"resumable":false,"frozen":true}`)); err != nil {
+			t.Errorf("writing test response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := NewClient(srv.URL, bearerOnlySource{})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	out, err := c.GetRepoDetach(context.Background(), GetRepoDetachParams{RepoId: "01H0000000000000000000000R"})
+	if err != nil {
+		t.Fatalf("GetRepoDetach with an unknown status must not fail (forward-compat), got: %v", err)
+	}
+	if out.Status != "rolling_back" {
+		t.Errorf("Status = %q, want the unknown value passed through", out.Status)
+	}
+}
+
 // TestListOrgMembers_UnknownEnumValuesPassThrough is the same contract for
 // Membership, which `entire org grant list` prints the same way.
 func TestListOrgMembers_UnknownEnumValuesPassThrough(t *testing.T) {

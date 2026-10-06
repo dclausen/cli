@@ -145,6 +145,12 @@ func runMirrorDetach(cmd *cobra.Command, repoRef string, opts mirrorDetachOption
 		body.DryRun = false
 		res, err := c.DetachRepo(ctx, &body, params)
 		if err != nil {
+			if !detachRefusedOutright(err) {
+				// No answer, a 5xx, or an interruption: the server may have
+				// frozen and rewired the repo all the same, and the /gh/ ref
+				// may already answer moved.
+				fmt.Fprintf(cmd.ErrOrStderr(), "The detach may have started. %s\n", detachFollowUpHint(repoID))
+			}
 			return fmt.Errorf("detach %s: %w", ref.qualified(), err)
 		}
 		return finishDetach(cmd, c, ref, repoID, projectID, res, opts)
@@ -174,12 +180,18 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 		}
 	}
 	needsResume := state != nil && state.Status == detachStatusStalled && !state.Resumable
+	// Only a state read says whether the server resumes a stall on its own;
+	// the detach's own answer does not.
+	var resumable *bool
+	if state != nil {
+		resumable = &state.Resumable
+	}
 
 	var err error
 	if jsonRequested(cmd) {
 		err = printJSON(cmd.OutOrStdout(), res)
 	} else {
-		err = renderDetachResult(cmd.OutOrStdout(), ref, res, needsResume)
+		err = renderDetachResult(cmd.OutOrStdout(), ref, res, resumable)
 	}
 	if err != nil {
 		return err
@@ -209,6 +221,13 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 		fmt.Fprintln(errW, detachFollowUpHint(repoID))
 		return fmt.Errorf("the detach of %s answered an unexpected status %s", ref.qualified(), strconv.Quote(status))
 	}
+}
+
+// detachRefusedOutright reports a 4xx answer to the real call: the server
+// refused before changing anything. Anything else leaves it unknown.
+func detachRefusedOutright(err error) bool {
+	var se *coreapi.ErrorModelStatusCode
+	return errors.As(err, &se) && se.StatusCode >= 400 && se.StatusCode < 500
 }
 
 func detachFollowUpHint(repoID string) string {
@@ -461,7 +480,9 @@ func writeDetachPlan(w io.Writer, ref mirrorRepoRef, target string, plan *coreap
 
 // renderDetachResult prints a real detach's answer. Every status but complete
 // leaves the repository frozen, so each says so and what happens next.
-func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoResult, needsResume bool) error {
+//
+// resumable is what a state read said about a stall, nil when none was made.
+func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoResult, resumable *bool) error {
 	native := ref.qualified()
 	if name := res.NativeName.Or(""); name != "" {
 		native = "/" + strings.TrimPrefix(name, "/")
@@ -472,8 +493,12 @@ func renderDetachResult(w io.Writer, ref mirrorRepoRef, res *coreapi.DetachRepoR
 	case detachStatusInProgress:
 		fmt.Fprintf(w, "Detach of %s is in progress: it is now %s, and writes stay frozen until the rewire finishes.\n", ref.qualified(), native)
 	case detachStatusStalled:
-		resumer := "the server's sweep resumes the rewire"
-		if needsResume {
+		resumer := "the rewire is resumed"
+		switch {
+		case resumable == nil:
+		case *resumable:
+			resumer = "the server's sweep resumes the rewire"
+		default:
 			resumer = "an admin of the target project resumes the rewire"
 		}
 		fmt.Fprintf(w, "Detach of %s stalled: it is now %s, and writes stay frozen until %s.\n", ref.qualified(), native, resumer)

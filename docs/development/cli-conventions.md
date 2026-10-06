@@ -306,7 +306,9 @@ the commands are always runnable in every build.
   and the final state is merged into the result so `--json` reports where it
   ended. Once the write happened the `/gh/` ref answers "moved", so re-running
   the command cannot reach the detach: every exit that leaves it unfinished
-  prints the `entire api` call that follows (or resumes) it, and a polling
+  prints the `entire api` call that follows (or resumes) it — a real call
+  that got no answer, a 5xx, or an interruption included, since only a 4xx
+  proves nothing changed — and a polling
   failure is rendered in place so the problem detail does not hide that the
   detach ran. The precondition, access and status enums are loosened in
   `normalize.go`, since core documents them as growing. `remote add <remote-name> [repo]` is the whole `remote` subtree: it
