@@ -179,10 +179,8 @@ func finishDetach(cmd *cobra.Command, c detachStateGetter, ref mirrorRepoRef, re
 	)
 	if !opts.noWait && detachUnfinished(res.Status.Or("")) {
 		fmt.Fprintf(errW, "Waiting for the detach of %s to complete…\n", ref.qualified())
-		state, waitErr = awaitDetach(cmd.Context(), c, repoID, opts.timeout, func(s *coreapi.RepoDetachState) {
-			if step, ok := s.Step.Get(); ok {
-				fmt.Fprintf(errW, "  step %d finished (%s)\n", step, s.StepName.Or("-"))
-			}
+		state, waitErr = awaitDetach(cmd.Context(), c, repoID, opts.timeout, func(step int64, name string) {
+			fmt.Fprintf(errW, "  step %d finished (%s)\n", step, cmp.Or(name, "-"))
 		})
 		if state != nil {
 			mergeDetachState(res, state)
@@ -266,8 +264,9 @@ type detachStateGetter interface {
 // in a way the server will not resume on its own. A resumable stall keeps the
 // wait going: the core's sweep picks it back up. It returns the last state
 // read, including on a timeout, so the caller can report how far it got, and
-// calls progress whenever the last finished step changes.
-func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration, progress func(*coreapi.RepoDetachState)) (*coreapi.RepoDetachState, error) {
+// calls progress once for each newly reported finished step; a state without
+// a step (before the group rewrite) reports nothing.
+func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeout time.Duration, progress func(step int64, name string)) (*coreapi.RepoDetachState, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -278,6 +277,7 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 
 	var last *coreapi.RepoDetachState
 	var consecutiveErrs int
+	reported := int64(-1)
 	for {
 		state, err := c.GetRepoDetach(ctx, coreapi.GetRepoDetachParams{RepoId: repoID})
 		switch {
@@ -293,8 +293,9 @@ func awaitDetach(ctx context.Context, c detachStateGetter, repoID string, timeou
 			return last, errDetachNotRecorded
 		default:
 			consecutiveErrs = 0
-			if progress != nil && (last == nil || last.Step != state.Step) {
-				progress(state)
+			if step, ok := state.Step.Get(); ok && step != reported && progress != nil {
+				reported = step
+				progress(step, state.StepName.Or(""))
 			}
 			last = state
 			switch state.Status {

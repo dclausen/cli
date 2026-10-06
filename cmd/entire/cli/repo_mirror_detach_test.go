@@ -594,3 +594,30 @@ func TestRepoMirrorDetach_JSONSkipsTheNameLookup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, fake.peopleGets)
 }
+
+// Progress is reported once per newly finished step, and never for a state
+// that carries no step.
+//
+// Not parallel: shortens the package-level poll interval.
+func TestAwaitDetach_ReportsEachStepOnce(t *testing.T) {
+	fastDetachPoll(t)
+	states := []string{
+		`{"status":"in_progress","releasedAddresses":[],"resumable":false,"frozen":true}`,
+		`{"status":"in_progress","step":5,"stepName":"group-rewrite","releasedAddresses":[],"resumable":false,"frozen":true}`,
+		`{"status":"in_progress","step":5,"stepName":"group-rewrite","releasedAddresses":[],"resumable":false,"frozen":true}`,
+		`{"status":"in_progress","releasedAddresses":[],"resumable":false,"frozen":true}`,
+		`{"status":"complete","step":9,"stepName":"done","releasedAddresses":[],"resumable":false,"frozen":false}`,
+	}
+	calls := 0
+	getter := detachStateFunc(func(context.Context, coreapi.GetRepoDetachParams) (*coreapi.RepoDetachState, error) {
+		var st coreapi.RepoDetachState
+		err := st.UnmarshalJSON([]byte(states[min(calls, len(states)-1)]))
+		calls++
+		return &st, err
+	})
+	var got []int64
+	state, err := awaitDetach(t.Context(), getter, testDetachMirrorULID, 0, func(step int64, _ string) { got = append(got, step) })
+	require.NoError(t, err)
+	assert.Equal(t, "complete", state.Status)
+	assert.Equal(t, []int64{5, 9}, got)
+}
