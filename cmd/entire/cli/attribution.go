@@ -138,6 +138,9 @@ type attributionResolver struct {
 
 	commitCache     map[string]*object.Commit
 	checkpointCache map[string]attributionCheckpointContext
+	// linked lists checkpoints once, for commits linked without a trailer
+	// (`entire session attach --commit`). nil until first needed.
+	linked []checkpoint.CheckpointInfo
 }
 
 func newBlameCmd() *cobra.Command {
@@ -406,6 +409,9 @@ func (r *attributionResolver) resolveLine(raw rawBlameLine, file string) attribu
 
 	cpIDs := trailers.ParseAllCheckpoints(commit.Message)
 	if len(cpIDs) == 0 {
+		cpIDs = r.linkedCheckpoints(raw.CommitSHA)
+	}
+	if len(cpIDs) == 0 {
 		line.Authorship = attributionHuman
 		line.Tag = attributionTag(line.Authorship)
 		return line
@@ -437,6 +443,23 @@ func (r *attributionResolver) commit(sha string) (*object.Commit, error) {
 	}
 	r.commitCache[sha] = commit
 	return commit, nil
+}
+
+// linkedCheckpoints returns the checkpoints that link commitSHA without a
+// trailer. The store is listed once per blame run; a store that cannot list
+// contributes none.
+func (r *attributionResolver) linkedCheckpoints(commitSHA string) []id.CheckpointID {
+	if r.linked == nil {
+		r.linked = []checkpoint.CheckpointInfo{}
+		if lister, ok := r.store.(interface {
+			List(ctx context.Context) ([]checkpoint.CheckpointInfo, error)
+		}); ok {
+			if infos, err := lister.List(r.ctx); err == nil {
+				r.linked = infos
+			}
+		}
+	}
+	return checkpoint.CheckpointsLinkedTo(r.linked, commitSHA)
 }
 
 func (r *attributionResolver) checkpointContext(cpID id.CheckpointID, file string) attributionCheckpointContext {

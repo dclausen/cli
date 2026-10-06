@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -791,6 +792,7 @@ func (s *treeWriter) writeCheckpointSummary(opts WriteOptions, basePath string, 
 	// session package imports checkpoint, so we can't reference its constant.
 	imported := opts.Kind == "imported"
 	commitSHA := opts.CommitSHA
+	linkedCommits := opts.LinkedCommits
 	rootMetadataPath := checkpointSubtreePath(basePath, paths.MetadataFileName)
 	if entry, exists := entries[rootMetadataPath]; exists {
 		existingSummary, readErr := s.readSummaryFromBlob(entry.Hash)
@@ -813,6 +815,7 @@ func (s *treeWriter) writeCheckpointSummary(opts WriteOptions, basePath string, 
 			if commitSHA == "" {
 				commitSHA = existingSummary.CommitSHA
 			}
+			linkedCommits = unionLinkedCommits(existingSummary.LinkedCommits, linkedCommits)
 		}
 	}
 
@@ -822,6 +825,7 @@ func (s *treeWriter) writeCheckpointSummary(opts WriteOptions, basePath string, 
 		Strategy:            opts.Strategy,
 		Branch:              opts.Branch,
 		CommitSHA:           commitSHA,
+		LinkedCommits:       linkedCommits,
 		CheckpointsCount:    checkpointsCount,
 		FilesTouched:        filesTouched,
 		Sessions:            sessions,
@@ -1620,6 +1624,7 @@ func readCommittedInfoFromCheckpointTree(checkpointID id.CheckpointID, checkpoin
 	info.FilesTouched = summary.FilesTouched
 	info.SessionCount = len(summary.Sessions)
 	info.Imported = summary.Imported
+	info.LinkedCommits = summary.LinkedCommits
 
 	for i := range summary.Sessions {
 		sessionMetadata, ok := readCommittedMetadataFromCheckpointTree(checkpointTree, i)
@@ -2961,4 +2966,32 @@ func getCheckpointAuthorFromRef(ctx context.Context, repo *git.Repository, refNa
 	}
 
 	return author, nil
+}
+
+// unionLinkedCommits returns existing followed by the entries of added whose
+// commit it does not already hold, so rewriting a checkpoint never drops a
+// link.
+func unionLinkedCommits(existing, added []LinkedCommit) []LinkedCommit {
+	out := slices.Clone(existing)
+	for _, link := range added {
+		if !slices.ContainsFunc(out, func(l LinkedCommit) bool { return l.SHA == link.SHA }) {
+			out = append(out, link)
+		}
+	}
+	return out
+}
+
+// CheckpointsLinkedTo returns the IDs of the listed checkpoints whose
+// trailer-less links (LinkedCommits) name commitSHA, in listing order (most
+// recent first for List results). It is the reverse of an Entire-Checkpoint
+// trailer for commits linked by `entire session attach --commit`; callers
+// consult trailers first.
+func CheckpointsLinkedTo(infos []CheckpointInfo, commitSHA string) []id.CheckpointID {
+	var ids []id.CheckpointID
+	for _, info := range infos {
+		if slices.ContainsFunc(info.LinkedCommits, func(l LinkedCommit) bool { return l.SHA == commitSHA }) {
+			ids = append(ids, info.CheckpointID)
+		}
+	}
+	return ids
 }

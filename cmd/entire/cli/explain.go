@@ -639,6 +639,15 @@ func runExplainAuto(ctx context.Context, w, errW io.Writer, target string, noPag
 		return fmt.Errorf("failed to get commit %s: %w", abbreviateCommitHash(lookup.repo, hash), commitErr)
 	}
 	cpID, hasCheckpoint := trailers.ParseCheckpoint(commit.Message)
+	linkVia := "its Entire-Checkpoint trailer"
+	if !hasCheckpoint {
+		// A commit linked by `entire session attach --commit` carries no
+		// trailer; its checkpoint names it instead. Most recent wins.
+		if linked := checkpoint.CheckpointsLinkedTo(lookup.committed, hash.String()); len(linked) > 0 {
+			cpID, hasCheckpoint = linked[0], true
+			linkVia = "a link recorded by entire session attach"
+		}
+	}
 	if !hasCheckpoint {
 		// Side-effect modes must error — silently succeeding would leave
 		// scripts unable to distinguish "done" from "didn't happen".
@@ -655,7 +664,7 @@ func runExplainAuto(ctx context.Context, w, errW io.Writer, target string, noPag
 	if err := runExplainCheckpointWithLookup(ctx, w, errW, cpID.String(), noPager, verbose, full, rawTranscript, generate, force, searchAll, lookup, nil, summaryTimeoutSeconds); err != nil {
 		// The user typed a commit, not this checkpoint ID — without the
 		// trailer linkage the error reads as if they asked for an unknown ID.
-		return fmt.Errorf("commit %s references checkpoint %s via its Entire-Checkpoint trailer: %w", abbreviateCommitHash(lookup.repo, hash), cpID, err)
+		return fmt.Errorf("commit %s references checkpoint %s via %s: %w", abbreviateCommitHash(lookup.repo, hash), cpID, linkVia, err)
 	}
 	return nil
 }
