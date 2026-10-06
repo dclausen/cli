@@ -19,7 +19,8 @@ const envelopeTypeAssistant = "assistant"
 
 // NewReviewer returns the AgentReviewer for claude-code.
 //
-// Argv shape: claude -p <prompt> --output-format stream-json --verbose.
+// Argv shape: claude -p <prompt> --output-format stream-json --verbose
+// --append-system-prompt <guardrail>.
 // The prompt is passed as a command-line argument; stdin is unused.
 // Stdout is newline-delimited JSON envelopes (one event per line), which the
 // parser decodes into the review Event stream. This format gives the parser
@@ -37,7 +38,7 @@ func NewReviewer() *reviewtypes.ReviewerTemplate {
 // Exposed at package level for test inspection of argv and env.
 func buildReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	prompt := review.ComposeReviewPrompt(cfg)
-	args := []string{"-p", prompt, flagOutputFormat, "stream-json", "--verbose"}
+	args := []string{"-p", prompt, flagOutputFormat, "stream-json", "--verbose", "--append-system-prompt", review.ReviewerGuardrail}
 	args = review.AppendModelFlag(args, cfg.Model)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Env = review.AppendReviewEnv(os.Environ(), "claude-code", cfg, prompt)

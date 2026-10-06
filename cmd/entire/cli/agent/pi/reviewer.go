@@ -16,7 +16,8 @@ import (
 
 // NewReviewer returns the AgentReviewer for Pi.
 //
-// Argv shape: pi --mode json --print [--model <model>] <prompt>.
+// Argv shape: pi --mode json --print --append-system-prompt <guardrail>
+// [--model <model>] <prompt>.
 // The prompt is passed as a positional message because Pi's CLI accepts prompts
 // as message arguments in non-interactive mode. Stdout is newline-delimited JSON
 // session events; the parser maps Pi's AgentSessionEvent stream into Entire's
@@ -31,7 +32,7 @@ func NewReviewer() *reviewtypes.ReviewerTemplate {
 
 func buildPiReviewCmd(ctx context.Context, cfg reviewtypes.RunConfig) *exec.Cmd {
 	prompt := review.ComposeReviewPrompt(cfg)
-	args := []string{"--mode", "json", "--print"}
+	args := []string{"--mode", "json", "--print", "--append-system-prompt", review.ReviewerGuardrail}
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
 	}

@@ -95,8 +95,8 @@ func TestReviewer_ArgvShape(t *testing.T) {
 	}
 	cmd := buildReviewCmd(context.Background(), cfg)
 
-	// Expect: claude -p <prompt> --output-format stream-json --verbose
-	wantSuffix := []string{"--output-format", "stream-json", "--verbose"}
+	// Expect: claude -p <prompt> --output-format stream-json --verbose --append-system-prompt <guardrail>
+	wantSuffix := []string{"--output-format", "stream-json", "--verbose", "--append-system-prompt", review.ReviewerGuardrail}
 	if len(cmd.Args) != 3+len(wantSuffix) {
 		t.Fatalf("expected %d args, got %d: %v", 3+len(wantSuffix), len(cmd.Args), cmd.Args)
 	}

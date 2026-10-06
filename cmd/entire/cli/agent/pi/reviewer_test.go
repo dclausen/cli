@@ -32,7 +32,7 @@ func TestPiReviewer_BuildCmd(t *testing.T) {
 	if cmd.Args[0] != "pi" {
 		t.Fatalf("Args[0] = %q, want pi; args=%v", cmd.Args[0], cmd.Args)
 	}
-	wantPrefix := []string{"pi", "--mode", "json", "--print", "--model", "anthropic/claude-sonnet-4-5:high"}
+	wantPrefix := []string{"pi", "--mode", "json", "--print", "--append-system-prompt", review.ReviewerGuardrail, "--model", "anthropic/claude-sonnet-4-5:high"}
 	if len(cmd.Args) != len(wantPrefix)+1 {
 		t.Fatalf("args len = %d, want %d: %v", len(cmd.Args), len(wantPrefix)+1, cmd.Args)
 	}
