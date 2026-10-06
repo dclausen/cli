@@ -1803,7 +1803,7 @@ func resolvePendingTranscriptOffset(ctx context.Context, ag agent.Agent, state *
 		slog.Int("old_offset", state.CheckpointTranscriptStart),
 		slog.Int("new_offset", pos),
 	)
-	state.CheckpointTranscriptStart = pos
+	state.AdvanceDisplayWindow(pos)
 	state.TranscriptOffsetPending = false
 }
 

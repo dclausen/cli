@@ -3486,7 +3486,7 @@ func advanceCheckpointTranscriptStartToTurnEnd(ctx context.Context, state *Sessi
 					slog.Int("old_offset", state.CheckpointTranscriptStart),
 					slog.Int("new_offset", pos),
 				)
-				state.CheckpointTranscriptStart = pos
+				state.AdvanceDisplayWindow(pos)
 				advanced = true
 			}
 		}

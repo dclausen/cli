@@ -942,6 +942,15 @@ func (s *State) AdvanceCheckpointWindow(pos int) {
 	s.SetTokenStart(pos)
 }
 
+// AdvanceDisplayWindow moves only CheckpointTranscriptStart to pos, for the
+// turn-end advances that skip already-condensed content without storing its
+// tokens. The token offset is pinned first so an unset one cannot follow
+// CheckpointTranscriptStart forward through TokenStart's fallback.
+func (s *State) AdvanceDisplayWindow(pos int) {
+	s.SetTokenStart(s.TokenStart())
+	s.CheckpointTranscriptStart = pos
+}
+
 // RebaselineSubagentTokens snapshots the current cumulative subagent total
 // (TokenUsage.SubagentTokens) into SubagentTokensBaseline so the next checkpoint
 // window's CheckpointTokenUsage.SubagentTokens is rescoped to "since this

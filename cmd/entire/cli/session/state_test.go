@@ -1335,6 +1335,19 @@ func TestState_RebaselineSubagentTokensPreservesTriState(t *testing.T) {
 	assert.Nil(t, unknown.SubagentTokensBaseline)
 }
 
+func TestState_AdvanceDisplayWindowKeepsTokenOffset(t *testing.T) {
+	t.Parallel()
+	unset := State{CheckpointTranscriptStart: 8}
+	unset.AdvanceDisplayWindow(12)
+	assert.Equal(t, 12, unset.CheckpointTranscriptStart)
+	assert.Equal(t, 8, unset.TokenStart(), "an unset token offset must not follow the display window")
+
+	set := State{CheckpointTranscriptStart: 0}
+	set.SetTokenStart(8)
+	set.AdvanceDisplayWindow(12)
+	assert.Equal(t, 8, set.TokenStart())
+}
+
 func TestState_SetTokenStartDoesNotShareAcrossCopies(t *testing.T) {
 	t.Parallel()
 	source := State{}
