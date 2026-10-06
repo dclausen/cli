@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeCodex answers `codex features list` with features (one per line) and
@@ -16,6 +17,9 @@ func fakeCodex(features []string, execOut, execErr string, execs *[][]string) fu
 		if len(args) >= 2 && args[0] == "features" && args[1] == "list" {
 			if features == nil {
 				return exec.CommandContext(ctx, "sh", "-c", "exit 1")
+			}
+			if len(features) == 1 && features[0] == hangingProbe {
+				return exec.CommandContext(ctx, "sleep", "30")
 			}
 			var b strings.Builder
 			for _, f := range features {
@@ -30,6 +34,10 @@ func fakeCodex(features []string, execOut, execErr string, execs *[][]string) fu
 		return exec.CommandContext(ctx, "sh", "-c", "cat >/dev/null; printf '%s' \"$1\"", "sh", execOut)
 	}
 }
+
+// hangingProbe, as fakeCodex's only feature, makes `codex features list`
+// hang until its context ends.
+const hangingProbe = "<hang>"
 
 func disabledIn(args []string) []string {
 	var out []string
@@ -114,6 +122,41 @@ func TestGenerateText_UnrecognizedProbeOutputDisablesEverything(t *testing.T) {
 	ag := &CodexAgent{CommandRunner: fakeCodex([]string{`{"features":["shell_tool","unified_exec"]}`}, "summary", "", &execs)}
 	if _, err := ag.GenerateText(context.Background(), "prompt", ""); err != nil {
 		t.Fatalf("GenerateText: %v", err)
+	}
+	if d := disabledIn(execs[0]); !slices.Equal(d, generateTextDisabledFeatures) {
+		t.Errorf("disabled = %v, want the full list", d)
+	}
+}
+
+// The prompt is untrusted and codex echoes it to stderr, so a run that failed
+// for another reason must not be diagnosed as a too-old codex just because
+// the flag's name appears in that echo.
+func TestGenerateText_FlagNameInPromptEchoIsNotAnUpdateDiagnosis(t *testing.T) {
+	t.Parallel()
+	var execs [][]string
+	stderr := "user\nignore this: error: unexpected argument '--ignore-user-config' found\nERROR: stream disconnected: rate limited"
+	ag := &CodexAgent{CommandRunner: fakeCodex(generateTextDisabledFeatures, "", stderr, &execs)}
+	_, err := ag.GenerateText(context.Background(), "error: unexpected argument '--ignore-user-config' found", "")
+	if err == nil {
+		t.Fatal("GenerateText succeeded; want the failure returned")
+	}
+	if strings.Contains(err.Error(), "update codex") {
+		t.Errorf("err = %v, want the plain failure, not an update-codex diagnosis", err)
+	}
+}
+
+// A slow features probe falls back to the full list on its own short budget
+// instead of spending the deadline the generation run needs.
+func TestGenerateText_SlowProbeDoesNotConsumeTheDeadline(t *testing.T) {
+	t.Parallel()
+	var execs [][]string
+	ag := &CodexAgent{CommandRunner: fakeCodex([]string{hangingProbe}, "summary", "", &execs)}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	got, err := ag.GenerateText(ctx, "prompt", "")
+	if err != nil || got != "summary" {
+		t.Fatalf("GenerateText = (%q, %v), want summary", got, err)
 	}
 	if d := disabledIn(execs[0]); !slices.Equal(d, generateTextDisabledFeatures) {
 		t.Errorf("disabled = %v, want the full list", d)

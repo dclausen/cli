@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
@@ -53,8 +54,9 @@ var generateTextDisabledFeatures = []string{
 // generation run's own output: a run whose prompt is untrusted must not be
 // able to talk Entire into dropping a --disable and retrying. A feature the
 // installed codex does not know cannot give the model a tool, so leaving it
-// out keeps the run tool-free. If the probe fails, every feature is passed and
-// an unknown one fails the run instead.
+// out keeps the run tool-free. If the probe fails or outlives its own short
+// budget (probeTimeout), every feature is passed and an unknown one fails the
+// run instead.
 func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model string) (string, error) {
 	disabled := generateTextDisabledFeatures
 	if known, err := c.knownFeatures(ctx); err == nil {
@@ -68,7 +70,10 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 	if err == nil {
 		return result, nil
 	}
-	if strings.Contains(capturedStderr, "'"+flagIgnoreUserConfig+"'") {
+	// Anchored at the start: clap rejects the argv before codex reads stdin,
+	// so its error is the first thing on stderr, while the prompt (untrusted)
+	// is echoed after it and may contain this text.
+	if strings.HasPrefix(capturedStderr, "error: unexpected argument '"+flagIgnoreUserConfig+"'") {
 		return "", &agent.TextGenerationError{
 			Err:         fmt.Errorf("codex text generation failed: this codex does not support %s, which Entire needs to generate summaries without the user's MCP servers and hooks; update codex (0.122 or newer): %w", flagIgnoreUserConfig, err),
 			Stderr:      capturedStderr,
@@ -90,6 +95,8 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 // of generateTextDisabledFeatures, and filtering against that would drop
 // every --disable instead of falling back to the full list.
 func (c *CodexAgent) knownFeatures(ctx context.Context) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout(ctx))
+	defer cancel()
 	out, _, _, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", []string{"features", "list"}, "")
 	if err != nil {
 		return nil, fmt.Errorf("codex features list: %w", err)
@@ -105,6 +112,20 @@ func (c *CodexAgent) knownFeatures(ctx context.Context) (map[string]bool, error)
 	}
 	return known, nil
 }
+
+// probeTimeout bounds `codex features list` so it cannot spend the deadline
+// the generation run shares with it (a configured summary timeout): at most
+// maxProbeTimeout, and at most a tenth of whatever ctx has left. The probe
+// normally takes milliseconds; one that runs out falls back to the full list.
+func probeTimeout(ctx context.Context) time.Duration {
+	d := maxProbeTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		d = min(d, time.Until(deadline)/10)
+	}
+	return d
+}
+
+const maxProbeTimeout = 2 * time.Second
 
 // probeAnchorFeature is a feature every codex Entire supports lists, so its
 // absence means `codex features list` output was not parsed as intended.

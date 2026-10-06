@@ -42,7 +42,9 @@ const flagDenyTool = "--deny-tool"
 //     not exist leaves the model no tools at all, and keeps doing so when a
 //     Copilot release adds one. An EMPTY list is not equivalent: verified on
 //     Copilot CLI 1.0.83, `--available-tools` with no value leaves every tool
-//     available.
+//     available. The allowlist also covers MCP tools: verified on Copilot CLI
+//     1.0.89 with a server in the user's mcp-config.json, which Copilot still
+//     starts and lists but whose tool the model cannot call.
 //   - -s: the allowlist makes Copilot print a "Disabled tools" notice on
 //     stdout, which is where the summary JSON comes back; silent mode keeps
 //     stdout to the model's response.
