@@ -445,6 +445,115 @@ func TestCheckpointSyncAllowedForRemote(t *testing.T) {
 	})
 }
 
+// Regression: a clone with a GitHub remote and an Entire mirror of the same
+// repository captured the GitHub remote as the sync remote, so every push to
+// the mirror held checkpoints back and printed "N checkpoint(s) are waiting to
+// sync". The mirror pushes through to GitHub and syncs every ref back, so a
+// push to either remote reaches the same repository and must carry checkpoints.
+//
+// Not parallel: uses t.Chdir()
+func TestCheckpointSyncAllowedForRemote_SameForgeRepository(t *testing.T) {
+	testutil.IsolateGitConfigEnv(t)
+	ctx := context.Background()
+
+	const mirrorURL = "entire://aws-eu-central-1.entire.io/gh/acme/widgets"
+
+	// initRepo elects "github" (git@github.com:acme/widgets.git) explicitly and
+	// adds pushRemote with pushRemoteURL.
+	initRepo := func(t *testing.T, pushRemoteURL string) string {
+		t.Helper()
+		dir := t.TempDir()
+		testutil.InitRepo(t, dir)
+		testutil.WriteFile(t, dir, "f.txt", "init")
+		testutil.GitAdd(t, dir, "f.txt")
+		testutil.GitCommit(t, dir, "init")
+		testutil.AddRemote(t, dir, "github", "git@github.com:acme/widgets.git")
+		testutil.AddRemote(t, dir, "origin", pushRemoteURL)
+		testutil.WriteCheckpointPushRemoteSetting(t, dir, "github")
+		return dir
+	}
+
+	admitted := []struct {
+		name, url string
+	}{
+		{"entire mirror of the elected repository", mirrorURL},
+		{"mirror with .git suffix", mirrorURL + ".git"},
+		{"owner and repo differ only in case", "entire://aws-us-east-2.entire.io/gh/Acme/Widgets"},
+		{"https URL of the elected repository", "https://github.com/acme/widgets.git"},
+	}
+	for _, tc := range admitted {
+		t.Run("admitted: "+tc.name, func(t *testing.T) {
+			t.Chdir(initRepo(t, tc.url))
+			assert.True(t, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+		})
+	}
+
+	rejected := []struct {
+		name, url string
+	}{
+		{"mirror of a different owner", "entire://aws-eu-central-1.entire.io/gh/other/widgets"},
+		{"mirror of a different repo", "entire://aws-eu-central-1.entire.io/gh/acme/gadgets"},
+		{"Entire-native repository", "entire://aws-eu-central-1.entire.io/et/acme/widgets"},
+		{"unknown host with the same path", "https://git.example.com/acme/widgets.git"},
+		{"SSH host alias", "git@github-work:acme/widgets.git"},
+	}
+	for _, tc := range rejected {
+		t.Run("rejected: "+tc.name, func(t *testing.T) {
+			t.Chdir(initRepo(t, tc.url))
+			assert.False(t, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+		})
+	}
+
+	// Both sides on the same unrecognized forge: owner/repo agree, but nothing
+	// says the two URLs are one repository (no mirror relationship, unknown
+	// case rules), so the match must come from a known forge, not path equality.
+	sameUnknownForge := []struct {
+		name, elected, push string
+	}{
+		{"self-hosted host", "https://git.example.com/acme/widgets.git", "git@git.example.com:acme/widgets.git"},
+		{"Entire-native repository in two cells", "entire://aws-us-east-2.entire.io/et/acme/widgets", "entire://aws-eu-central-1.entire.io/et/acme/widgets"},
+	}
+	for _, tc := range sameUnknownForge {
+		t.Run("rejected: same path on "+tc.name, func(t *testing.T) {
+			dir := initRepo(t, tc.push)
+			testutil.RunGit(t, dir, "remote", "set-url", "github", tc.elected)
+			t.Chdir(dir)
+			assert.False(t, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+		})
+	}
+
+	t.Run("rejected: pushurl redirects the push elsewhere", func(t *testing.T) {
+		dir := initRepo(t, mirrorURL)
+		setGitConfig(t, dir, "remote.origin.pushurl", "git@github.com:other/widgets.git")
+		t.Chdir(dir)
+		assert.False(t, checkpointSyncAllowedForRemote(ctx, "origin", ""),
+			"the push goes to pushurl, not the fetch URL; it must name the elected repository")
+	})
+
+	t.Run("rejected: one of several push URLs names another repository", func(t *testing.T) {
+		dir := initRepo(t, mirrorURL)
+		// The mismatched URL comes first so a check that only looks at one URL
+		// (first or last) cannot pass by accident.
+		testutil.RunGit(t, dir, "remote", "set-url", "--add", "--push", "origin", "git@github.com:other/widgets.git")
+		testutil.RunGit(t, dir, "remote", "set-url", "--add", "--push", "origin", mirrorURL)
+		t.Chdir(dir)
+		assert.False(t, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+	})
+
+	t.Run("rejected: raw URL push of the elected repository", func(t *testing.T) {
+		t.Chdir(initRepo(t, mirrorURL))
+		assert.False(t, checkpointSyncAllowedForRemote(ctx, mirrorURL, ""),
+			"a raw URL is not a configured remote; it stays gated")
+	})
+
+	t.Run("rejected: elected remote's push URL names another repository", func(t *testing.T) {
+		dir := initRepo(t, mirrorURL)
+		setGitConfig(t, dir, "remote.github.pushurl", "git@github.com:other/widgets.git")
+		t.Chdir(dir)
+		assert.False(t, checkpointSyncAllowedForRemote(ctx, "origin", ""))
+	})
+}
+
 // newCaptureTestRepo builds a repo with one commit and an origin+fork remote
 // pair — the fork topology: origin wins the default election, fork is where
 // the user's branches actually push.

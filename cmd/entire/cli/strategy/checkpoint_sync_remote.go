@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitremote"
+	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
 )
@@ -118,8 +120,9 @@ func ResolveCheckpointSyncRemote(ctx context.Context) (CheckpointSyncRemote, err
 
 // checkpointSyncAllowedForRemote reports whether a push to pushRemote may
 // carry checkpoint data. False for every remote except the elected
-// checkpoint sync remote — including raw-URL pushes (git passes the URL as
-// the hook arg) and the fail-closed misconfigured case. Callers exempt the
+// checkpoint sync remote and remotes that push to the same forge repository
+// (see pushesToSameForgeRepository) — false for raw-URL pushes (git passes the
+// URL as the hook arg) and the fail-closed misconfigured case. Callers exempt the
 // dedicated checkpoint_remote URL mode before calling.
 // pendingCapture, when non-empty, is the remote this push is about to elect but
 // has not persisted yet — the gate must let the electing push carry the
@@ -137,13 +140,77 @@ func checkpointSyncAllowedForRemote(ctx context.Context, pushRemote, pendingCapt
 			slog.String("error", err.Error()))
 		return false
 	}
-	if syncRemote.Name == "" || syncRemote.Name != pushRemote {
-		logging.Debug(ctx, "checkpoint sync skipped: push remote is not the checkpoint sync remote",
+	if syncRemote.Name != "" && syncRemote.Name == pushRemote {
+		return true
+	}
+	if syncRemote.Name != "" && pushesToSameForgeRepository(ctx, pushRemote, syncRemote.Name) {
+		logging.Debug(ctx, "checkpoint sync admitted: push remote reaches the same forge repository as the checkpoint sync remote",
 			slog.String("push_remote", pushRemote),
 			slog.String("checkpoint_sync_remote", syncRemote.Name))
+		return true
+	}
+	logging.Debug(ctx, "checkpoint sync skipped: push remote is not the checkpoint sync remote",
+		slog.String("push_remote", pushRemote),
+		slog.String("checkpoint_sync_remote", syncRemote.Name))
+	return false
+}
+
+// pushesToSameForgeRepository reports whether pushes to remote a and remote b
+// land in the same forge repository — e.g. `git@github.com:o/r` and its Entire
+// mirror `entire://<cluster>/gh/o/r`. Mirrors push through to the forge and
+// sync every ref back from it, so checkpoints pushed via either remote end up
+// in the same place, and the single-remote gate has no audience to protect.
+//
+// Conservative by construction: both must be configured remotes with a fetch
+// URL (raw-URL pushes never match), and every push URL of both must parse to a
+// known forge (gitremote.Info.UpstreamHost) naming one owner/repo. Unknown
+// hosts, SSH host aliases, file:// paths, Entire-native repos, and multi-URL
+// remotes that fan out to different repositories all fail the match, leaving
+// the gate as strict as before.
+func pushesToSameForgeRepository(ctx context.Context, a, b string) bool {
+	if !isCheckpointSyncRemoteEligible(ctx, a) || !isCheckpointSyncRemoteEligible(ctx, b) {
 		return false
 	}
-	return true
+	repoA, okA := remotePushForgeRepository(ctx, a)
+	repoB, okB := remotePushForgeRepository(ctx, b)
+	return okA && okB && repoA == repoB
+}
+
+// forgeRepository identifies a repository on a known forge. Owner and repo are
+// lowercased: the only known forge is GitHub, which resolves both
+// case-insensitively.
+type forgeRepository struct {
+	forge, owner, repo string
+}
+
+// remotePushForgeRepository resolves the single forge repository every push
+// URL of the named remote reaches. ok is false when any URL is unparseable,
+// names an unknown forge, or disagrees with another.
+func remotePushForgeRepository(ctx context.Context, name string) (forgeRepository, bool) {
+	dir, env := "", []string(nil)
+	if worktreeRoot, ok := settings.WorktreeRoot(ctx); ok {
+		dir, env = worktreeRoot, gitrepo.EnvWithoutRepoOverrides()
+	}
+	urls, err := gitremote.GetPushURLsInDir(ctx, dir, env, name)
+	if err != nil {
+		return forgeRepository{}, false
+	}
+	var found forgeRepository
+	for i, rawURL := range urls {
+		info, err := gitremote.ParseURL(rawURL)
+		if err != nil {
+			return forgeRepository{}, false
+		}
+		if _, known := info.UpstreamHost(); !known {
+			return forgeRepository{}, false
+		}
+		r := forgeRepository{forge: info.Forge, owner: strings.ToLower(info.Owner), repo: strings.ToLower(info.Repo)}
+		if i > 0 && r != found {
+			return forgeRepository{}, false
+		}
+		found = r
+	}
+	return found, true
 }
 
 // hintGatedCheckpointSync tells the user, on a gated pre-push, that
