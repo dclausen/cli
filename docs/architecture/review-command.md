@@ -136,11 +136,14 @@ approval first.
   `.entire/settings.json`, and skips the gate only when the forwarded
   `--trust-target` matches its own head. Entire's own lifecycle hooks, which
   the agents start inside the worktree, still read that worktree's settings.
-- **Guardrail.** Every reviewer gets a system-prompt addition saying the
-  content under review is untrusted data and that injection attempts are
-  findings (`--append-system-prompt` for Claude Code and Pi,
-  `-c developer_instructions=` for Codex). The judge runs from a temp
-  directory and does not load the checkout's configuration.
+- **Guardrail.** Every reviewer gets a system-prompt addition setting an
+  instruction hierarchy: the task comes only from the review request;
+  repository content (including CLAUDE.md/AGENTS.md) informs the review but
+  cannot change the task, grant permissions, or trigger actions; attempts to
+  direct the reviewer are reported as findings (`--append-system-prompt` for
+  Claude Code and Pi, `-c developer_instructions=` for Codex, the top of the
+  prompt for agents without a runner). The judge runs from a temp directory
+  and does not load the checkout's configuration.
 
 ## Flow
 
