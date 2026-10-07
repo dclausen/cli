@@ -137,8 +137,11 @@ func parseNativeCloneRef(ref string) (project, repo string, err error) {
 	project, repo = names[0], names[1]
 	// Drop `.git` before the name is validated, not after: `.git` alone then
 	// fails the shape check as an empty name rather than passing as a dotted
-	// one. See gitDirSuffix for why the suffix is never part of a name.
-	repo = strings.TrimSuffix(repo, gitDirSuffix)
+	// one. See gitDirSuffix for why the suffix is never part of a name, and
+	// gitremote.CutGitDirSuffix for why the cut ignores case — this grammar
+	// admits uppercase (the server folds it on resolution), so `.GIT` is a ref
+	// a user can actually reach here.
+	repo, _ = gitremote.CutGitDirSuffix(repo)
 	if !nativeProjectRe.MatchString(project) {
 		return "", "", fmt.Errorf("project %q is not a name the server accepts: 3-32 characters of letters, digits and '-', not starting or ending with '-'", project)
 	}
@@ -300,10 +303,10 @@ func nativePlacements(ctx context.Context, c *coreapi.Client, repo *coreapi.Repo
 // follows the convention — and by the time that bites, renaming someone's
 // repository is the only fix left.
 //
-// `gitremote` trims the same suffix independently, because it cannot import
-// this package, so a change here has to be mirrored at
-// gitremote.splitOwnerRepo.
-const gitDirSuffix = ".git"
+// The constant and the cut that applies it (gitremote.CutGitDirSuffix) live in
+// gitremote, which this package already imports, so there is one copy of the
+// rule rather than two kept in sync by comments.
+const gitDirSuffix = gitremote.GitDirSuffix
 
 // trimRefPrefix normalizes a ref for segment work: surrounding space gone, one
 // optional leading slash gone. Every place that reads a ref's leading token
@@ -420,7 +423,12 @@ func parseMirrorCloneRef(ref string) (provider, owner, repo string, err error) {
 	owner, repo = strings.ToLower(m[1]), strings.ToLower(m[2])
 	// Drop `.git` (see gitDirSuffix) BEFORE the dot-only guard, which is
 	// what keeps `..git` — not dot-only as typed — from resolving to a "." repo.
-	repo = strings.TrimSuffix(repo, gitDirSuffix)
+	//
+	// gitremote.CutGitDirSuffix, not TrimSuffix: the ToLower above happens to
+	// make a case-sensitive cut work here, which is the kind of correctness
+	// that survives only until someone reorders two lines. The sibling parsers
+	// had the same two operations in the other order and were wrong.
+	repo, _ = gitremote.CutGitDirSuffix(repo)
 	if repo == "" {
 		return "", "", "", fmt.Errorf("repo name is empty once the %s suffix is dropped: %s", gitDirSuffix, ref)
 	}

@@ -828,11 +828,11 @@ func TestReviewSession_CodingSessionCommitsMidTurn_NotCondensed(t *testing.T) {
 				t.Fatalf("review session pre-task failed: %v", err)
 			}
 			if err := env.SimulatePostTask(PostTaskInput{
-				SessionID:       reviewSess.ID,
-				TranscriptPath:  reviewSess.TranscriptPath,
-				ToolUseID:       reviewToolUseID,
-				AgentID:         reviewAgentID,
-				RunInBackground: true,
+				SessionID:      reviewSess.ID,
+				TranscriptPath: reviewSess.TranscriptPath,
+				ToolUseID:      reviewToolUseID,
+				AgentID:        reviewAgentID,
+				Background:     true,
 			}); err != nil {
 				t.Fatalf("review session post-task failed: %v", err)
 			}
@@ -845,7 +845,6 @@ func TestReviewSession_CodingSessionCommitsMidTurn_NotCondensed(t *testing.T) {
 					TranscriptPath:      reviewSess.TranscriptPath,
 					AgentID:             reviewAgentID,
 					AgentTranscriptPath: reviewAgentTranscript,
-					ToolUseID:           reviewToolUseID,
 				}); err != nil {
 					t.Fatalf("review session subagent-stop failed: %v", err)
 				}
@@ -957,11 +956,11 @@ func TestReviewSession_FinishedReviewer_UnrelatedCommitNotLinked(t *testing.T) {
 		t.Fatalf("review session pre-task failed: %v", err)
 	}
 	if err := env.SimulatePostTask(PostTaskInput{
-		SessionID:       reviewSess.ID,
-		TranscriptPath:  reviewSess.TranscriptPath,
-		ToolUseID:       reviewToolUseID,
-		AgentID:         reviewAgentID,
-		RunInBackground: true,
+		SessionID:      reviewSess.ID,
+		TranscriptPath: reviewSess.TranscriptPath,
+		ToolUseID:      reviewToolUseID,
+		AgentID:        reviewAgentID,
+		Background:     true,
 	}); err != nil {
 		t.Fatalf("review session post-task failed: %v", err)
 	}
@@ -971,7 +970,6 @@ func TestReviewSession_FinishedReviewer_UnrelatedCommitNotLinked(t *testing.T) {
 		TranscriptPath:      reviewSess.TranscriptPath,
 		AgentID:             reviewAgentID,
 		AgentTranscriptPath: reviewAgentTranscript,
-		ToolUseID:           reviewToolUseID,
 	}); err != nil {
 		t.Fatalf("review session subagent-stop failed: %v", err)
 	}

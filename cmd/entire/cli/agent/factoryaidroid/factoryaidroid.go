@@ -129,9 +129,41 @@ func (f *FactoryAIDroidAgent) GetSessionBaseDir() (string, error) {
 	return filepath.Join(homeDir, ".factory", "sessions"), nil
 }
 
+// SessionHome returns Droid's .factory directory beneath the user's home, or
+// beneath $FACTORY_HOME_OVERRIDE when that is set. It is the .factory directory
+// rather than the user's home so that the home is Droid's own state.
+func (f *FactoryAIDroidAgent) SessionHome() (string, error) {
+	homeDir, err := resolveFactoryHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".factory"), nil
+}
+
+// HomeLayout reports that Droid keeps per-project session directories under
+// sessions.
+func (f *FactoryAIDroidAgent) HomeLayout() agent.HomeLayout {
+	return agent.HomeLayout{Stores: []string{"sessions"}}
+}
+
+var _ agent.HomeLayoutProvider = (*FactoryAIDroidAgent)(nil)
+
 // ResolveSessionFile returns the path to a Factory AI Droid session file.
 func (f *FactoryAIDroidAgent) ResolveSessionFile(sessionDir, agentSessionID string) string {
 	return filepath.Join(sessionDir, agentSessionID+".jsonl")
+}
+
+// TaskTranscriptMatches reports whether path is the transcript of task agentID
+// beside the session transcript or in its subagents directory. A Worker runs as
+// a session of its own and writes <agentID>.jsonl; a subagent captured by its
+// stop hook writes agent-<agentID>.jsonl.
+func (f *FactoryAIDroidAgent) TaskTranscriptMatches(parentPath, sessionID, agentID, path string) bool {
+	if agentID == "" {
+		return false
+	}
+	name := filepath.Base(path)
+	return (name == agentID+".jsonl" || name == paths.AgentTranscriptFileName(agentID)) &&
+		agent.TaskTranscriptBesideParent(parentPath, sessionID, path)
 }
 
 // ReadSession reads a session from Factory AI Droid's storage (JSONL transcript file).

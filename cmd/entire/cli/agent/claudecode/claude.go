@@ -86,6 +86,15 @@ func (c *ClaudeCodeAgent) ResolveSessionFile(sessionDir, agentSessionID string) 
 	return filepath.Join(sessionDir, agentSessionID+".jsonl")
 }
 
+// TaskTranscriptMatches reports whether path is agent-<agentID>.jsonl in the
+// session's subagents directory or, for older Claude versions, beside the
+// session transcript.
+func (c *ClaudeCodeAgent) TaskTranscriptMatches(parentPath, sessionID, agentID, path string) bool {
+	return agentID != "" &&
+		filepath.Base(path) == paths.AgentTranscriptFileName(agentID) &&
+		agent.TaskTranscriptBesideParent(parentPath, sessionID, path)
+}
+
 // ProtectedDirs returns directories that Claude uses for config/state.
 func (c *ClaudeCodeAgent) ProtectedDirs() []string { return []string{".claude"} }
 
@@ -134,6 +143,19 @@ func (c *ClaudeCodeAgent) GetSessionBaseDir() (string, error) {
 	}
 	return filepath.Join(configDir, "projects"), nil
 }
+
+// SessionHome returns Claude Code's configuration directory.
+func (c *ClaudeCodeAgent) SessionHome() (string, error) {
+	return resolveClaudeConfigDir()
+}
+
+// HomeLayout reports that Claude Code keeps per-project session directories
+// under projects.
+func (c *ClaudeCodeAgent) HomeLayout() agent.HomeLayout {
+	return agent.HomeLayout{Stores: []string{"projects"}}
+}
+
+var _ agent.HomeLayoutProvider = (*ClaudeCodeAgent)(nil)
 
 // ReadSession reads a session from Claude's storage (JSONL transcript file).
 // The session data is stored in NativeData as raw JSONL bytes.
