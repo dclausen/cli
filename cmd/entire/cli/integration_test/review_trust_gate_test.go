@@ -10,8 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/entireio/cli/cmd/entire/cli/agent"
-	"github.com/entireio/cli/cmd/entire/cli/interactive"
+	"github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
@@ -83,8 +82,8 @@ func newTrustGateRepo(t *testing.T) *trustGateRepo {
 	if err := os.Symlink(gitPath, filepath.Join(bin, "git")); err != nil {
 		t.Fatal(err)
 	}
-	env.ExtraEnv = append(env.ExtraEnv, "PATH="+bin+":/bin", "CLAUDECODE=")
-	for _, name := range append(agent.CallerSessionEnvVars(), interactive.AgentSubprocessEnvVars()...) {
+	env.ExtraEnv = append(env.ExtraEnv, "PATH="+bin+":/bin")
+	for _, name := range review.AgentCallerEnvVars() {
 		env.ExtraEnv = append(env.ExtraEnv, name+"=")
 	}
 	return repo

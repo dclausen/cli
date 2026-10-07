@@ -198,6 +198,11 @@ func NewCommand(deps Deps) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			// Discover external agents so review configs that target them
+			// resolve correctly — without this, GetAgentsWithHooksInstalled
+			// and agent.Get can't see them. Before --target too: the gate also
+			// needs their declared caller variables.
+			external.DiscoverAndRegister(ctx)
 			gateOpts := reviewGateOptions{
 				TrustTarget:    trustTarget,
 				Command:        reviewInvocation(cmd, args),
@@ -220,11 +225,6 @@ func NewCommand(deps Deps) *cobra.Command {
 			if cleanupWorktree {
 				return errors.New("--cleanup-worktree requires --target")
 			}
-
-			// Discover external agents so review configs that target them
-			// resolve correctly — without this, GetAgentsWithHooksInstalled
-			// and agent.Get can't see them.
-			external.DiscoverAndRegister(ctx)
 
 			if listModels {
 				return runReviewListModels(ctx, cmd, agentOverride, deps)

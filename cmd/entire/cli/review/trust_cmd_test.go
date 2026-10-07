@@ -8,9 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
-	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/cmd/entire/cli/review"
 	reviewtypes "github.com/entireio/cli/cmd/entire/cli/review/types"
 	"github.com/entireio/cli/cmd/entire/cli/settings"
@@ -21,9 +19,7 @@ import (
 // is running this", so the developer's own agent session cannot leak in.
 func clearAgentCallerEnv(t *testing.T) {
 	t.Helper()
-	names := append(agent.CallerSessionEnvVars(), interactive.AgentSubprocessEnvVars()...)
-	names = append(names, "CLAUDECODE", "GIT_TERMINAL_PROMPT")
-	for _, name := range names {
+	for _, name := range review.AgentCallerEnvVars() {
 		t.Setenv(name, "")
 		os.Unsetenv(name)
 	}

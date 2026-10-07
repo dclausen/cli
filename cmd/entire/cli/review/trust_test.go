@@ -74,7 +74,7 @@ func TestTrustGate(t *testing.T) {
 			name:        "matching trust-target from an agent runs and says so",
 			subject:     foreignSubject(),
 			trust:       strings.ToUpper(trustTestHead),
-			agentCaller: "CLAUDECODE",
+			agentCaller: "a Claude Code session",
 			wantOut:     []string{"Running the review of 9bd5931e1a2b as approved", "Approved with --trust-target from a Claude Code session."},
 		},
 		{
@@ -396,6 +396,35 @@ func TestAgentCallerNamesCoverDetection(t *testing.T) {
 	for _, name := range append(names, "CLAUDECODE") {
 		if _, ok := agentCallerNames[name]; !ok {
 			t.Errorf("agentCallerNames has no entry for %s", name)
+		}
+	}
+}
+
+func TestDetectAgentCaller(t *testing.T) {
+	clearEnv := func() {
+		for _, name := range AgentCallerEnvVars() {
+			t.Setenv(name, "")
+		}
+	}
+	tests := []struct {
+		env  map[string]string
+		want string
+	}{
+		{nil, ""},
+		{map[string]string{"CLAUDECODE": "1"}, "a Claude Code session"},
+		{map[string]string{"ANTIGRAVITY_AGENT": "1"}, "an Antigravity session"},
+		{map[string]string{"FACTORY_ENV": "production"}, "a Factory Droid session"},
+		{map[string]string{"AI_AGENT": "devin@1"}, "a devin@1 session (AI_AGENT)"},
+		{map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "an agent or CI (GIT_TERMINAL_PROMPT=0)"},
+		{map[string]string{"GIT_TERMINAL_PROMPT": "1"}, ""},
+	}
+	for _, tt := range tests {
+		clearEnv()
+		for k, v := range tt.env {
+			t.Setenv(k, v)
+		}
+		if got := detectAgentCaller(); got != tt.want {
+			t.Errorf("detectAgentCaller() with %v = %q, want %q", tt.env, got, tt.want)
 		}
 	}
 }

@@ -119,7 +119,9 @@ approval first.
 - **Approval.** In a terminal, a confirm lists up to three entries (the
   branch's own first) and defaults to Cancel. Without a terminal, or when an
   agent is driving the command (caller-session variables, the shared
-  agent-subprocess sentinels, or `CLAUDECODE`), the review is refused with a
+  agent-subprocess sentinels, `CLAUDECODE`, Antigravity's and Droid's
+  variables, the cross-tool `AI_AGENT`, `GIT_TERMINAL_PROMPT=0`, or variables
+  an external agent declares in `caller_env_vars`), the review is refused with a
   fixed message that tells the agent to stop and ask the user, plus the
   `--trust-target <sha>` command to run once approved. `--trust-target` takes
   the full SHA of the pinned head (a short prefix could be ground to match a

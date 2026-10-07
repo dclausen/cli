@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -21,6 +23,7 @@ import (
 	"charm.land/huh/v2"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/agent/external"
 	"github.com/entireio/cli/cmd/entire/cli/gitexec"
 	"github.com/entireio/cli/cmd/entire/cli/gitrepo"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
@@ -239,41 +242,77 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-// detectAgentCaller returns the variable showing an agent runs this command,
-// or "". CLAUDECODE is checked here because the shared sentinel list omits it.
+// detectAgentCaller returns a label for the agent running this command, or ""
+// when none is detected. CLAUDECODE is checked here because the shared
+// sentinel list omits it; AI_AGENT is the cross-tool convention, and external
+// agents can declare their own variables.
 func detectAgentCaller() string {
 	for _, name := range agent.CallerSessionEnvVars() {
 		if os.Getenv(name) != "" {
-			return name
+			return agentCallerLabel(name)
 		}
 	}
 	if name := interactive.AgentSubprocessEnvVar(); name != "" {
-		return name
+		return agentCallerLabel(name)
 	}
-	if os.Getenv("CLAUDECODE") != "" {
-		return "CLAUDECODE"
+	for _, name := range []string{"CLAUDECODE", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_TRAJECTORY_ID", "FACTORY_ENV"} {
+		if os.Getenv(name) != "" {
+			return agentCallerLabel(name)
+		}
+	}
+	declared := external.CallerEnvVars()
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		if os.Getenv(name) != "" {
+			return withArticle(sanitizeDisplay(declared[name])) + " session"
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("AI_AGENT")); v != "" {
+		return withArticle(truncateDisplay(sanitizeDisplay(v), 40)) + " session (AI_AGENT)"
+	}
+	if os.Getenv("GIT_TERMINAL_PROMPT") == "0" {
+		return "an agent or CI (GIT_TERMINAL_PROMPT=0)"
 	}
 	return ""
 }
 
-// agentCallerNames maps the variables detectAgentCaller returns to agent names.
+// agentCallerNames maps the variables detectAgentCaller checks to agent names.
 var agentCallerNames = map[string]string{
-	"CLAUDECODE":               "Claude Code",
-	"CLAUDE_CODE_SESSION_ID":   "Claude Code",
-	"CODEX_SESSION_ID":         "Codex",
-	"COPILOT_AGENT_SESSION_ID": "Copilot",
-	"COPILOT_CLI":              "Copilot",
-	"CURSOR_CONVERSATION_ID":   "Cursor",
-	"CURSOR_AGENT":             "Cursor",
-	"PI_SESSION_ID":            "Pi",
-	"PI_CODING_AGENT":          "Pi",
-	"GEMINI_CLI":               "Gemini CLI",
-	"OPENCODE":                 "OpenCode",
+	"CLAUDECODE":                "Claude Code",
+	"CLAUDE_CODE_SESSION_ID":    "Claude Code",
+	"CODEX_SESSION_ID":          "Codex",
+	"COPILOT_AGENT_SESSION_ID":  "Copilot",
+	"COPILOT_CLI":               "Copilot",
+	"CURSOR_CONVERSATION_ID":    "Cursor",
+	"CURSOR_AGENT":              "Cursor",
+	"PI_SESSION_ID":             "Pi",
+	"PI_CODING_AGENT":           "Pi",
+	"GEMINI_CLI":                "Gemini CLI",
+	"OPENCODE":                  "OpenCode",
+	"ANTIGRAVITY_AGENT":         "Antigravity",
+	"ANTIGRAVITY_TRAJECTORY_ID": "Antigravity",
+	"FACTORY_ENV":               "Factory Droid",
+}
+
+// AgentCallerEnvVars lists every built-in variable detectAgentCaller reads, so
+// tests can clear them all.
+func AgentCallerEnvVars() []string {
+	names := append(agent.CallerSessionEnvVars(), interactive.AgentSubprocessEnvVars()...)
+	names = append(names, slices.Collect(maps.Keys(agentCallerNames))...)
+	names = append(names, "AI_AGENT", "GIT_TERMINAL_PROMPT")
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+func withArticle(name string) string {
+	if name != "" && strings.ContainsRune("AEIOUaeiou", rune(name[0])) {
+		return "an " + name
+	}
+	return "a " + name
 }
 
 func agentCallerLabel(envVar string) string {
 	if name, ok := agentCallerNames[envVar]; ok {
-		return "a " + name + " session"
+		return withArticle(name) + " session"
 	}
 	return "an agent session (" + envVar + ")"
 }
@@ -324,9 +363,9 @@ func (g trustGate) run(ctx context.Context, errOut io.Writer) error {
 		fmt.Fprintf(errOut, "Running the review of %s as approved%s.\n", shortSHA(g.Subject.HeadSHA), suffix)
 		if g.AgentCaller != "" {
 			// Visible, so the user notices an approval they didn't give.
-			fmt.Fprintf(errOut, "Approved with --trust-target from %s.\n", agentCallerLabel(g.AgentCaller))
+			fmt.Fprintf(errOut, "Approved with --trust-target from %s.\n", g.AgentCaller)
 			logging.Info(ctx, "review of someone else's code approved via --trust-target",
-				slog.String("agent_env", g.AgentCaller),
+				slog.String("agent", g.AgentCaller),
 				slog.String("head", g.Subject.HeadSHA))
 		}
 		return nil
