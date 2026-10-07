@@ -422,7 +422,7 @@ func TestProjectCreate_WizardCancelledCreatesNothing(t *testing.T) {
 func TestProjectCreateState_DeclinedSummary(t *testing.T) {
 	t.Parallel()
 	var w bytes.Buffer
-	s := &projectCreateState{confirmed: true}
+	s := &projectCreateState{createWizard: createWizard{action: projectCreateCancelled, confirmed: true}}
 	assert.True(t, s.confirm(&w))
 	assert.Empty(t, w.String())
 	s.confirmed = false

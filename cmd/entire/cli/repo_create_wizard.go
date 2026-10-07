@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -87,6 +86,9 @@ type repoCreateAnswers struct {
 // repoCreateState is the wizard's model: the projects on offer, the answers
 // so far, and the repo names the duplicate check reads.
 type repoCreateState struct {
+	// createWizard runs the forms and holds the summary's answer.
+	createWizard
+
 	projects []repoProject
 	// hiddenProjects counts the projects left out because the caller cannot
 	// create repositories in them.
@@ -107,12 +109,7 @@ type repoCreateState struct {
 	// The live pages whose headings recap earlier answers; nil outside the
 	// paged form.
 	nameGrp, visibilityGrp, advancedGrp, formatGrp *huh.Group
-	// nav keeps Shift+Tab working on a page that fails validation; nil
-	// outside the paged form.
-	nav *uiform.BackNav
-
-	answers   repoCreateAnswers
-	confirmed bool
+	answers                                        repoCreateAnswers
 }
 
 // repoCreateProjects builds the picker rows from the visible projects, sorted
@@ -152,7 +149,7 @@ func newRepoCreateState(projects []coreapi.Project, name, defaultName string) (*
 	if len(rows) == 0 {
 		return nil, errors.New("you have no project you can create repositories in; create one with `entire project create`")
 	}
-	s := &repoCreateState{projects: rows, hiddenProjects: hidden}
+	s := &repoCreateState{projects: rows, hiddenProjects: hidden, createWizard: createWizard{action: repoCreateCancelled}}
 	s.answers = repoCreateAnswers{
 		ProjectID:    rows[0].id,
 		Name:         cmp.Or(name, defaultName),
@@ -249,7 +246,7 @@ func (s *repoCreateState) summary() string {
 	req := s.request()
 	// The row count must not change while the form runs: huh sizes pages up
 	// front (see summaryGroup).
-	rows := [][2]string{
+	rows := []wizardRow{
 		{"Project", req.projectName},
 		{"Name", req.name},
 		{"Path", "/" + nativeCloneForge + "/" + req.projectName + "/" + req.name},
@@ -257,14 +254,7 @@ func (s *repoCreateState) summary() string {
 		{"Object format", s.objectFormatDisplay()},
 		{"Command", s.command()},
 	}
-	var b strings.Builder
-	for i, r := range rows {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(&b, "%-14s %s", r[0], r[1])
-	}
-	return b.String()
+	return wizardRows(rows, wizardLabelWidth("Object format")+2)
 }
 
 // repoCreatePrompt is the seam the wizard's forms sit behind. It fills in
@@ -337,20 +327,6 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 	})
 }
 
-// escapeNoteMarkdown escapes the characters huh's note renderer treats as
-// markdown (italic, bold, code), so the summary shows the answers verbatim.
-func escapeNoteMarkdown(text string) string {
-	var b strings.Builder
-	for _, r := range text {
-		switch r {
-		case '\\', '_', '*', '`':
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
 // repoCreateFolderName is the name the wizard suggests when none was given:
 // the current folder's, as one the server would accept (suggestRepoName
 // lowercases it, since create refuses uppercase), or nothing when the folder's
@@ -389,15 +365,15 @@ func (b *repoCreateBudget) phase(ctx context.Context) (context.Context, func()) 
 }
 
 // runRepoCreateForms runs the wizard as one paged form, so Shift+Tab walks
-// back through earlier answers. huh's accessible runner evaluates neither
-// OptionsFunc nor DescriptionFunc, so there each stage is its own form, built
-// once the answers it depends on are in.
+// back through earlier answers; in accessible mode, as one form per stage
+// (see createWizard.runStages).
 func runRepoCreateForms(cmd *cobra.Command, s *repoCreateState) (bool, error) {
 	s.confirmed = true
 	if IsAccessibleMode() {
-		// Each stage is built only when it runs: the summary's text is read at
-		// build time, so building it up front showed stale answers.
-		for _, stage := range []func() []*huh.Group{
+		return s.runStages(cmd,
+			// Applied once the project stage has run (a no-op after the
+			// others), so the name check reads the chosen project.
+			func() { s.setProject(s.pickedProject) },
 			func() []*huh.Group { return []*huh.Group{s.projectGroup(true)} },
 			func() []*huh.Group {
 				return []*huh.Group{s.nameGroup(false), s.visibilityGroup(false), s.advancedGroup(false)}
@@ -409,54 +385,11 @@ func runRepoCreateForms(cmd *cobra.Command, s *repoCreateState) (bool, error) {
 				return []*huh.Group{s.formatGroup(false)}
 			},
 			func() []*huh.Group { return []*huh.Group{s.summaryGroup(false)} },
-		} {
-			groups := stage()
-			if len(groups) == 0 {
-				continue
-			}
-			if ok, err := runRepoCreateForm(cmd, s, groups...); !ok || err != nil {
-				return ok, err
-			}
-			// Applied once the project stage has run (a no-op after the
-			// others), so the name check reads the chosen project.
-			s.setProject(s.pickedProject)
-		}
-		return true, nil
+		)
 	}
-	s.nav = uiform.NewBackNav()
-	return runRepoCreateForm(cmd, s, s.projectGroup(false), s.nameGroup(true), s.visibilityGroup(true),
+	s.startPaged()
+	return s.runForm(cmd, s.projectGroup(false), s.nameGroup(true), s.visibilityGroup(true),
 		s.advancedGroup(true), s.formatGroup(true), s.summaryGroup(true))
-}
-
-// runRepoCreateForm runs one form and classifies how it ended: a cancelled
-// context is an interruption and comes back as an error, a user abort prints
-// the cancellation line where the prompt was, and a declined summary does too.
-func runRepoCreateForm(cmd *cobra.Command, s *repoCreateState, groups ...*huh.Group) (bool, error) {
-	ctx := cmd.Context()
-	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("repository create: %w", err)
-	}
-	form := NewAccessibleForm(groups...)
-	if s.nav != nil {
-		form = form.WithProgramOptions(s.nav.ProgramOption())
-	}
-	render, err := runPromptForm(cmd, form)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, fmt.Errorf("repository create: %w", ctxErr)
-	}
-	if err != nil {
-		return false, handleFormCancellation(render, repoCreateCancelled, err)
-	}
-	return s.confirm(render), nil
-}
-
-// confirm turns a declined summary into the cancellation line, written where
-// the prompt was drawn.
-func (s *repoCreateState) confirm(render io.Writer) bool {
-	if !s.confirmed {
-		fmt.Fprintln(render, repoCreateCancelled+" cancelled.")
-	}
-	return s.confirmed
 }
 
 // projectGroup offers the projects. In accessible mode huh drops a select's
@@ -527,25 +460,19 @@ const (
 //	✓ Name        web
 //	✓ Visibility  private
 func (s *repoCreateState) decided(stages int) string {
-	lines := []string{"✓ Project     " + s.project().name}
+	rows := []wizardRow{{"✓ Project", s.project().name}}
 	if stages >= repoStageName {
-		lines = append(lines, "✓ Name        "+strings.TrimSpace(s.answers.Name))
+		rows = append(rows, wizardRow{"✓ Name", strings.TrimSpace(s.answers.Name)})
 	}
 	if stages >= repoStageVisibility {
-		lines = append(lines, "✓ Visibility  "+string(s.answers.Visibility))
+		rows = append(rows, wizardRow{"✓ Visibility", string(s.answers.Visibility)})
 	}
-	return strings.Join(lines, "\n")
+	return wizardRows(rows, wizardLabelWidth("✓ Project", "✓ Name", "✓ Visibility")+2)
 }
 
-// pageTitle is a page's heading with the recap, dimmed, above it.
+// pageTitle is a page's heading with the recap above it.
 func (s *repoCreateState) pageTitle(stages int, heading string) string {
-	// Line by line: rendering the block at once pads every line to the
-	// widest one.
-	lines := strings.Split(s.decided(stages), "\n")
-	for i, l := range lines {
-		lines[i] = decidedDim.Render(l)
-	}
-	return strings.Join(append(lines, heading), "\n")
+	return wizardPageTitle(s.decided(stages), heading)
 }
 
 // refreshPageTitles rewrites the recapping headings after an answer changes.
@@ -619,26 +546,15 @@ func (s *repoCreateState) nameGroup(dynamic bool) *huh.Group {
 	return s.nameGrp
 }
 
-// accessibleName adapts the name input to huh's accessible runner, which keeps
-// the current value on an empty answer but validates the empty answer first,
-// so a pre-filled name could not be accepted. It also never shows the value it
-// would keep, so the question names it. Descriptions are dropped there too, so
-// a name note leads the question.
+// accessibleName is the name input for huh's accessible runner (see
+// wizardDefaultInput). Descriptions are dropped there, so a name note leads
+// the question.
 func (s *repoCreateState) accessibleName(in *huh.Input) *huh.Input {
-	in.Value(&s.answers.Name)
 	title := "Repository name"
 	if note := s.nameNote(); note != "" {
 		title = note + " " + title
 	}
-	current := strings.TrimSpace(s.answers.Name)
-	if current == "" {
-		return in.Title(title)
-	}
-	return in.
-		Title(fmt.Sprintf("%s (press Enter for %q)", title, current)).
-		Validate(func(v string) error {
-			return s.validateName(cmp.Or(strings.TrimSpace(v), current))
-		})
+	return wizardDefaultInput(in, &s.answers.Name, title, s.validateName)
 }
 
 func (s *repoCreateState) visibilityGroup(dynamic bool) *huh.Group {
@@ -691,29 +607,11 @@ func (s *repoCreateState) formatGroup(dynamic bool) *huh.Group {
 }
 
 // summaryGroup shows what will be created and asks to go ahead. dynamic keeps
-// the summary current as earlier pages are revisited.
+// the summary current as earlier pages are revisited; see
+// createWizard.summaryGroup for why repoCreateAnswers' fields are exported.
 func (s *repoCreateState) summaryGroup(dynamic bool) *huh.Group {
-	// The static text matters even when dynamic: huh sizes every page from
-	// the first render, before a DescriptionFunc has run, so an empty
-	// description left the page too short. The row count never changes, so
-	// the initial text sizes it right.
-	note := huh.NewNote().Description(s.summary())
-	if dynamic {
-		// The paged form renders a note's text as markdown, so `my_app`
-		// would show as an italic "myapp": the summary is escaped there. The
-		// accessible runner prints it raw, so it is not escaped there.
-		escaped := func() string { return escapeNoteMarkdown(s.summary()) }
-		note.Description(escaped()).DescriptionFunc(escaped, &s.answers)
-	}
-	confirm := huh.NewConfirm().
-		Title("Create this repository?").
-		Affirmative("Create").
-		Negative("Cancel").
-		Value(&s.confirmed)
-	if dynamic {
-		confirm.Description("Shift+Tab goes back to change an answer.")
-	}
-	return huh.NewGroup(note, confirm).Title("Summary")
+	return s.createWizard.summaryGroup(s.summary, &s.answers, dynamic,
+		"Create this repository?", "Shift+Tab goes back to change an answer.")
 }
 
 // repoProjectAccessor routes the project select through setProject, so a

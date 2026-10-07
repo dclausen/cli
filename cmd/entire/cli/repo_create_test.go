@@ -658,7 +658,9 @@ func TestRepoCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
 func TestRepoCreateState_DeclinedSummary(t *testing.T) {
 	t.Parallel()
 	var w bytes.Buffer
-	s := &repoCreateState{confirmed: true}
+	s, err := newRepoCreateState(wizardTestProjects(), "", "")
+	require.NoError(t, err)
+	s.confirmed = true
 	require.True(t, s.confirm(&w))
 	require.Empty(t, w.String())
 	s.confirmed = false
@@ -1249,14 +1251,6 @@ func TestRepoCreate_VisibilityFailureComesLast(t *testing.T) {
 	failed := strings.Index(out, "setting its visibility to public failed")
 	require.GreaterOrEqual(t, created, 0)
 	require.Greater(t, failed, created, "the failure is the last word:\n%s", out)
-}
-
-// The paged form renders a note as markdown; the summary escapes what it
-// treats as formatting, so `my_app` does not show as an italic "myapp".
-func TestEscapeNoteMarkdown(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, "my\\_app \\*x\\* \\`y\\` a\\\\b", escapeNoteMarkdown("my_app *x* `y` a\\b"))
-	require.Equal(t, "/et/acme/web", escapeNoteMarkdown("/et/acme/web"))
 }
 
 // The folder suggestion maps the separators folder names use and repo names
