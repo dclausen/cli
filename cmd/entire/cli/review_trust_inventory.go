@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path"
@@ -324,12 +325,29 @@ func mcpServerCommand(raw json.RawMessage) string {
 	serverURL, _ := jsonString(server["url"])
 	switch {
 	case command != "" && argsOK:
-		return strings.Join(append([]string{command}, hideTrustSecretArgs(args)...), " ")
+		// The server's env can change what the command does (NODE_OPTIONS,
+		// LD_PRELOAD), so its names are shown; values stay hidden like any env.
+		parts := mcpServerEnvNames(server["env"])
+		parts = append(parts, command)
+		return strings.Join(append(parts, hideTrustSecretArgs(args)...), " ")
 	case command == "" && serverURL != "":
 		return hideTrustURLSecrets(serverURL)
 	default:
 		return trustSettingValue("", raw)
 	}
+}
+
+// mcpServerEnvNames renders an MCP server's env as NAME=hidden words, sorted.
+func mcpServerEnvNames(raw json.RawMessage) []string {
+	env, ok := jsonObject(raw)
+	if !ok {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(env))
+	for i, name := range names {
+		names[i] = name + "=" + trustHiddenValue
+	}
+	return names
 }
 
 // instructionDirEntries lists each item directly under dirs. These files can

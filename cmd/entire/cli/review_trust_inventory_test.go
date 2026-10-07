@@ -424,7 +424,8 @@ func TestTrustInventory_MCPCredentialsAreNotShown(t *testing.T) {
 		".mcp.json": `{"mcpServers":{` +
 			`"flag":{"command":"npx","args":["mcp-a","--token","` + secret + `","--api-key=` + secret + `","--verbose"]},` +
 			`"query":{"url":"https://mcp.example/sse?api_key=` + secret + `&region=us"},` +
-			`"userinfo":{"url":"https://bot:` + secret + `@mcp.example/sse"}}}`,
+			`"userinfo":{"url":"https://bot:` + secret + `@mcp.example/sse"},` +
+			`"env":{"command":"node","args":["mcp.js"],"env":{"NODE_OPTIONS":"--require ` + secret + `","API_TOKEN":"` + secret + `"}}}}`,
 		".codex/config.toml": "[mcp_servers.search]\ncommand = \"npx\"\nargs = [\"search-mcp\", \"--auth\", \"" + secret + "\"]\n",
 	})
 	inv := trustInventoryBoth(t, dir, "claude-code", "codex")
@@ -440,6 +441,7 @@ func TestTrustInventory_MCPCredentialsAreNotShown(t *testing.T) {
 		"query":    "https://mcp.example/sse?api_key=hidden&region=us",
 		"userinfo": "https://bot@mcp.example/sse",
 		"search":   "npx search-mcp --auth " + trustHiddenValue,
+		"env":      "API_TOKEN=" + trustHiddenValue + " NODE_OPTIONS=" + trustHiddenValue + " node mcp.js",
 	} {
 		if got[name] != want {
 			t.Errorf("entry %q = %q, want %q", name, got[name], want)
