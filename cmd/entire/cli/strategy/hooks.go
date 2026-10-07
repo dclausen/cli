@@ -743,11 +743,11 @@ func InstallGitHook(ctx context.Context, silent, absolutePath bool) (int, error)
 				if err := root.Rename(spec.name, backupName); err != nil {
 					return installedCount, fmt.Errorf("failed to back up %s: %w", spec.name, err)
 				}
-				fmt.Fprintf(os.Stderr, "[entire] Your %s hook still runs, after Entire's (moved to %s).\n",
+				fmt.Fprintf(stderrWriter, "[entire] Your %s hook still runs, after Entire's (moved to %s).\n",
 					spec.name, filepath.Join(hooksDir, backupName))
 				logging.Info(ctx, "git hook backed up", slog.String("hook", spec.name))
 			} else {
-				fmt.Fprintf(os.Stderr, "[entire] Warning: replacing %s: %s already exists from a previous install and is the hook that keeps running; the current %s is not kept.\n",
+				fmt.Fprintf(stderrWriter, "[entire] Warning: replacing %s: %s already exists from a previous install and is the hook that keeps running; the current %s is not kept.\n",
 					spec.name, filepath.Join(hooksDir, backupName), spec.name)
 				logging.Warn(ctx, "git hook replaced; existing backup kept", slog.String("hook", spec.name))
 			}
@@ -770,7 +770,7 @@ func InstallGitHook(ctx context.Context, silent, absolutePath bool) (int, error)
 	}
 
 	if !silent {
-		fmt.Println("✓ Installed git hooks (prepare-commit-msg, commit-msg, post-commit, pre-push)")
+		fmt.Println("✓ Installed git hooks (prepare-commit-msg, commit-msg, post-commit, post-rewrite, pre-push)")
 		fmt.Println("  Hooks delegate to the current strategy at runtime")
 	}
 
@@ -871,7 +871,7 @@ func RemoveGitHookDetailed(ctx context.Context) (GitHookRemoval, error) {
 		if hookFileExists(root, backupName) {
 			if hookExists && !hookIsOurs {
 				// A non-Entire hook is present — don't overwrite it with the backup
-				fmt.Fprintf(os.Stderr, "[entire] Warning: %s was modified since install; backup %s%s left in place\n", hook, hook, backupSuffix)
+				fmt.Fprintf(stderrWriter, "[entire] Warning: %s was modified since install; backup %s%s left in place\n", hook, hook, backupSuffix)
 			} else {
 				if err := root.Rename(backupName, hook); err != nil {
 					removeErrors = append(removeErrors, fmt.Sprintf("restore %s%s: %v", hook, backupSuffix, err))

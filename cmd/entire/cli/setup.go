@@ -3011,7 +3011,7 @@ func confirmUninstall(p *uninstallPrinter, summary uninstallSummary) (bool, erro
 		rows = append(rows, explainRow{Label: "retired hooks", Value: "Gemini CLI"})
 	}
 	if summary.gitHooksInstalled {
-		rows = append(rows, explainRow{Label: "git hooks", Value: "prepare-commit-msg, commit-msg, post-commit, pre-push"})
+		rows = append(rows, explainRow{Label: "git hooks", Value: "prepare-commit-msg, commit-msg, post-commit, post-rewrite, pre-push"})
 	}
 	if summary.sessionStateCount > 0 {
 		rows = append(rows, explainRow{Label: "session states", Value: strconv.Itoa(summary.sessionStateCount)})
