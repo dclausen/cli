@@ -284,11 +284,12 @@ func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, ref string, no
 	if viewRef != "" {
 		viewRef = shellArg(viewRef)
 	}
-	// Without a path the ID is the only handle on the new repo, so the name
-	// carries it; with one, the <project>/<repo> it names is enough.
+	// The repo is named by its fully qualified path, /et/<project>/<repo>.
+	// Without one the ID is the only handle on the new repo, so the name
+	// carries it.
 	shown := fmt.Sprintf("%s (%s)", result.Name, result.ID)
 	if ref != "" {
-		shown = strings.TrimPrefix(ref, "/"+nativeCloneForge+"/")
+		shown = ref
 	}
 	// repoRemoteURL answers "" for both an invalid host and a repo still
 	// provisioning; warn so the missing remote does not suggest waiting.
@@ -306,7 +307,7 @@ func reportRepoCreation(cmd *cobra.Command, result *coreapi.Repo, ref string, no
 			outputErr = printJSON(cmd.OutOrStdout(), wire)
 		}
 	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created repository %s\n  Last observed state: %s\n", shown, result.State.Or("unavailable"))
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created repo %s\n  Last observed state: %s\n", shown, result.State.Or("unavailable"))
 		if reason := result.ProvisionReason.Or(""); reason != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Provision reason: "+reason)
 		}

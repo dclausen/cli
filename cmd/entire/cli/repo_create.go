@@ -71,7 +71,7 @@ var errRepoCreateNeedsInput = errors.New("required without an interactive termin
 // silently dropped; flags mean the flag form. Worded as `project create`
 // words its own.
 var errRepoCreateFlagsNeedInput = errors.New("required when create flags are given: " +
-	"entire repo create <name> --project <project> (or run 'entire repo create [<name>]' in a terminal, without flags, to be asked)")
+	"entire repo create <name> --project <project> (or, in a terminal and without flags, run 'entire repo create' or 'entire repo create <name>' to be asked)")
 
 // errRepoCreateNoWaitVisibility refuses --visibility with --no-wait: the
 // visibility is set on a ready repository, which --no-wait does not wait

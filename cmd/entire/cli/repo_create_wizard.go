@@ -337,13 +337,35 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 	})
 }
 
+// escapeNoteMarkdown escapes the characters huh's note renderer treats as
+// markdown (italic, bold, code), so the summary shows the answers verbatim.
+func escapeNoteMarkdown(text string) string {
+	var b strings.Builder
+	for _, r := range text {
+		switch r {
+		case '\\', '_', '*', '`':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // repoCreateFolderName is the name the wizard suggests when none was given:
 // the current folder's, as one the server would accept (suggestRepoName
 // lowercases it, since create refuses uppercase), or nothing when the folder's
 // name cannot become one. It only fills the field; what is created stays the
 // server's to judge.
 func repoCreateFolderName(ctx context.Context) string {
-	if use, ok := suggestRepoName(currentFolderName(ctx)); ok {
+	// Spaces and underscores, common in folder names, are not allowed in a
+	// repo name: they become hyphens before the suggestion is shape-checked.
+	folder := strings.Trim(strings.Map(func(r rune) rune {
+		if r == '_' || unicode.IsSpace(r) {
+			return '-'
+		}
+		return r
+	}, currentFolderName(ctx)), "-")
+	if use, ok := suggestRepoName(folder); ok {
 		return use
 	}
 	return ""
@@ -677,7 +699,11 @@ func (s *repoCreateState) summaryGroup(dynamic bool) *huh.Group {
 	// the initial text sizes it right.
 	note := huh.NewNote().Description(s.summary())
 	if dynamic {
-		note.DescriptionFunc(s.summary, &s.answers)
+		// The paged form renders a note's text as markdown, so `my_app`
+		// would show as an italic "myapp": the summary is escaped there. The
+		// accessible runner prints it raw, so it is not escaped there.
+		escaped := func() string { return escapeNoteMarkdown(s.summary()) }
+		note.Description(escaped()).DescriptionFunc(escaped, &s.answers)
 	}
 	confirm := huh.NewConfirm().
 		Title("Create this repository?").

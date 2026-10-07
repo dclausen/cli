@@ -375,7 +375,7 @@ func TestRepoCreate_FlagsMeanTheFlagForm(t *testing.T) {
 		f.serve()
 		_, _, err := execRepoCreateArgs(t, args...)
 		require.ErrorIs(t, err, errRepoCreateFlagsNeedInput, args)
-		require.ErrorContains(t, err, "required when create flags are given: entire repo create <name> --project <project> (or run 'entire repo create [<name>]' in a terminal, without flags, to be asked)")
+		require.ErrorContains(t, err, "required when create flags are given: entire repo create <name> --project <project> (or, in a terminal and without flags, run 'entire repo create' or 'entire repo create <name>' to be asked)")
 		require.Zero(t, f.requestCount(), "refused before any request: %v", args)
 	}
 }
@@ -429,7 +429,7 @@ func TestRepoCreate_VisibilityFlag(t *testing.T) {
 		stdout, stderr, err := execRepoCreateArgs(t, "web", "--project", "acme", "--visibility", "public")
 		var silent *SilentError
 		require.ErrorAs(t, err, &silent, "the failure is explained on stderr, not reprinted")
-		require.Contains(t, stdout, "✓ Created repository acme/web")
+		require.Contains(t, stdout, "✓ Created repo /et/acme/web")
 		require.NotContains(t, stdout, "Next steps", "next steps would read as success")
 		require.Contains(t, stderr, "was created, but setting its visibility to public failed")
 		require.Contains(t, stderr, "entire repo edit /et/acme/web --visibility public")
@@ -469,7 +469,7 @@ func TestRepoCreate_NextSteps(t *testing.T) {
 		f.serve()
 		stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
 		require.NoError(t, err)
-		require.Contains(t, stdout, "✓ Created repository acme/web")
+		require.Contains(t, stdout, "✓ Created repo /et/acme/web")
 		require.Contains(t, stdout, "entire repo clone /et/acme/web")
 		require.NotContains(t, stdout, testCreatedRepoID)
 	})
@@ -721,7 +721,7 @@ func TestRepoCreate_CompleteFlagsSkipTheWizard(t *testing.T) {
 	})
 	stdout, _, err := execRepoCreateArgs(t, "web", "--project", "acme")
 	require.NoError(t, err)
-	require.Contains(t, stdout, "✓ Created repository acme/web\n")
+	require.Contains(t, stdout, "✓ Created repo /et/acme/web\n")
 	require.NotContains(t, stdout, testCreatedRepoID)
 	require.Len(t, f.createBodies, 1)
 	require.NotContains(t, f.createBodies[0], "objectFormat", "omitted flags stay out of the request")
@@ -749,7 +749,7 @@ func TestRepoCreateWizard_CreatesWhatTheSummaryShowed(t *testing.T) {
 	require.Equal(t, testCreateProjectBeta, f.createBodies[0]["projectId"])
 	require.Equal(t, "sha256", f.createBodies[0]["objectFormat"])
 	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies)
-	require.Contains(t, stdout, "✓ Created repository beta/web")
+	require.Contains(t, stdout, "✓ Created repo /et/beta/web")
 	require.Contains(t, stdout, "entire repo mirror add /et/beta/web")
 }
 
@@ -820,7 +820,7 @@ func TestRepoCreateWizard_AccessibleRun(t *testing.T) {
 	require.Contains(t, shown, "Command        entire repo create web --project beta --visibility public --object-format sha256")
 	require.NotContains(t, shown, testCreateProjectBeta, "no id is ever shown")
 
-	require.Contains(t, stdout, "✓ Created repository beta/web")
+	require.Contains(t, stdout, "✓ Created repo /et/beta/web")
 	require.NotContains(t, stdout, "Which project", "prompts stay off stdout")
 	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies)
 	require.Len(t, f.createBodies, 1)
@@ -879,7 +879,7 @@ func TestRepoCreate_VisibilitySurvivesTheReadinessSnapshot(t *testing.T) {
 	stdout, _, err := execRepoCreateArgs(t, "web", "--project", "acme", "--visibility", "private")
 	require.NoError(t, err)
 	require.Empty(t, f.visBodies)
-	require.Contains(t, stdout, "✓ Created repository acme/web")
+	require.Contains(t, stdout, "✓ Created repo /et/acme/web")
 }
 
 // A readiness wait that runs out --wait-timeout still leaves the requested
@@ -1044,7 +1044,7 @@ func TestRepoCreateFolderName_IsLowercased(t *testing.T) {
 	t.Chdir(dir)
 	require.Equal(t, "myapp", repoCreateFolderName(t.Context()))
 
-	odd := filepath.Join(t.TempDir(), "my app")
+	odd := filepath.Join(t.TempDir(), "my..app")
 	require.NoError(t, os.MkdirAll(odd, 0o755))
 	testutil.InitRepo(t, odd)
 	t.Chdir(odd)
@@ -1098,7 +1098,7 @@ func TestRepoCreate_NamesTheProjectOnlyWhenNothingElseDoes(t *testing.T) {
 		f.serve()
 		stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
 		require.NoError(t, err)
-		require.Contains(t, stdout, "✓ Created repository acme/web")
+		require.Contains(t, stdout, "✓ Created repo /et/acme/web")
 		require.Contains(t, stdout, "entire repo clone /et/acme/web")
 		require.Equal(t, 1, f.projectGets)
 	})
@@ -1124,7 +1124,7 @@ func TestRepoCreate_NamesTheProjectOnlyWhenNothingElseDoes(t *testing.T) {
 		f.serve()
 		stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
 		require.NoError(t, err, "the create succeeded")
-		require.Contains(t, stdout, "✓ Created repository web ("+testCreatedRepoID+")")
+		require.Contains(t, stdout, "✓ Created repo web ("+testCreatedRepoID+")")
 		require.NotContains(t, stdout, "Next steps")
 	})
 }
@@ -1245,8 +1245,30 @@ func TestRepoCreate_VisibilityFailureComesLast(t *testing.T) {
 	parent.SetArgs([]string{"create", "web", "--project", "acme", "--visibility", "public"})
 	require.Error(t, parent.ExecuteContext(t.Context()))
 	out := screen.String()
-	created := strings.Index(out, "✓ Created repository")
+	created := strings.Index(out, "✓ Created repo ")
 	failed := strings.Index(out, "setting its visibility to public failed")
 	require.GreaterOrEqual(t, created, 0)
 	require.Greater(t, failed, created, "the failure is the last word:\n%s", out)
+}
+
+// The paged form renders a note as markdown; the summary escapes what it
+// treats as formatting, so `my_app` does not show as an italic "myapp".
+func TestEscapeNoteMarkdown(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "my\\_app \\*x\\* \\`y\\` a\\\\b", escapeNoteMarkdown("my_app *x* `y` a\\b"))
+	require.Equal(t, "/et/acme/web", escapeNoteMarkdown("/et/acme/web"))
+}
+
+// The folder suggestion maps the separators folder names use and repo names
+// refuse onto hyphens before it is shape-checked.
+//
+// Not parallel: changes the working directory.
+func TestRepoCreateFolderName_MapsSeparators(t *testing.T) {
+	for folder, want := range map[string]string{"my_app": "my-app", "My App": "my-app", "_tools_": "tools"} {
+		dir := filepath.Join(t.TempDir(), folder)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		testutil.InitRepo(t, dir)
+		t.Chdir(dir)
+		require.Equal(t, want, repoCreateFolderName(t.Context()), folder)
+	}
 }

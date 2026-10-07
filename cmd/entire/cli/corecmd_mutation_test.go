@@ -100,7 +100,7 @@ func TestRepoCreate_HumanByDefault(t *testing.T) {
 	require.NoError(t, err)
 	// The project was given as a ULID and the path is not an /et/ one, so
 	// one lookup names the project for the output.
-	require.Contains(t, out, "✓ Created repository acme/web\n")
+	require.Contains(t, out, "✓ Created repo /et/acme/web\n")
 	require.NotContains(t, out, testDeleteULID)
 	require.Contains(t, out, "Remote: entire://c.example.com/gh/o/web")
 	require.Contains(t, errOut, "Waiting for repository web to become active")

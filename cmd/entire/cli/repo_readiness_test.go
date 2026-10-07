@@ -718,7 +718,7 @@ func TestRepoCreateReadinessResults(t *testing.T) {
 				if asJSON {
 					require.Contains(t, out, testDeleteULID)
 				} else {
-					require.Contains(t, out, "✓ Created repository project/web")
+					require.Contains(t, out, "✓ Created repo /et/project/web")
 				}
 				require.Contains(t, out, "entire://cell.example/et/project/web")
 				require.EqualValues(t, 1, posts.Load())
