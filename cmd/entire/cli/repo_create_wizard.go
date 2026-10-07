@@ -534,20 +534,22 @@ func (s *repoCreateState) refreshPageTitles() {
 	}
 }
 
-// nameNote explains a create refused with a conflict (typically the name was
-// taken meanwhile), while the project it was refused in is the chosen one. Elsewhere that name
-// may well be free, so the note would mislead; the name index still refuses
-// it if the user goes back to that project.
+// nameNote explains a create the server refused (a 409, or a 400/422 over
+// what was asked for), while the project it was refused in is the chosen
+// one. Elsewhere that name may well be free, so the note would mislead; the
+// name index still refuses a taken name if the user goes back to that
+// project. It sits on the name page because that is the first answer after
+// the project, but it does not claim the name is the cause: the refusal may
+// concern another answer (the object format, say), so the server's own words
+// say which, and the note asks for whichever answer they name.
 func (s *repoCreateState) nameNote() string {
 	if s.conflict.name == "" || s.conflict.projectID != s.answers.projectID {
 		return ""
 	}
-	// The endpoint's 409 is not documented as a name clash alone, so the
-	// server's own words are shown rather than a guess at the cause.
 	if s.conflict.reason != "" {
-		return fmt.Sprintf("Creating %q was refused (%s); change the name or the project, or cancel.", s.conflict.name, s.conflict.reason)
+		return fmt.Sprintf("Creating %q was refused: %s. Change the answer it concerns, or cancel.", s.conflict.name, s.conflict.reason)
 	}
-	return fmt.Sprintf("Creating %q was refused as a conflict; change the name or the project, or cancel.", s.conflict.name)
+	return fmt.Sprintf("Creating %q was refused; change an answer and try again, or cancel.", s.conflict.name)
 }
 
 // nameGroup asks for the name. dynamic recaps the chosen project above the

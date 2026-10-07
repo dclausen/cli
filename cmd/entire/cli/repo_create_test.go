@@ -756,7 +756,7 @@ func TestRepoCreateWizard_ConflictReopensTheWizard(t *testing.T) {
 	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
 		runs++
 		if runs == 2 {
-			require.Equal(t, `Creating "web" was refused (Conflict); change the name or the project, or cancel.`, s.nameNote(), "the server's reason, not a guess")
+			require.Equal(t, `Creating "web" was refused: Conflict. Change the answer it concerns, or cancel.`, s.nameNote(), "the server's reason, not a guess")
 			repoProjectAccessor{s: s}.Set(testCreateProjectBeta)
 			require.Empty(t, s.nameNote(), "the note belongs to the project the create was refused in")
 			repoProjectAccessor{s: s}.Set(testCreateProjectAcme)
@@ -997,7 +997,7 @@ func TestRepoCreateWizard_InvalidNameReopensTheWizard(t *testing.T) {
 	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
 		runs++
 		if runs == 2 {
-			require.Contains(t, s.nameNote(), `Creating "MyApp" was refused (Unprocessable Entity)`)
+			require.Contains(t, s.nameNote(), `Creating "MyApp" was refused: Unprocessable Entity. Change the answer it concerns, or cancel.`)
 			require.NoError(t, s.validateName("MyApp"), "an invalid name is not a taken one: the server judges again")
 			s.answers.name = "myapp"
 		}
