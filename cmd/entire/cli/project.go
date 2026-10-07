@@ -79,7 +79,7 @@ func newProjectCreateCmd() *cobra.Command {
 			return runProjectCreateWizard(cmd, in.name)
 		},
 	}
-	cmd.Flags().StringVar(&in.owner, "owner", "", "Owning org (name), or account (github:handle)")
+	cmd.Flags().StringVar(&in.owner, "owner", "", "Owning org (name), or account (github:handle) (required; omit every flag in a terminal to be asked instead)")
 	cmd.Flags().StringVar(&in.ownerType, "owner-type", ownerTypeOrg, "Owner kind: org or account")
 	cmd.Flags().StringVar(&in.region, "region", "", "Jurisdiction slug (defaults to the server's home jurisdiction)")
 	addJSONFlag(cmd)

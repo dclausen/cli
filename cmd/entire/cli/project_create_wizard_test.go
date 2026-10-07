@@ -661,3 +661,13 @@ func TestProjectCreate_NameArgumentIsTrimmed(t *testing.T) {
 	require.ErrorContains(t, err, "a project name and --owner are required")
 	assert.Nil(t, fake.created)
 }
+
+// --owner is not cobra-required (the wizard asks for it), so its help text has
+// to say it is required: agents read the flag list and never have a terminal.
+func TestProjectCreate_OwnerFlagSaysRequired(t *testing.T) {
+	t.Parallel()
+	usage := newProjectCreateCmd().Flags().Lookup("owner").Usage
+	assert.Contains(t, usage, "required")
+	assert.Contains(t, usage, "github:handle")
+	assert.NotContains(t, usage, "ULID")
+}
