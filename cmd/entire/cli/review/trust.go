@@ -445,15 +445,21 @@ func isInvisibleFormatRune(r rune) bool {
 	return unicode.Is(unicode.Cf, r)
 }
 
-// truncateDisplay keeps the head and tail, so a suffix like "| sh" stays visible.
+// truncateDisplay keeps the head and tail, so a suffix like "| sh" stays
+// visible. The result, markers included, is at most width runes.
 func truncateDisplay(s string, width int) string {
+	const gap, suffix = " … ", "  (truncated)"
 	runes := []rune(s)
 	if len(runes) <= width {
 		return s
 	}
-	tail := width / 4
-	head := width - tail - 3
-	return string(runes[:head]) + " … " + string(runes[len(runes)-tail:]) + "  (truncated)"
+	keep := width - utf8.RuneCountInString(gap) - utf8.RuneCountInString(suffix)
+	if keep < 2 {
+		return string(runes[:width])
+	}
+	tail := keep / 3
+	head := keep - tail
+	return string(runes[:head]) + gap + string(runes[len(runes)-tail:]) + suffix
 }
 
 // trustConfigJSON is the --show-config --json shape. Keys are stable.

