@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -57,7 +58,7 @@ func (a *AntigravityAgent) GenerateText(ctx context.Context, prompt string, mode
 	result, capturedStderr, stdoutBytes, err := agent.RunIsolatedTextGeneratorCLI(ctx, a.CommandRunner, "agy", "antigravity", args, "", env...)
 	if err != nil {
 		if strings.Contains(capturedStderr, "Authentication required") {
-			err = fmt.Errorf("%w: agy runs summaries with an isolated home so your agy settings, hooks, and MCP servers are not loaded, and it could not find its sign-in there; use API-key authentication for agy or choose another summary provider", err)
+			err = fmt.Errorf("%w: agy runs summaries with an isolated home so your agy settings, hooks, and MCP servers are not loaded, and it could not find its sign-in there; use agy's Gemini API-key mode (\"modelProvider\": \"gemini\" in agy's settings.json plus GEMINI_API_KEY) or choose another summary provider", err)
 		}
 		return "", &agent.TextGenerationError{
 			Err:         fmt.Errorf("antigravity text generation failed: %w", err),
@@ -80,8 +81,9 @@ func (a *AntigravityAgent) GenerateText(ctx context.Context, prompt string, mode
 // agy keeps its sign-in in the macOS login keychain, which it locates through
 // $HOME, so on macOS the login keychain FILE is linked in (linkLoginKeychain).
 // Elsewhere the credential stores agy uses (Windows Credential Manager, the
-// Secret Service on Linux) are not under the home directory, and API-key
-// authentication comes from the environment, which is inherited unchanged.
+// Secret Service on Linux) are not under the home directory. API-key
+// authentication takes the key from the environment, which is inherited
+// unchanged, and the mode from settings.json, which carryAPIKeyMode recreates.
 // agy's file-backed token fallback, used where no keyring is reachable, and
 // gcloud application-default credentials both live under the home directory
 // and are deliberately not carried over: a machine that signs in that way
@@ -92,6 +94,9 @@ func isolatedHomeEnv(home string) ([]string, error) {
 		if err := linkLoginKeychain(home); err != nil {
 			return nil, err
 		}
+	}
+	if err := carryAPIKeyMode(home); err != nil {
+		return nil, err
 	}
 	env := []string{
 		"HOME=" + home,
@@ -133,4 +138,49 @@ func linkLoginKeychain(home string) error {
 		return fmt.Errorf("link login keychain into isolated home: %w", err)
 	}
 	return nil
+}
+
+// apiKeyModelProvider is the settings.json value that selects agy's Gemini
+// API-key mode, without which agy refuses to start on an API key alone.
+const apiKeyModelProvider = "gemini"
+
+// carryAPIKeyMode writes {"modelProvider":"gemini"} into the isolated home
+// when the user's own agy settings select API-key mode, so the run
+// authenticates the way agy does for that user. Nothing else is carried: the
+// same file names the window-title command agy executes. The value is matched
+// against the one documented provider rather than copied, and an unreadable
+// or malformed file selects nothing, leaving agy to report the missing sign-in.
+func carryAPIKeyMode(home string) error {
+	if !userSelectsAPIKeyMode() {
+		return nil
+	}
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create isolated home: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, agySettingsFileName), []byte(`{"modelProvider":"`+apiKeyModelProvider+`"}`), 0o600); err != nil {
+		return fmt.Errorf("write isolated agy settings: %w", err)
+	}
+	return nil
+}
+
+// userSelectsAPIKeyMode reports whether the user's agy settings.json selects
+// the Gemini API-key provider.
+func userSelectsAPIKeyMode() bool {
+	root, err := openAgyConfigRoot(false)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	data, err := root.ReadFile(agySettingsFileName)
+	if err != nil {
+		return false
+	}
+	var settings struct {
+		ModelProvider string `json:"modelProvider"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false
+	}
+	return settings.ModelProvider == apiKeyModelProvider
 }

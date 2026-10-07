@@ -52,10 +52,10 @@ func TestGenerateText_PassesPromptInArgv(t *testing.T) {
 // On macOS the login keychain file, where agy keeps its sign-in, is linked in
 // so authentication still works.
 func TestGenerateText_RunsWithAnIsolatedHome(t *testing.T) {
-	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh to report the child's environment")
 	}
+	t.Setenv(configDirEnv, t.TempDir()) // no API-key mode to carry over
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
@@ -120,4 +120,68 @@ func TestGenerateText_SignInFailureNamesTheIsolation(t *testing.T) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// agy's Gemini API-key mode is selected by {"modelProvider":"gemini"} in
+// its settings.json, and without it agy refuses to start. The isolated home
+// starts empty, so the user's choice has to be carried over, and only that:
+// the same file holds the window-title command agy executes.
+func TestGenerateText_CarriesTheAPIKeyProviderAndNothingElse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh to report the child's settings")
+	}
+	userConfig := t.TempDir()
+	t.Setenv(configDirEnv, userConfig)
+	if err := os.WriteFile(filepath.Join(userConfig, agySettingsFileName), []byte(`{
+  "modelProvider": "gemini",
+  "title": {"type": "command", "command": "touch /tmp/should-not-run"},
+  "trustedWorkspaces": ["/somewhere"]
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &AntigravityAgent{CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", `cat "$HOME/.gemini/antigravity-cli/settings.json"`)
+	}}
+
+	out, err := a.GenerateText(context.Background(), "prompt", "")
+	if err != nil {
+		t.Fatalf("GenerateText: %v", err)
+	}
+	if strings.TrimSpace(out) != `{"modelProvider":"gemini"}` {
+		t.Fatalf("isolated settings.json = %q, want only the API-key provider", out)
+	}
+}
+
+// Without API-key mode selected, the isolated home gets no settings.json, and
+// a provider value agy does not document is not carried either.
+func TestGenerateText_WritesNoSettingsWithoutAPIKeyMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh to report the child's settings")
+	}
+	for name, content := range map[string]string{
+		"no file":        "",
+		"no provider":    `{"title": {"type": "command", "command": "x"}}`,
+		"other provider": `{"modelProvider": "$(touch /tmp/x)"}`,
+		"malformed":      `{"modelProvider":`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			userConfig := t.TempDir()
+			t.Setenv(configDirEnv, userConfig)
+			if content != "" {
+				if err := os.WriteFile(filepath.Join(userConfig, agySettingsFileName), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a := &AntigravityAgent{CommandRunner: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+				return exec.CommandContext(ctx, "sh", "-c", `test -e "$HOME/.gemini" && echo present || echo absent`)
+			}}
+			out, err := a.GenerateText(context.Background(), "prompt", "")
+			if err != nil {
+				t.Fatalf("GenerateText: %v", err)
+			}
+			if strings.TrimSpace(out) != "absent" {
+				t.Fatalf("isolated home has a .gemini directory; want none")
+			}
+		})
+	}
 }

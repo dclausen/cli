@@ -71,9 +71,15 @@ var generateTextAcceptedFeatures = map[string]string{
 }
 
 // pinnedFeaturesFile is `codex features list` from the codex release the
-// classification was last reviewed against. Refresh it with
-// `codex features list > testdata/<name>` when upgrading, then classify
-// whatever TestGenerateTextFeatures_EveryEnabledFeatureIsClassified reports.
+// classification was last reviewed against. `features list` prints EFFECTIVE
+// state, so a developer's ~/.codex/config.toml would leak into it, while
+// summary runs pass --ignore-user-config. Refresh it from an empty config
+// home and an empty working directory when upgrading:
+//
+//	d=$(mktemp -d) && (cd "$d" && CODEX_HOME="$d" codex features list) > testdata/<name>
+//
+// then classify whatever TestGenerateTextFeatures_EveryEnabledFeatureIsClassified
+// reports. `features list` needs no sign-in.
 const pinnedFeaturesFile = "codex-features-0.156.1.txt"
 
 // enabledFeatures parses `codex features list` rows ("<name> <stage>
@@ -153,7 +159,11 @@ func TestGenerateTextFeatures_InstalledCodexIsClassified(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "codex", "features", "list").Output()
+	// Codex's defaults, not this developer's: summary runs ignore user config.
+	cmd := exec.CommandContext(ctx, "codex", "features", "list")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+t.TempDir())
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("codex features list: %v", err)
 	}
