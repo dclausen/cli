@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	agentpkg "github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 	"github.com/entireio/cli/cmd/entire/cli/validation"
 )
@@ -71,15 +72,19 @@ func discoverTranscript(ctx context.Context, sessionID string, ag agentpkg.Agent
 	inStore := func(string) bool { return true }
 	if provider, ok := agentpkg.AsHomeLayoutProvider(ag); ok {
 		layout := provider.HomeLayout()
-		if home, homeErr := provider.SessionHome(); homeErr == nil {
-			if _, ok := layout.StoreContaining(home, sessionDir); ok {
-				if store, err = agentpkg.OpenSessionStoreAt(ag, home); err != nil {
-					return "", fmt.Errorf("failed to open agent home: %w", err)
-				}
-				inStore = func(path string) bool {
-					_, ok := layout.StoreContaining(home, path)
-					return ok
-				}
+		home, homeErr := provider.SessionHome()
+		if homeErr != nil {
+			// Not fatal: the session directory is still searched, only the
+			// home's other stores are not.
+			logging.Debug(ctx, "agent home unavailable, searching only the session directory",
+				"agent", string(ag.Name()), "error", homeErr)
+		} else if _, ok := layout.StoreContaining(home, sessionDir); ok {
+			if store, err = agentpkg.OpenSessionStoreAt(ag, home); err != nil {
+				return "", fmt.Errorf("failed to open agent home: %w", err)
+			}
+			inStore = func(path string) bool {
+				_, ok := layout.StoreContaining(home, path)
+				return ok
 			}
 		}
 	}

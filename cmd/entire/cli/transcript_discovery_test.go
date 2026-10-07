@@ -2,13 +2,18 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
 	"github.com/entireio/cli/cmd/entire/cli/agent/types"
+	"github.com/entireio/cli/cmd/entire/cli/entiredir"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/paths"
 )
 
@@ -250,13 +255,20 @@ type strayCandidateAgent struct {
 	agent.Agent
 
 	home string
+	// homeErr, when set, is what SessionHome reports instead of home.
+	homeErr error
 }
 
 func (a strayCandidateAgent) GetSessionDir(string) (string, error) {
 	return filepath.Join(a.home, "sessions"), nil
 }
 
-func (a strayCandidateAgent) SessionHome() (string, error) { return a.home, nil } //nolint:unparam // agent.HomeLayoutProvider signature
+func (a strayCandidateAgent) SessionHome() (string, error) {
+	if a.homeErr != nil {
+		return "", a.homeErr
+	}
+	return a.home, nil
+}
 
 func (a strayCandidateAgent) HomeLayout() agent.HomeLayout {
 	return agent.HomeLayout{Stores: []string{"sessions"}}
@@ -287,5 +299,44 @@ func TestDiscoverTranscript_SkipsCandidateOutsideTheHomeStores(t *testing.T) {
 	}
 	if got != stored {
 		t.Fatalf("transcript = %q, want %q from the home's store", got, stored)
+	}
+}
+
+func TestDiscoverTranscript_LogsUnavailableHomeAndSearchesSessionDir(t *testing.T) {
+	setupAttachTestRepo(t)
+	repoDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := logging.New(logging.Config{Root: entiredir.OpenerAt(repoDir), Dir: logging.LogsName, Level: slog.LevelDebug})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := logging.WithLogger(context.Background(), l)
+	codex, err := agent.Get(agent.AgentNameCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := strayCandidateAgent{Agent: codex, home: t.TempDir(), homeErr: errors.New("home is unset")}
+	const sessionID = "homeless-session"
+	stored := filepath.Join(ag.home, "sessions", sessionID+".jsonl")
+	writeTranscriptFile(t, stored)
+
+	got, err := discoverTranscript(ctx, sessionID, ag)
+	if err != nil {
+		t.Fatalf("discoverTranscript: %v", err)
+	}
+	if got != stored {
+		t.Fatalf("transcript = %q, want %q from the session directory", got, stored)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	logged, err := os.ReadFile(filepath.Join(repoDir, logging.LogsDir, logging.LogFileName))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(logged), "home is unset") {
+		t.Fatalf("log = %q, want the SessionHome error", logged)
 	}
 }
