@@ -163,12 +163,27 @@ func TestGenerateText_WritesNoSettingsWithoutAPIKeyMode(t *testing.T) {
 		"no provider":    `{"title": {"type": "command", "command": "x"}}`,
 		"other provider": `{"modelProvider": "$(touch /tmp/x)"}`,
 		"malformed":      `{"modelProvider":`,
+		"symlinked":      "symlink",
 	} {
 		t.Run(name, func(t *testing.T) {
 			userConfig := t.TempDir()
 			t.Setenv(configDirEnv, userConfig)
-			if content != "" {
-				if err := os.WriteFile(filepath.Join(userConfig, agySettingsFileName), []byte(content), 0o600); err != nil {
+			settingsPath := filepath.Join(userConfig, agySettingsFileName)
+			switch content {
+			case "":
+			case "symlink":
+				// A link to a file that does select API-key mode is still
+				// refused, even one inside agy's own config directory.
+				target := filepath.Join(userConfig, "elsewhere.json")
+				if err := os.WriteFile(target, []byte(`{"modelProvider": "gemini"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// Relative, so os.Root itself would follow it.
+				if err := os.Symlink(filepath.Base(target), settingsPath); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.WriteFile(settingsPath, []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -165,22 +165,16 @@ func carryAPIKeyMode(home string) error {
 }
 
 // userSelectsAPIKeyMode reports whether the user's agy settings.json selects
-// the Gemini API-key provider.
+// the Gemini API-key provider, read the way the title installer reads it (a
+// symlinked file is refused, not read through).
 func userSelectsAPIKeyMode() bool {
-	root, err := openAgyConfigRoot(false)
+	settings, err := readAgySettings()
 	if err != nil {
 		return false
 	}
-	defer root.Close()
-	data, err := root.ReadFile(agySettingsFileName)
-	if err != nil {
+	var provider string
+	if err := json.Unmarshal(settings["modelProvider"], &provider); err != nil {
 		return false
 	}
-	var settings struct {
-		ModelProvider string `json:"modelProvider"`
-	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return false
-	}
-	return settings.ModelProvider == apiKeyModelProvider
+	return provider == apiKeyModelProvider
 }
