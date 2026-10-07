@@ -84,6 +84,27 @@ func TestRunReview_TargetChildEnvAloneDoesNotSkipGate(t *testing.T) {
 	}
 }
 
+// The env var plus a matching --trust-target is how the target re-run skips
+// a second gate. An agent can set both itself, so for an agent caller the
+// approval must still be announced rather than skipped silently.
+func TestRunReview_TargetChildBypassStillAnnouncesAgentApproval(t *testing.T) {
+	reviewer, deps, head := setupForeignBranchRepo(t)
+	t.Setenv("ENTIRE_REVIEW_FINDINGS_WORKTREE", t.TempDir())
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "11111111-2222-4333-8444-555555555555")
+
+	var stderr bytes.Buffer
+	cmd := review.NewCommand(deps)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"general", "--trust-target", head})
+	if err := cmd.Execute(); err != nil || !reviewer.called {
+		t.Fatalf("approved review did not run (err=%v, called=%v)", err, reviewer.called)
+	}
+	if !strings.Contains(stderr.String(), "Approved with --trust-target from") {
+		t.Errorf("agent approval was not announced; stderr:\n%s", stderr.String())
+	}
+}
+
 func runGitCmd(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", args...)

@@ -107,8 +107,10 @@ func gatePlainReview(ctx context.Context, cmd *cobra.Command, opts reviewGateOpt
 		return trustInspectionFailed(cmd, deps, err)
 	}
 	// The parent already gated a target re-run and forwards the pinned head;
-	// requiring it to match means the env var alone can't skip the gate.
-	if os.Getenv(envReviewFindingsWorktree) != "" && trustTargetMatches(opts.TrustTarget, head) {
+	// requiring it to match means the env var alone can't skip the gate. An
+	// agent caller still goes through the gate: both are plain environment it
+	// could set itself, and the gate is what tells the user it approved.
+	if os.Getenv(envReviewFindingsWorktree) != "" && trustTargetMatches(opts.TrustTarget, head) && detectAgentCaller() == "" {
 		return nil
 	}
 	subject, inv, err := inspectReview(ctx, worktreeRoot, head, TrustSource{WorktreeRoot: worktreeRoot}, agents, false, deps)
