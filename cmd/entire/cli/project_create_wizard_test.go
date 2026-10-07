@@ -757,44 +757,7 @@ func TestProjectCreateWizard_SummaryFollowsARevisit(t *testing.T) {
 	s.startPaged()
 	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup())
 
-	var model huh.Model = form
-	// run executes a command as the program loop would, except that one not
-	// answering at once (a cursor-blink timer) is dropped: timers re-arm
-	// forever and nothing here depends on them.
-	run := func(cmd tea.Cmd) tea.Msg {
-		out := make(chan tea.Msg, 1)
-		go func() { out <- cmd() }()
-		select {
-		case msg := <-out:
-			return msg
-		case <-time.After(20 * time.Millisecond):
-			return nil
-		}
-	}
-	send := func(msgs ...tea.Msg) {
-		for _, msg := range msgs {
-			var cmd tea.Cmd
-			model, cmd = model.Update(msg)
-			// Run the commands the form asks for (focus moves, page changes,
-			// the region options load) until none is left.
-			for steps, queue := 0, []tea.Cmd{cmd}; len(queue) > 0 && steps < 200; steps++ {
-				next := queue[0]
-				queue = queue[1:]
-				if next == nil {
-					continue
-				}
-				switch m := run(next).(type) {
-				case tea.BatchMsg:
-					queue = append(queue, m...)
-				case nil:
-				default:
-					var more tea.Cmd
-					model, more = model.Update(m)
-					queue = append(queue, more)
-				}
-			}
-		}
-	}
+	send, run := driveForm(form)
 	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
 	send(tea.WindowSizeMsg{Width: 120, Height: 40}, run(form.Init()))
 	send(enter, enter, enter) // owner (personal), name, region (the owner's: us)

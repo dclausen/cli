@@ -6,7 +6,9 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
@@ -90,4 +92,54 @@ func TestCreateWizard_RunStagesSkipsEmptyStages(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, 2, built, "every stage is built when its turn comes")
+}
+
+// formCmdCutoff bounds how long driveForm waits for a command a form returns.
+// A cursor-blink timer re-arms forever and must be dropped, but a command the
+// form needs — a select's options loading — can take longer than an instant on
+// a loaded CI runner, and a Select ignores Enter until its options are in.
+// 250ms is well under the 530ms blink, above huh's 100ms spinner tick (which
+// stops once the options load), and far above what an immediate command takes.
+const formCmdCutoff = 250 * time.Millisecond
+
+// driveForm runs a huh form the way its program loop would, without a
+// terminal. send delivers messages and then runs every command the form asks
+// for in reply (focus moves, page changes, options loading) until none is
+// left; run executes one command, dropping it if it does not answer within
+// formCmdCutoff.
+func driveForm(form *huh.Form) (send func(...tea.Msg), run func(tea.Cmd) tea.Msg) {
+	var model huh.Model = form
+	run = func(cmd tea.Cmd) tea.Msg {
+		out := make(chan tea.Msg, 1)
+		go func() { out <- cmd() }()
+		select {
+		case msg := <-out:
+			return msg
+		case <-time.After(formCmdCutoff):
+			return nil
+		}
+	}
+	send = func(msgs ...tea.Msg) {
+		for _, msg := range msgs {
+			var cmd tea.Cmd
+			model, cmd = model.Update(msg)
+			for steps, queue := 0, []tea.Cmd{cmd}; len(queue) > 0 && steps < 200; steps++ {
+				next := queue[0]
+				queue = queue[1:]
+				if next == nil {
+					continue
+				}
+				switch m := run(next).(type) {
+				case tea.BatchMsg:
+					queue = append(queue, m...)
+				case nil:
+				default:
+					var more tea.Cmd
+					model, more = model.Update(m)
+					queue = append(queue, more)
+				}
+			}
+		}
+	}
+	return send, run
 }
