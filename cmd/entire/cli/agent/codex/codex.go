@@ -774,8 +774,13 @@ func findRolloutBySessionID(sessionDir, agentSessionID string) string {
 // sessionDir and then the home's other stores, preferred first, followed by
 // the <id>.jsonl path ResolveSessionFile predicts when there is none.
 func (c *CodexAgent) ResolveSessionFileCandidates(sessionDir, agentSessionID string) []string {
-	// sessionDir is the first store of the home it lies in.
-	archives := codexHomeLayout().StoresUnder(filepath.Dir(sessionDir))[1:]
+	// The home is sessionDir's parent, not CODEX_HOME: the candidates belong to
+	// the session directory the caller passed. One that is not a home's
+	// sessions store, such as a test override, has no archives.
+	var archives []string
+	if stores := codexHomeLayout().StoresUnder(filepath.Dir(sessionDir)); stores[0] == filepath.Clean(sessionDir) {
+		archives = stores[1:]
+	}
 	candidates := rolloutsBySessionID(sessionDir, agentSessionID, archives...)
 	if sessionDir != "" {
 		candidates = append(candidates, filepath.Join(sessionDir, agentSessionID+".jsonl"))
