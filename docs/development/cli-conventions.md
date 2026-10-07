@@ -229,23 +229,28 @@ the commands are always runnable in every build.
   grantee, roles reader/writer/admin; both `add` and `remove` take the grantee
   optionally (see the grant-subtree notes below). `create <name> --owner <ref>`
   creates without prompting even in a terminal, leaving an omitted `--region`
-  to the server. Without flags (bare, or with just the name as the name
-  field's starting text), a terminal gets one paged wizard (owner → name →
-  region → summary; Shift+Tab goes back). Flags always mean the flag form and
-  never seed the wizard, following `repo mirror add` and `dispatch`: a flag
-  with a missing name or `--owner` is refused before any request, as is a
-  missing input with no terminal. Owners are shown and
-  echoed by org name or `provider:handle`, never by ULID (a ULID `--owner` is
-  still accepted, undocumented). The personal account is listed first, then
-  only orgs whose `canCreateProject` is set; the region defaults to the
-  owner's, and the name is checked against the caller's visible projects,
-  fetched once up front because huh validates on the UI loop. Accessible mode
-  runs each stage as its own form, built only when it runs, since huh's
-  accessible runner evaluates neither `OptionsFunc` nor `DescriptionFunc`.
-  The "Using context" notice is shown on the owner page instead of above the
-  form, under the same several-logins rule. An owner with no `--owner`
-  spelling but its ULID (an account with no handle, an org sharing its name)
-  gets no command in the summary, which says why
+  to the server's jurisdiction. Without `--owner`, `--owner-type` or
+  `--region` (bare, or with just the name as the name field's starting text),
+  a terminal gets one paged wizard (owner → name → region → summary; Shift+Tab
+  goes back). Those flags always mean the flag form and never seed the wizard,
+  as `dispatch` opens its wizard only with no flags: one given with a missing
+  name or `--owner` is refused before any request, as is a missing input with
+  no terminal, and the refusal spells out both `--owner` forms (a handle needs
+  `--owner-type account`). `--json` and `--context` do not count. The success
+  line names the project by its path, `/et/<project>`, the prefix of its repos'
+  `/et/<project>/<repo>`, never by ULID. The personal account is listed first,
+  then only orgs whose `canCreateProject` is set; the wizard suggests the
+  owner's region (the flag form's default is the server's jurisdiction). The
+  name must have the server's shape (`nativeProjectRe`; a folder-name
+  suggestion is normalized or dropped) and is checked against the caller's
+  visible projects, fetched once up front because huh validates on the UI
+  loop. Accessible mode runs each stage as its own form, built only when it
+  runs, since huh's accessible runner evaluates neither `OptionsFunc` nor
+  `DescriptionFunc`. The "Using context" notice is shown on the owner page
+  instead of above the form, under the same several-logins rule, and not at
+  all under `ENTIRE_TOKEN`. An owner with no `--owner` spelling but its ULID
+  (an account with no handle, an org sharing its name) gets no command in the
+  summary, which says why
 - `repo`: control-plane repository lifecycle — `create`, `list --project`,
   `view`, `edit`, `delete`, `clone`, plus the `mirror`, `remote`,
   `visibility`, `protection` and `grant` subtrees (`repo grant` mirrors

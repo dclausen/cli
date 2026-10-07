@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -25,9 +26,9 @@ import (
 	"github.com/entireio/cli/internal/entireclient/contexts"
 )
 
-// projectNameMaxLen mirrors CreateProjectInputBody.name's maxLength, so the
-// wizard rejects an over-long name before the server does.
-const projectNameMaxLen = 100
+// projectNameRule describes nativeProjectRe, the server's project-name shape,
+// in the words the name page shows.
+const projectNameRule = "project names are 3-32 letters, digits or hyphens, starting and ending with a letter or digit"
 
 // projectCreateCancelled names the flow in its cancellation line.
 const projectCreateCancelled = "Project create"
@@ -98,15 +99,6 @@ func (o projectOwner) orgKind() string {
 		parts = append(parts, o.aside)
 	}
 	return strings.Join(parts, ", ")
-}
-
-// shownRef names the owner in the success line, or empty when all there is to
-// show is the "you" stand-in for an account with no handle.
-func (o projectOwner) shownRef() string {
-	if o.personal && o.flagRef == "" {
-		return ""
-	}
-	return o.ref
 }
 
 // label is the owner's picker row, padded so the kind column lines up.
@@ -420,8 +412,10 @@ func (s *projectCreateState) validateName(name string) error {
 	if name == "" {
 		return errors.New("enter a project name")
 	}
-	if utf8.RuneCountInString(name) > projectNameMaxLen {
-		return fmt.Errorf("project names are at most %d characters", projectNameMaxLen)
+	// The server's shape, checked here so a bad name stops on this page
+	// rather than after the summary was confirmed.
+	if !nativeProjectRe.MatchString(name) {
+		return errors.New(projectNameRule)
 	}
 	// Project names are unique across owners (see resolveProjectByName), so
 	// any visible project of that name is a conflict, not only the chosen
@@ -477,7 +471,7 @@ func (s *projectCreateState) command() string {
 	if o.kind == coreapi.CreateProjectInputBodyOwnerTypeAccount {
 		parts = append(parts, "--owner-type", ownerTypeAccount)
 	}
-	parts = append(parts, "--region", s.answers.Region)
+	parts = append(parts, "--region", shellArg(s.answers.Region))
 	return strings.Join(parts, " ")
 }
 
@@ -534,7 +528,7 @@ func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 		if err != nil {
 			return err
 		}
-		s, err := newProjectCreateState(d, name, currentFolderName(ctx))
+		s, err := newProjectCreateState(d, name, suggestProjectName(currentFolderName(ctx)))
 		if err != nil {
 			return err
 		}
@@ -547,9 +541,7 @@ func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 		if err != nil {
 			return err
 		}
-		// Named the way the direct path names it: the server's owner name
-		// first, then the wizard's own (never the "you" stand-in).
-		return printProjectCreated(cmd, &created.Response, created.Response.OwnerName.Or(s.owner().shownRef()))
+		return printProjectCreated(cmd, &created.Response)
 	})
 }
 
@@ -558,7 +550,9 @@ func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 // silences. Same rule as that notice: only when several logins are saved and
 // none was picked for this invocation with --context; empty otherwise.
 func wizardLoginNote() string {
-	if contexts.Requested() {
+	// ENTIRE_TOKEN wins over every saved login (coreapi.New never resolves a
+	// context then), so naming one would name the wrong identity.
+	if contexts.Requested() || os.Getenv(auth.EnvTokenVar) != "" {
 		return ""
 	}
 	all, _, err := auth.StoredContexts()
@@ -570,6 +564,23 @@ func wizardLoginNote() string {
 		return ""
 	}
 	return fmt.Sprintf("Using context '%s'.", c.Name)
+}
+
+// suggestProjectName turns a folder name into a project name the server
+// accepts (lowercased, with "_", "." and spaces as "-"), or "" when it still
+// would not fit, so the name field starts empty rather than wrong.
+func suggestProjectName(folder string) string {
+	name := strings.Trim(strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '.', ' ':
+			return '-'
+		}
+		return r
+	}, strings.ToLower(folder)), "-")
+	if !nativeProjectRe.MatchString(name) {
+		return ""
+	}
+	return name
 }
 
 // currentFolderName is the name the wizard suggests when none was given: the

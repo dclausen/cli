@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -45,9 +44,10 @@ func newProjectCreateCmd() *cobra.Command {
 			"owning org (by name) or account (github:handle), and --owner-type " +
 			"selects which (org or account).\n\n" +
 			"With both a name and --owner the project is created directly. " +
-			"Run without flags in an interactive terminal (optionally with a " +
-			"name), a wizard asks for the owner, name and region; flags always " +
-			"mean the flag form, so a flag with a missing name or --owner is an error.",
+			"Run in an interactive terminal without --owner, --owner-type or " +
+			"--region (optionally with a name), a wizard asks for the owner, name " +
+			"and region; those flags always mean the flag form, so one given with " +
+			"a missing name or --owner is an error.",
 		Example: "  # Project under an org (by name)\n" +
 			"  entire project create widgets --owner acme --owner-type org\n\n" +
 			"  # Project owned by an account (by handle)\n" +
@@ -73,17 +73,38 @@ func newProjectCreateCmd() *cobra.Command {
 			// cost a lookup. Any flag means the flag form, which the wizard
 			// does not take starting values from, so it is refused too.
 			if in.usesFlags(cmd) || !interactive.CanPromptInteractively() {
-				return errors.New("a project name and --owner are required: entire project create <name> --owner <org|github:handle>" +
-					" (or run 'entire project create [<name>]' in a terminal, without flags, to be asked)")
+				return projectCreateMissingErr(in)
 			}
 			return runProjectCreateWizard(cmd, in.name)
 		},
 	}
 	cmd.Flags().StringVar(&in.owner, "owner", "", "Owning org (name), or account (github:handle) (required; omit every flag in a terminal to be asked instead)")
 	cmd.Flags().StringVar(&in.ownerType, "owner-type", ownerTypeOrg, "Owner kind: org or account")
-	cmd.Flags().StringVar(&in.region, "region", "", "Jurisdiction slug (defaults to the server's home jurisdiction)")
+	cmd.Flags().StringVar(&in.region, "region", "", "Jurisdiction slug (defaults to the server's jurisdiction; the wizard suggests the owner's region)")
 	addJSONFlag(cmd)
 	return cmd
+}
+
+// projectCreateMissingErr names what the flag form is missing and both
+// spellings of --owner: a handle needs --owner-type account, which defaults
+// to org.
+func projectCreateMissingErr(in projectCreateInput) error {
+	var missing []string
+	if in.name == "" {
+		missing = append(missing, "a project name")
+	}
+	if in.owner == "" {
+		missing = append(missing, "--owner")
+	}
+	verb := "are"
+	if len(missing) == 1 {
+		verb = "is"
+	}
+	return fmt.Errorf("%s %s required:\n"+
+		"  entire project create <name> --owner <org>\n"+
+		"  entire project create <name> --owner github:<handle> --owner-type account\n"+
+		"or run 'entire project create' in a terminal, without --owner, --owner-type or --region, to be asked",
+		strings.Join(missing, " and "), verb)
 }
 
 // createProjectDirect is the flag-complete path: no prompts, the same request
@@ -117,34 +138,19 @@ func createProjectDirect(cmd *cobra.Command, in projectCreateInput, ot coreapi.C
 			return err
 		}
 		project := &created.Response
-		// A ULID --owner is accepted but never echoed: name the owner the way
-		// the server does, falling back to what was typed only when that is a
-		// name, and otherwise to no owner at all.
-		owner := project.OwnerName.Or("")
-		if owner == "" && !looksLikeULID(in.owner) {
-			owner = in.owner
-		}
-		return printProjectCreated(cmd, project, owner)
+		return printProjectCreated(cmd, project)
 	})
 }
 
 // printProjectCreated renders a created project the way runCoreMutation renders
 // any mutation: the wire object under --json, else a ✓ line naming the project
-// by owner and name, never by id.
-// An empty owner leaves the owner out rather than print a stand-in.
-func printProjectCreated(cmd *cobra.Command, project *coreapi.CreatedProject, owner string) error {
+// by its fully qualified path, /et/<project>, the prefix of every repo path in
+// it (/et/<project>/<repo>). Never by id.
+func printProjectCreated(cmd *cobra.Command, project *coreapi.CreatedProject) error {
 	if jsonRequested(cmd) {
 		return printJSON(cmd.OutOrStdout(), project)
 	}
-	ref := project.Name
-	if owner != "" {
-		ref = owner + "/" + project.Name
-	}
-	if project.Region != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s in %s\n", ref, project.Region)
-		return nil
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s\n", ref)
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project /%s/%s\n", nativeCloneForge, project.Name)
 	return nil
 }
 
