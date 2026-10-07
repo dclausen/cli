@@ -256,6 +256,28 @@ func detectAgentCaller() string {
 	return ""
 }
 
+// agentCallerNames maps the variables detectAgentCaller returns to agent names.
+var agentCallerNames = map[string]string{
+	"CLAUDECODE":               "Claude Code",
+	"CLAUDE_CODE_SESSION_ID":   "Claude Code",
+	"CODEX_SESSION_ID":         "Codex",
+	"COPILOT_AGENT_SESSION_ID": "Copilot",
+	"COPILOT_CLI":              "Copilot",
+	"CURSOR_CONVERSATION_ID":   "Cursor",
+	"CURSOR_AGENT":             "Cursor",
+	"PI_SESSION_ID":            "Pi",
+	"PI_CODING_AGENT":          "Pi",
+	"GEMINI_CLI":               "Gemini CLI",
+	"OPENCODE":                 "OpenCode",
+}
+
+func agentCallerLabel(envVar string) string {
+	if name, ok := agentCallerNames[envVar]; ok {
+		return "a " + name + " session"
+	}
+	return "an agent session (" + envVar + ")"
+}
+
 // trustGate holds everything the approval decision needs.
 type trustGate struct {
 	Subject     TrustSubject
@@ -301,6 +323,8 @@ func (g trustGate) run(ctx context.Context, errOut io.Writer) error {
 		}
 		fmt.Fprintf(errOut, "Running the review of %s as approved%s.\n", shortSHA(g.Subject.HeadSHA), suffix)
 		if g.AgentCaller != "" {
+			// Visible, so the user notices an approval they didn't give.
+			fmt.Fprintf(errOut, "Approved with --trust-target from %s.\n", agentCallerLabel(g.AgentCaller))
 			logging.Info(ctx, "review of someone else's code approved via --trust-target",
 				slog.String("agent_env", g.AgentCaller),
 				slog.String("head", g.Subject.HeadSHA))

@@ -14,6 +14,9 @@ import (
 
 	"charm.land/huh/v2"
 
+	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/interactive"
+
 	"github.com/entireio/cli/cmd/entire/cli/testutil"
 )
 
@@ -61,17 +64,18 @@ func TestTrustGate(t *testing.T) {
 			wantOut: []string{"--trust-target not needed: every commit under review is yours."},
 		},
 		{
-			name:    "matching trust-target runs",
-			subject: foreignSubject(),
-			trust:   trustTestHead,
-			wantOut: []string{"Running the review of 9bd5931e1a2b as approved (5 commands)."},
+			name:       "matching trust-target runs",
+			wantNotOut: []string{"Approved with --trust-target from"},
+			subject:    foreignSubject(),
+			trust:      trustTestHead,
+			wantOut:    []string{"Running the review of 9bd5931e1a2b as approved (5 commands)."},
 		},
 		{
-			name:        "matching trust-target from an agent runs",
+			name:        "matching trust-target from an agent runs and says so",
 			subject:     foreignSubject(),
 			trust:       strings.ToUpper(trustTestHead),
 			agentCaller: "CLAUDECODE",
-			wantOut:     []string{"Running the review of 9bd5931e1a2b as approved"},
+			wantOut:     []string{"Running the review of 9bd5931e1a2b as approved", "Approved with --trust-target from a Claude Code session."},
 		},
 		{
 			name:    "moved branch is refused",
@@ -381,5 +385,17 @@ func TestTruncateDisplayFitsWidth(t *testing.T) {
 	}
 	if got := truncateDisplay("short", 30); got != "short" {
 		t.Errorf("short value changed: %q", got)
+	}
+}
+
+// Every variable detectAgentCaller can return needs a readable agent name.
+func TestAgentCallerNamesCoverDetection(t *testing.T) {
+	t.Parallel()
+
+	names := append(agent.CallerSessionEnvVars(), interactive.AgentSubprocessEnvVars()...)
+	for _, name := range append(names, "CLAUDECODE") {
+		if _, ok := agentCallerNames[name]; !ok {
+			t.Errorf("agentCallerNames has no entry for %s", name)
+		}
 	}
 }
