@@ -562,8 +562,8 @@ func resolveRepoRemoteURL(cmd *cobra.Command, ref, cluster string, picker placem
 		if err != nil {
 			// Only here, not in the shared resolver: the clone command is
 			// advice for `repo clone`, and remote add has a clone to repoint.
-			if moved := movedAddressFrom(err); moved != nil {
-				return moved
+			if detached := detachedAddressFrom(err); detached != nil {
+				return detached
 			}
 			return err
 		}
@@ -583,9 +583,9 @@ func resolveRepoRemoteURL(cmd *cobra.Command, ref, cluster string, picker placem
 			return "", fmt.Errorf("invalid --cluster: %w", err)
 		}
 		if err := runCoreForCluster(cmd, cluster, lister); err != nil {
-			var moved *movedAddressError
-			if errors.As(err, &moved) {
-				return "", moved.answeredByOtherCore()
+			var detached *detachedAddressError
+			if errors.As(err, &detached) {
+				return "", detached.answeredByOtherCore()
 			}
 			// A name that does not resolve, and nothing else. DNS answering
 			// "no such host" is the one failure that says the host is not a
@@ -606,11 +606,11 @@ func resolveRepoRemoteURL(cmd *cobra.Command, ref, cluster string, picker placem
 			}
 			logging.Debug(cmd.Context(), "cluster host does not resolve; listing placements from the active context", "cluster", cluster, "error", err)
 			if fallbackErr := runCore(cmd, lister); fallbackErr != nil {
-				// A moved answer is the active context answering, not failing:
+				// A detached answer is the active context answering, not failing:
 				// the DNS error stays a debug detail, as with a placement list.
-				var moved *movedAddressError
-				if errors.As(fallbackErr, &moved) {
-					return "", moved
+				var detached *detachedAddressError
+				if errors.As(fallbackErr, &detached) {
+					return "", detached
 				}
 				// Both routes to a placement list are gone. Each half names a
 				// different thing the user may have to fix — a mistyped host,
@@ -724,25 +724,27 @@ func resolvePullablePlacements(ctx context.Context, c *coreapi.Client, owner, re
 	return out.Placements, nil
 }
 
-// movedAddressRe reads core's answer for a gh/ address a detach released: a
-// 404 whose detail is "gh/<owner>/<repo> moved to et/<project>/<repo>. Update
-// your remote: git remote set-url origin entire://<host>/et/<project>/<repo>"
-// (entiredb core/coreapi/tombstone.go, movedGitHubAddress.message). The detail
-// is the only carrier — this problem has no structured field for it — so this
-// is a parse of server prose, anchored at both ends, and a detail it does not
-// match keeps the plain rendering. A repo name may hold dots, so the path ends
-// at the ". Update" that follows it, not at the first dot.
-var movedAddressRe = regexp.MustCompile(`^\S+ moved to (` + nativeCloneForge + `/\S+)\. Update your remote: git remote set-url origin ` +
+// detachedAddressRe reads core's answer for a gh/ address a detach released:
+// a 404 whose detail is "gh/<owner>/<repo> was detached into
+// et/<project>/<repo>. Update your remote: git remote set-url origin
+// entire://<host>/et/<project>/<repo>" (entiredb core/coreapi/tombstone.go,
+// movedGitHubAddress.message). Cores that predate that wording say "moved to"
+// instead, and both are accepted until they are gone. The detail is the only
+// carrier — this problem has no structured field for it — so this is a parse
+// of server prose, anchored at both ends, and a detail it does not match keeps
+// the plain rendering. A repo name may hold dots, so the path ends at the
+// ". Update" that follows it, not at the first dot.
+var detachedAddressRe = regexp.MustCompile(`^\S+ (?:was detached into|moved to) (` + nativeCloneForge + `/\S+)\. Update your remote: git remote set-url origin ` +
 	entireCloneURLScheme + `([^/\s]+)/(` + nativeCloneForge + `/\S+)$`)
 
-// movedAddressError is a clone of a released gh/ address. Core's detail is
+// detachedAddressError is a clone of a released gh/ address. Core's detail is
 // kept verbatim; the clone command is added because its set-url advice is for
 // an existing clone, and `repo clone` has none yet.
 //
 // It deliberately does not wrap the core error: runCore renders any API
 // problem it finds in the chain down to the bare detail, which would drop the
 // clone command.
-type movedAddressError struct {
+type detachedAddressError struct {
 	detail string
 	// nativeRef is /et/<project>/<repo>, which resolves on the active context.
 	nativeRef string
@@ -753,7 +755,7 @@ type movedAddressError struct {
 	cloneArg string
 }
 
-func (e *movedAddressError) Error() string {
+func (e *detachedAddressError) Error() string {
 	if e.cloneArg == "" {
 		return e.detail
 	}
@@ -764,41 +766,41 @@ func (e *movedAddressError) Error() string {
 // core other than the active context's (`--cluster`): the /et/ shorthand
 // resolves on the active context, which may be another federation — one where
 // the path names nothing, or a different repo.
-func (e *movedAddressError) answeredByOtherCore() *movedAddressError {
-	moved := *e
-	moved.cloneArg = moved.remote
-	return &moved
+func (e *detachedAddressError) answeredByOtherCore() *detachedAddressError {
+	detached := *e
+	detached.cloneArg = detached.remote
+	return &detached
 }
 
-// movedAddressFrom returns the moved answer err carries, or nil. Only core's
+// detachedAddressFrom returns the detached answer err carries, or nil. Only core's
 // 404 qualifies, and only with an et/ path the native grammar accepts and the
-// command repeats, so a detail that is not a moved answer never puts a made-up
+// command repeats, so a detail that is not a detached answer never puts a made-up
 // ref in front of the user. The hint is rebuilt from the parsed names, so it
 // is the canonical ref (no .git suffix) and nothing from the server reaches
 // it unvalidated.
-func movedAddressFrom(err error) *movedAddressError {
+func detachedAddressFrom(err error) *detachedAddressError {
 	if !isCoreNotFound(err) {
 		return nil
 	}
 	detail := coreapi.APIError(err)
-	m := movedAddressRe.FindStringSubmatch(detail)
+	m := detachedAddressRe.FindStringSubmatch(detail)
 	if m == nil || m[1] != m[3] {
 		return nil
 	}
 	project, repo, refErr := parseNativeCloneRef(m[1])
 	if refErr == nil {
-		return newMovedAddressError(detail, m[2], project, repo)
+		return newDetachedAddressError(detail, m[2], project, repo)
 	}
 	return nil
 }
 
-func newMovedAddressError(detail, host, project, repo string) *movedAddressError {
+func newDetachedAddressError(detail, host, project, repo string) *detachedAddressError {
 	nativeRef := "/" + nativeCloneForge + "/" + project + "/" + repo
-	moved := &movedAddressError{detail: detail, nativeRef: nativeRef, cloneArg: nativeRef}
+	detached := &detachedAddressError{detail: detail, nativeRef: nativeRef, cloneArg: nativeRef}
 	if validateClusterHost(host) == nil {
-		moved.remote = forgeCloneURL(nativeCloneForge, host, project, repo)
+		detached.remote = forgeCloneURL(nativeCloneForge, host, project, repo)
 	}
-	return moved
+	return detached
 }
 
 // placementPicker adapts selectPlacement's messages to the calling verb. The
