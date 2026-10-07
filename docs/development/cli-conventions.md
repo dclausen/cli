@@ -246,9 +246,9 @@ the commands are always runnable in every build.
   case-insensitive lookup pattern `nativeProjectRe`), checked on both paths
   before any request. The wizard lowercases a typed name and says so on the
   Name page and in the summary; the flag form refuses uppercase. A folder-name
-  suggestion is normalized or dropped) and is checked against the caller's
-  visible projects, fetched once up front because huh validates on the UI
-  loop. Accessible mode runs each stage as its own form, built only when it
+  suggestion is normalized or dropped. The wizard also checks the name against
+  the caller's visible projects, fetched once up front because huh validates
+  on the UI loop. Accessible mode runs each stage as its own form, built only when it
   runs, since huh's accessible runner evaluates neither `OptionsFunc` nor
   `DescriptionFunc`. The "Using context" notice is shown on the owner page
   instead of above the form, under the same several-logins rule, and not at
