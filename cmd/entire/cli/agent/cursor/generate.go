@@ -19,6 +19,11 @@ import (
 // verified live on cursor-agent 2026.05.16, where both still read a file
 // outside the workspace and reached a local HTTP listener. Deny rules in the
 // workspace's project config do stop them.
+//
+// Mcp(*:*) also covers servers in the user's ~/.cursor/mcp.json: verified on
+// cursor-agent 2026.10.01, which still starts such a server and lists its
+// tools without --approve-mcps, but blocks the call ("Blocked by permissions
+// configuration"); the same server's tool ran when the deny was absent.
 const generateDenyAllConfig = `{"permissions":{"allow":[],"deny":["Shell(*)","Read(*)","Write(*)","WebFetch(*)","Mcp(*:*)"]}}` + "\n"
 
 // GenerateText sends a prompt to the Cursor agent CLI and returns the raw text response.
