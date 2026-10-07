@@ -1338,3 +1338,127 @@ func TestRepoClone_GitHubWithoutTheDefaultClusterStillAsks(t *testing.T) {
 	require.ErrorContains(t, err, "none of them is "+defaultClusterHost)
 	require.ErrorContains(t, err, clusterSelectorFlag)
 }
+
+// testMovedDetail is core's answer for a /gh/ address a detach released, as
+// sent to a caller who can pull the native repo it moved to.
+const testMovedDetail = "gh/owner/repo moved to et/acme/repo. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/repo"
+
+// servePlacementsNotFound answers the placements endpoint with a 404 RFC 7807
+// problem, the shape core uses for every refusal.
+func servePlacementsNotFound(t *testing.T, detail string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/mirrors/placements", r.URL.Path)
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusNotFound)
+		assert.NoError(t, printJSON(w, &coreapi.ErrorModel{
+			Status: coreapi.NewOptInt64(http.StatusNotFound),
+			Title:  coreapi.NewOptString("Not Found"),
+			Detail: coreapi.NewOptString(detail),
+		}))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// TestRepoClone_ReleasedAddressPrintsWhereItMoved covers a /gh/ address a
+// detach released: core answers 404 naming the et/ repo and the remote
+// command, and that answer is what the user reads — not an offer to mirror
+// the address again.
+//
+// Not parallel: swaps the package-global activeCoreClient.
+func TestRepoClone_ReleasedAddressPrintsWhereItMoved(t *testing.T) {
+	srvURL := servePlacementsNotFound(t, testMovedDetail)
+
+	_, err := resolveCloneURLAgainst(t, srvURL, "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), testMovedDetail)
+	require.NotContains(t, err.Error(), "mirror add", "a released address must not be onboarded again")
+	require.Contains(t, err.Error(), "entire repo clone /et/acme/repo", "there is no clone to repoint yet, so the next step is cloning the new address")
+}
+
+// An address nothing mirrors still answers the empty list, and the user is
+// still offered to onboard it.
+//
+// Not parallel: swaps the package-global activeCoreClient.
+func TestRepoClone_UnmirroredAddressOffersOnboarding(t *testing.T) {
+	srvURL := servePlacements(t, nil)
+
+	_, err := resolveCloneURLAgainst(t, srvURL, "")
+	require.EqualError(t, err, "no mirror found for /gh/owner/repo; run 'entire repo mirror add /gh/owner/repo' to onboard it")
+}
+
+// The clone command is read out of core's prose, so the cases that prose can
+// take are pinned: a dotted repo name keeps its dot, and a 404 that is not a
+// moved answer — or names a path the native grammar refuses — is rendered as
+// core sent it, with no command made up from it.
+//
+// Not parallel: swaps the package-global activeCoreClient.
+func TestRepoClone_MovedAnswerParsing(t *testing.T) {
+	for _, tc := range []struct {
+		name, detail, wantHint string
+	}{
+		{
+			name:     "dotted repo name",
+			detail:   "gh/owner/repo moved to et/acme/entire-trails.el. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/entire-trails.el",
+			wantHint: "entire repo clone /et/acme/entire-trails.el",
+		},
+		{
+			name:     "uppercase names, as the grammar admits",
+			detail:   "gh/owner/repo moved to et/Acme/Repo. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/Acme/Repo",
+			wantHint: "entire repo clone /et/Acme/Repo",
+		},
+		{
+			name:     "a .git suffix is not part of the name",
+			detail:   "gh/owner/repo moved to et/acme/repo.git. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/repo.git",
+			wantHint: "entire repo clone /et/acme/repo",
+		},
+		{name: "plain not found", detail: "repo not found"},
+		{name: "trailing text", detail: testMovedDetail + " (since 2026-10-01)"},
+		{name: "control characters in the path", detail: "gh/owner/repo moved to et/acme/re\x1bpo. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/re\x1bpo"},
+		{name: "path the grammar refuses", detail: "gh/owner/repo moved to et/a/b. Update your remote: git remote set-url origin entire://h/et/a/b"},
+		{name: "not an et/ path", detail: "gh/owner/repo moved to gh/other/repo. Update your remote: git remote set-url origin entire://h/gh/other/repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srvURL := servePlacementsNotFound(t, tc.detail)
+
+			_, err := resolveCloneURLAgainst(t, srvURL, "")
+			if tc.wantHint == "" {
+				require.EqualError(t, err, tc.detail)
+				return
+			}
+			require.EqualError(t, err, tc.detail+"\nClone it with: "+tc.wantHint)
+		})
+	}
+}
+
+// --cluster resolves on the core fronting that cluster, and a released address
+// there gets the same answer.
+//
+// Not parallel: swaps the package-global clusterCoreClient.
+func TestRepoClone_ReleasedAddressOnAnotherCluster(t *testing.T) {
+	srvURL := servePlacementsNotFound(t, testMovedDetail)
+	prev := clusterCoreClient
+	clusterCoreClient = func(context.Context, string) (*coreapi.Client, error) {
+		return coreapi.NewWithBearer(srvURL, "tok")
+	}
+	t.Cleanup(func() { clusterCoreClient = prev })
+
+	_, err := resolveRepoRemoteURL(cloneTestCmdWithContext(t), testGitHubRef, "aws-us-east-2.entire.io", clonePlacementPicker())
+	// The full URL, not the /et/ shorthand: a shorthand resolves on the active
+	// context, which need not be the federation that answered.
+	require.EqualError(t, err, testMovedDetail+"\nClone it with: entire repo clone entire://aws-us-east-2.entire.io/et/acme/repo")
+}
+
+// A --cluster that does not resolve falls back to the active context, and a
+// moved answer from there is the answer: the DNS failure stays a debug detail,
+// as it does when the fallback lists placements.
+//
+// Not parallel: swaps package-global client seams.
+func TestRepoClone_ReleasedAddressThroughTheUnknownClusterFallback(t *testing.T) {
+	srvURL := servePlacementsNotFound(t, testMovedDetail)
+	unreachableCluster(t, true)
+
+	_, err := resolveCloneURLAgainst(t, srvURL, "wrongcluster")
+	require.EqualError(t, err, testMovedDetail+"\nClone it with: entire repo clone /et/acme/repo")
+}
