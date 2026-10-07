@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -25,9 +26,9 @@ import (
 	"github.com/entireio/cli/internal/entireclient/contexts"
 )
 
-// projectNameMaxLen mirrors CreateProjectInputBody.name's maxLength, so the
-// wizard rejects an over-long name before the server does.
-const projectNameMaxLen = 100
+// projectNameRule describes nativeProjectRe, the server's project-name shape,
+// in the words the name page shows.
+const projectNameRule = "project names are 3-32 letters, digits or hyphens, starting and ending with a letter or digit"
 
 // projectCreateCancelled names the flow in its cancellation line.
 const projectCreateCancelled = "Project create"
@@ -100,15 +101,6 @@ func (o projectOwner) orgKind() string {
 	return strings.Join(parts, ", ")
 }
 
-// shownRef names the owner in the success line, or empty when all there is to
-// show is the "you" stand-in for an account with no handle.
-func (o projectOwner) shownRef() string {
-	if o.personal && o.flagRef == "" {
-		return ""
-	}
-	return o.ref
-}
-
 // label is the owner's picker row, padded so the kind column lines up.
 func (o projectOwner) label(width int) string {
 	kind := "you — personal project"
@@ -133,10 +125,15 @@ func (r projectRegion) display() string {
 
 // projectCreateAnswers is what the wizard collects. It is its own struct so
 // the summary can bind to the answers alone rather than to every listing.
+//
+// The fields are exported on purpose: huh re-runs a DescriptionFunc only when
+// the hashstructure hash of its binding changes, and hashstructure ignores
+// unexported fields, so with unexported ones the summary kept its first render
+// after a Shift+Tab revisit while the create used the new answers.
 type projectCreateAnswers struct {
-	ownerKey string
-	name     string
-	region   string
+	OwnerKey string
+	Name     string
+	Region   string
 }
 
 // projectCreateState is the wizard's model: the choices on offer, the answers
@@ -366,14 +363,14 @@ func newProjectCreateState(d projectCreateData, name, defaultName string) (*proj
 	if len(s.regions) == 0 {
 		return nil, errors.New("no regions available to create a project in")
 	}
-	s.answers.name = cmp.Or(name, defaultName)
+	s.answers.Name = cmp.Or(name, defaultName)
 	s.setOwner(s.owners[0].key)
 	return s, nil
 }
 
 func (s *projectCreateState) owner() projectOwner {
 	for _, o := range s.owners {
-		if o.key == s.answers.ownerKey {
+		if o.key == s.answers.OwnerKey {
 			return o
 		}
 	}
@@ -385,17 +382,17 @@ func (s *projectCreateState) owner() projectOwner {
 // Re-setting the current owner is a no-op: huh writes a select's value back
 // after every message, which must not undo a region the user picked.
 func (s *projectCreateState) setOwner(key string) {
-	if key == s.answers.ownerKey {
+	if key == s.answers.OwnerKey {
 		return
 	}
-	s.answers.ownerKey = key
+	s.answers.OwnerKey = key
 	s.ownerChanges++
 	defer s.refreshPageTitles()
 	if r, ok := s.regionByID(s.owner().region); ok {
-		s.answers.region = r.id
+		s.answers.Region = r.id
 		return
 	}
-	s.answers.region = s.regions[0].id
+	s.answers.Region = s.regions[0].id
 }
 
 func (s *projectCreateState) regionByID(id string) (projectRegion, bool) {
@@ -415,8 +412,10 @@ func (s *projectCreateState) validateName(name string) error {
 	if name == "" {
 		return errors.New("enter a project name")
 	}
-	if utf8.RuneCountInString(name) > projectNameMaxLen {
-		return fmt.Errorf("project names are at most %d characters", projectNameMaxLen)
+	// The server's shape, checked here so a bad name stops on this page
+	// rather than after the summary was confirmed.
+	if !nativeProjectRe.MatchString(name) {
+		return errors.New(projectNameRule)
 	}
 	// Project names are unique across owners (see resolveProjectByName), so
 	// any visible project of that name is a conflict, not only the chosen
@@ -454,10 +453,10 @@ func (s *projectCreateState) ownerDisplay() string {
 }
 
 func (s *projectCreateState) regionDisplay() string {
-	if r, ok := s.regionByID(s.answers.region); ok {
+	if r, ok := s.regionByID(s.answers.Region); ok {
 		return r.display()
 	}
-	return s.answers.region
+	return s.answers.Region
 }
 
 // command is the flag form of the answers, so the summary teaches the
@@ -468,17 +467,17 @@ func (s *projectCreateState) command() string {
 	if o.flagRef == "" {
 		return ""
 	}
-	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.name)), "--owner", shellArg(o.flagRef)}
+	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.Name)), "--owner", shellArg(o.flagRef)}
 	if o.kind == coreapi.CreateProjectInputBodyOwnerTypeAccount {
 		parts = append(parts, "--owner-type", ownerTypeAccount)
 	}
-	parts = append(parts, "--region", s.answers.region)
+	parts = append(parts, "--region", shellArg(s.answers.Region))
 	return strings.Join(parts, " ")
 }
 
 func (s *projectCreateState) summary() string {
 	rows := [][2]string{
-		{"Name", strings.TrimSpace(s.answers.name)},
+		{"Name", strings.TrimSpace(s.answers.Name)},
 		{"Owner", s.ownerDisplay()},
 		{"Region", s.regionDisplay()},
 	}
@@ -500,10 +499,10 @@ func (s *projectCreateState) summary() string {
 func (s *projectCreateState) request() *coreapi.CreateProjectInputBody {
 	o := s.owner()
 	return &coreapi.CreateProjectInputBody{
-		Name:      strings.TrimSpace(s.answers.name),
+		Name:      strings.TrimSpace(s.answers.Name),
 		OwnerId:   o.id,
 		OwnerType: o.kind,
-		Region:    coreapi.NewOptString(s.answers.region),
+		Region:    coreapi.NewOptString(s.answers.Region),
 	}
 }
 
@@ -529,7 +528,7 @@ func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 		if err != nil {
 			return err
 		}
-		s, err := newProjectCreateState(d, name, currentFolderName(ctx))
+		s, err := newProjectCreateState(d, name, suggestProjectName(currentFolderName(ctx)))
 		if err != nil {
 			return err
 		}
@@ -542,9 +541,7 @@ func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 		if err != nil {
 			return err
 		}
-		// Named the way the direct path names it: the server's owner name
-		// first, then the wizard's own (never the "you" stand-in).
-		return printProjectCreated(cmd, &created.Response, created.Response.OwnerName.Or(s.owner().shownRef()))
+		return printProjectCreated(cmd, &created.Response)
 	})
 }
 
@@ -553,7 +550,9 @@ func runProjectCreateWizard(cmd *cobra.Command, name string) error {
 // silences. Same rule as that notice: only when several logins are saved and
 // none was picked for this invocation with --context; empty otherwise.
 func wizardLoginNote() string {
-	if contexts.Requested() {
+	// ENTIRE_TOKEN wins over every saved login (coreapi.New never resolves a
+	// context then), so naming one would name the wrong identity.
+	if contexts.Requested() || os.Getenv(auth.EnvTokenVar) != "" {
 		return ""
 	}
 	all, _, err := auth.StoredContexts()
@@ -565,6 +564,23 @@ func wizardLoginNote() string {
 		return ""
 	}
 	return fmt.Sprintf("Using context '%s'.", c.Name)
+}
+
+// suggestProjectName turns a folder name into a project name the server
+// accepts (lowercased, with "_", "." and spaces as "-"), or "" when it still
+// would not fit, so the name field starts empty rather than wrong.
+func suggestProjectName(folder string) string {
+	name := strings.Trim(strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '.', ' ':
+			return '-'
+		}
+		return r
+	}, strings.ToLower(folder)), "-")
+	if !nativeProjectRe.MatchString(name) {
+		return ""
+	}
+	return name
 }
 
 // currentFolderName is the name the wizard suggests when none was given: the
@@ -654,7 +670,7 @@ func (s *projectCreateState) ownerGroup(accessible bool) *huh.Group {
 	const question = "Who will own this project?"
 	sel := huh.NewSelect[string]().Title(question)
 	if accessible {
-		s.pickedOwner = s.answers.ownerKey
+		s.pickedOwner = s.answers.OwnerKey
 		sel.Options(opts...).Value(&s.pickedOwner)
 	} else {
 		sel.Options(opts...).Accessor(projectOwnerAccessor{s: s})
@@ -694,7 +710,7 @@ const (
 func (s *projectCreateState) decided(stages int) string {
 	lines := []string{"✓ Owner  " + s.ownerDisplay()}
 	if stages >= projectStageName {
-		lines = append(lines, "✓ Name   "+strings.TrimSpace(s.answers.name))
+		lines = append(lines, "✓ Name   "+strings.TrimSpace(s.answers.Name))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -759,8 +775,8 @@ func (s *projectCreateState) nameGroup(dynamic bool) *huh.Group {
 // so a pre-filled name could not be accepted. It also never shows the value it
 // would keep, so the question names it.
 func (s *projectCreateState) accessibleName(in *huh.Input) *huh.Input {
-	in.Value(&s.answers.name)
-	current := strings.TrimSpace(s.answers.name)
+	in.Value(&s.answers.Name)
+	current := strings.TrimSpace(s.answers.Name)
 	if current == "" {
 		return in
 	}
@@ -783,7 +799,7 @@ func (s *projectCreateState) regionGroup(dynamic bool) *huh.Group {
 	}
 	sel := huh.NewSelect[string]().
 		Title("Where should its data live?").
-		Value(&s.answers.region)
+		Value(&s.answers.Region)
 	if !dynamic {
 		return huh.NewGroup(sel.Options(opts...)).Title(projectHeadingRegion)
 	}
@@ -822,17 +838,17 @@ func (s *projectCreateState) summaryGroup(dynamic bool) *huh.Group {
 // cursor also moves the region default.
 type projectOwnerAccessor struct{ s *projectCreateState }
 
-func (a projectOwnerAccessor) Get() string  { return a.s.answers.ownerKey }
+func (a projectOwnerAccessor) Get() string  { return a.s.answers.OwnerKey }
 func (a projectOwnerAccessor) Set(v string) { a.s.setOwner(v) }
 
 // projectNameAccessor keeps the region page's recap in step with the name.
 type projectNameAccessor struct{ s *projectCreateState }
 
-func (a projectNameAccessor) Get() string { return a.s.answers.name }
+func (a projectNameAccessor) Get() string { return a.s.answers.Name }
 func (a projectNameAccessor) Set(v string) {
-	if v == a.s.answers.name {
+	if v == a.s.answers.Name {
 		return
 	}
-	a.s.answers.name = v
+	a.s.answers.Name = v
 	a.s.refreshPageTitles()
 }

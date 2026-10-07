@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/internal/coreapi"
 )
@@ -109,16 +111,16 @@ func TestNewProjectCreateState_Defaults(t *testing.T) {
 	t.Parallel()
 	s, err := newProjectCreateState(wizardTestData(), "", "my-repo")
 	require.NoError(t, err)
-	assert.Equal(t, "my-repo", s.answers.name, "the folder name is suggested when no name was given")
+	assert.Equal(t, "my-repo", s.answers.Name, "the folder name is suggested when no name was given")
 	assert.True(t, s.owner().personal, "the personal row is the starting owner")
-	assert.Equal(t, "us", s.answers.region)
+	assert.Equal(t, "us", s.answers.Region)
 }
 
 func TestNewProjectCreateState_NameArgumentBeatsTheFolderName(t *testing.T) {
 	t.Parallel()
 	s, err := newProjectCreateState(wizardTestData(), "widgets", "my-repo")
 	require.NoError(t, err)
-	assert.Equal(t, "widgets", s.answers.name)
+	assert.Equal(t, "widgets", s.answers.Name)
 	assert.True(t, s.owner().personal, "the owner still starts on the first row")
 }
 
@@ -141,19 +143,19 @@ func TestProjectOwnerAccessor_MovesTheRegion(t *testing.T) {
 	acc := projectOwnerAccessor{s: s}
 
 	acc.Set("org:" + testWizardBetaULID)
-	assert.Equal(t, "eu", s.answers.region)
+	assert.Equal(t, "eu", s.answers.Region)
 	acc.Set(projectOwnerKeyPersonal)
-	assert.Equal(t, "us", s.answers.region)
+	assert.Equal(t, "us", s.answers.Region)
 	acc.Set("org:01HZX7QAP0C00000000000000")
-	assert.Equal(t, "us", s.answers.region, "an owner region not on offer falls back to the first region")
+	assert.Equal(t, "us", s.answers.Region, "an owner region not on offer falls back to the first region")
 	assert.Equal(t, "org:01HZX7QAP0C00000000000000", acc.Get())
 
 	// huh writes the value back after every message; that must not undo a
 	// region picked by hand, nor count as an owner change.
-	s.answers.region = "eu"
+	s.answers.Region = "eu"
 	changes := s.ownerChanges
 	acc.Set(acc.Get())
-	assert.Equal(t, "eu", s.answers.region)
+	assert.Equal(t, "eu", s.answers.Region)
 	assert.Equal(t, changes, s.ownerChanges)
 }
 
@@ -162,8 +164,12 @@ func TestProjectCreateState_ValidateName(t *testing.T) {
 	s := wizardState(t, wizardTestData(), "", "Acme")
 
 	require.ErrorContains(t, s.validateName("  "), "enter a project name")
-	require.ErrorContains(t, s.validateName(strings.Repeat("x", 101)), "at most 100 characters")
-	require.NoError(t, s.validateName(strings.Repeat("x", 100)))
+	// The server's shape: 3-32 letters, digits or hyphens, alphanumeric ends.
+	for _, bad := range []string{"ui", strings.Repeat("x", 33), "my_app", "my app", "-widgets", "widgets-", "wid.gets"} {
+		require.EqualError(t, s.validateName(bad), projectNameRule, bad)
+	}
+	require.NoError(t, s.validateName(strings.Repeat("x", 32)))
+	require.NoError(t, s.validateName("my-app-2"))
 	require.EqualError(t, s.validateName("Widgets"), `Acme already has a project named "widgets"`)
 	// Project names are unique across owners: another owner's name is taken
 	// too, named by the server's owner name when the listing has one.
@@ -302,7 +308,7 @@ func TestProjectCreate_CompleteFlagsSkipTheWizard(t *testing.T) {
 
 	out, err := execProjectCreate(t, "widgets", "--owner", "acme")
 	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project acme/widgets in us\n", out)
+	assert.Equal(t, "✓ Created project /et/widgets\n", out)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, testWizardAcmeULID, fake.created.OwnerId)
 	assert.False(t, fake.created.Region.IsSet(), "the server picks the region")
@@ -321,10 +327,21 @@ func TestProjectCreate_CompleteFlagsJSON(t *testing.T) {
 // Without a terminal a missing name or owner is refused before any request.
 func TestProjectCreate_NonInteractiveNeedsNameAndOwner(t *testing.T) {
 	fake := newProjectCoreFixture(t)
-	for _, args := range [][]string{{}, {"widgets"}, {"--owner", "acme"}} {
-		_, err := execProjectCreate(t, args...)
-		require.ErrorContains(t, err, "a project name and --owner are required", args)
+	for _, tc := range []struct {
+		args    []string
+		missing string
+	}{
+		{nil, "a project name and --owner are required:"},
+		{[]string{"widgets"}, "--owner is required:"},
+		{[]string{"--owner", "acme"}, "a project name is required:"},
+	} {
+		_, err := execProjectCreate(t, tc.args...)
+		require.ErrorContains(t, err, tc.missing, tc.args)
+		// Both spellings of --owner, since a handle needs --owner-type account.
+		require.ErrorContains(t, err, "entire project create <name> --owner <org>\n", tc.args)
+		require.ErrorContains(t, err, "--owner github:<handle> --owner-type account", tc.args)
 		assert.NotContains(t, err.Error(), "ULID")
+		assert.NotContains(t, err.Error(), "[<name>]", "nothing that does not paste")
 	}
 	assert.Empty(t, fake.requests)
 }
@@ -343,7 +360,7 @@ func TestProjectCreate_FlagsNeverSeedTheWizard(t *testing.T) {
 		{"widgets", "--region", ""},
 	} {
 		_, err := execProjectCreate(t, args...)
-		require.ErrorContains(t, err, "a project name and --owner are required: entire project create <name> --owner", args)
+		require.ErrorContains(t, err, "required:\n  entire project create <name> --owner <org>", args)
 	}
 	assert.Empty(t, fake.requests)
 }
@@ -359,17 +376,17 @@ func TestProjectCreate_WizardCreatesWhatTheSummaryShowed(t *testing.T) {
 	t.Setenv(interactive.EnvTestTTY, "1")
 	fake := newProjectCoreFixture(t)
 	stubProjectCreatePrompt(t, func(_ *cobra.Command, s *projectCreateState) (bool, error) {
-		assert.Equal(t, "widgets", s.answers.name, "the argument is the starting name")
+		assert.Equal(t, "widgets", s.answers.Name, "the argument is the starting name")
 		assert.True(t, s.owner().personal)
-		assert.Equal(t, "us", s.answers.region)
+		assert.Equal(t, "us", s.answers.Region)
 		projectOwnerAccessor{s: s}.Set("org:" + testWizardAcmeULID)
-		assert.Equal(t, "eu", s.answers.region, "the region follows the owner")
+		assert.Equal(t, "eu", s.answers.Region, "the region follows the owner")
 		return true, nil
 	})
 
 	out, err := execProjectCreate(t, "widgets")
 	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project acme/widgets in eu\n", out)
+	assert.Equal(t, "✓ Created project /et/widgets\n", out)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, testWizardAcmeULID, fake.created.OwnerId)
 	assert.Equal(t, coreapi.CreateProjectInputBodyOwnerTypeOrg, fake.created.OwnerType)
@@ -383,7 +400,7 @@ func TestProjectCreate_WizardPersonalProject(t *testing.T) {
 
 	out, err := execProjectCreate(t, "widgets")
 	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project github:alice/widgets in us\n", out)
+	assert.Equal(t, "✓ Created project /et/widgets\n", out)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, testWizardAccountULID, fake.created.OwnerId)
 	assert.Equal(t, coreapi.CreateProjectInputBodyOwnerTypeAccount, fake.created.OwnerType)
@@ -422,7 +439,7 @@ func TestProjectCreateState_Decided(t *testing.T) {
 	assert.Equal(t, "✓ Owner  Acme (organization)\n✓ Name   widgets", s.decided(projectStageName))
 
 	s.setOwner(projectOwnerKeyPersonal)
-	s.answers.name = "tools"
+	s.answers.Name = "tools"
 	assert.Equal(t, "✓ Owner  github:alice (you)\n✓ Name   tools", s.decided(projectStageName))
 	assert.NotContains(t, s.decided(projectStageName), testWizardAccountULID)
 
@@ -444,22 +461,19 @@ func TestProjectCreateState_PageTitlesFollowAnswers(t *testing.T) {
 	projectNameAccessor{s: s}.Set("tools")
 	assert.Contains(t, heading(s.nameGrp), "✓ Owner  github:alice (you)")
 	assert.Contains(t, heading(s.regionGrp), "✓ Owner  github:alice (you)\n✓ Name   tools")
-	assert.Equal(t, "tools", s.answers.name)
+	assert.Equal(t, "tools", s.answers.Name)
 }
 
-// A ULID --owner is accepted, but when the server does not name the owner the
-// success line leaves it out rather than echo the id.
-func TestProjectCreate_ULIDOwnerIsNeverEchoed(t *testing.T) {
+// The success line names the project by its fully qualified path, the prefix
+// of its repos' paths: never by id, and the same whatever --owner looked like.
+func TestProjectCreate_SuccessLineIsTheProjectPath(t *testing.T) {
 	fake := newProjectCoreFixture(t)
 	fake.omitOwnerName = true
-
-	out, err := execProjectCreate(t, "widgets", "--owner", testWizardAcmeULID)
-	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project widgets in us\n", out)
-
-	out, err = execProjectCreate(t, "widgets", "--owner", "acme")
-	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project acme/widgets in us\n", out, "a typed name is still a fine fallback")
+	for _, owner := range []string{testWizardAcmeULID, "acme"} {
+		out, err := execProjectCreate(t, "widgets", "--owner", owner)
+		require.NoError(t, err)
+		assert.Equal(t, "✓ Created project /et/widgets\n", out, owner)
+	}
 }
 
 // An account with no handle is shown as "you", but "you" is not something
@@ -473,7 +487,6 @@ func TestProjectCreateState_AccountWithoutHandle(t *testing.T) {
 
 	o := s.owner()
 	assert.Equal(t, "you", o.ref)
-	assert.Empty(t, o.shownRef(), "the success line leaves the owner out")
 	assert.Empty(t, s.command())
 	assert.Contains(t, s.summary(), "Command  (none: your account has no handle)")
 	assert.NotContains(t, s.summary(), "--owner you")
@@ -491,7 +504,6 @@ func TestProjectCreateState_SameNamedOrgs(t *testing.T) {
 
 	s.setOwner("org:" + otherAcme)
 	assert.Empty(t, s.command())
-	assert.Equal(t, "Acme", s.owner().shownRef(), "the success line still names it")
 
 	s.setOwner("org:" + testWizardBetaULID)
 	assert.Contains(t, s.command(), "--owner beta", "a unique name keeps its command")
@@ -504,16 +516,16 @@ func TestProjectCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
 	s := wizardState(t, wizardTestData(), "tools", "Acme")
 	in := s.accessibleName(huh.NewInput())
 	require.NoError(t, in.RunAccessible(io.Discard, strings.NewReader("\n")))
-	assert.Equal(t, "tools", s.answers.name)
+	assert.Equal(t, "tools", s.answers.Name)
 
 	// The kept value is still checked: a taken name is refused.
-	s.answers.name = "widgets"
+	s.answers.Name = "widgets"
 	var out bytes.Buffer
 	in = s.accessibleName(huh.NewInput())
 	require.NoError(t, in.RunAccessible(&out, strings.NewReader("\nfresh\n")))
 	assert.Contains(t, out.String(), `Project name (press Enter for "widgets")`)
 	assert.Contains(t, out.String(), `Acme already has a project named "widgets"`)
-	assert.Equal(t, "fresh", s.answers.name)
+	assert.Equal(t, "fresh", s.answers.Name)
 }
 
 // In accessible mode huh prints a select's title but not its description, and
@@ -535,7 +547,7 @@ func TestProjectCreateState_AccessibleOwnerPage(t *testing.T) {
 
 	assert.Equal(t, "org:"+testWizardBetaULID, s.pickedOwner, "Enter keeps the pre-selected owner")
 	s.setOwner(s.pickedOwner)
-	assert.Equal(t, "eu", s.answers.region, "and applying it moves the region")
+	assert.Equal(t, "eu", s.answers.Region, "and applying it moves the region")
 }
 
 // Two orgs sharing a name and a region would read identically with ids never
@@ -654,10 +666,58 @@ func TestProjectCreate_NameArgumentIsTrimmed(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, "widgets", fake.created.Name)
-	assert.Equal(t, "✓ Created project acme/widgets in us\n", out)
+	assert.Equal(t, "✓ Created project /et/widgets\n", out)
 
 	fake.created = nil
 	_, err = execProjectCreate(t, "   ", "--owner", "acme")
-	require.ErrorContains(t, err, "a project name and --owner are required")
+	require.ErrorContains(t, err, "a project name is required:")
 	assert.Nil(t, fake.created)
+}
+
+// --owner is not cobra-required (the wizard asks for it), so its help text has
+// to say it is required: agents read the flag list and never have a terminal.
+func TestProjectCreate_OwnerFlagSaysRequired(t *testing.T) {
+	t.Parallel()
+	usage := newProjectCreateCmd().Flags().Lookup("owner").Usage
+	assert.Contains(t, usage, "required")
+	assert.Contains(t, usage, "github:handle")
+	assert.NotContains(t, usage, "ULID")
+}
+
+// The summary re-renders only when the hashstructure hash of its binding
+// (projectCreateAnswers) changes, and hashstructure ignores unexported fields.
+// An unexported field would leave the summary showing a stale answer after a
+// Shift+Tab revisit while the create used the new one.
+func TestProjectCreateAnswers_AllFieldsCountForTheSummaryRefresh(t *testing.T) {
+	t.Parallel()
+	typ := reflect.TypeFor[projectCreateAnswers]()
+	for i := range typ.NumField() {
+		assert.True(t, typ.Field(i).IsExported(), "%s must be exported to reach the summary's binding hash", typ.Field(i).Name)
+	}
+}
+
+// A folder name becomes a suggestion only once it has the server's shape.
+func TestSuggestProjectName(t *testing.T) {
+	t.Parallel()
+	for folder, want := range map[string]string{
+		"widgets":               "widgets",
+		"MyApp":                 "myapp",
+		"my_app":                "my-app",
+		"my app.v2":             "my-app-v2",
+		"_private_":             "private",
+		"ui":                    "",
+		"":                      "",
+		strings.Repeat("x", 33): "",
+		"café":                  "",
+	} {
+		assert.Equal(t, want, suggestProjectName(folder), folder)
+	}
+}
+
+// ENTIRE_TOKEN beats every saved login, so the wizard must not name one.
+//
+// Not parallel: sets ENTIRE_TOKEN.
+func TestWizardLoginNote_SilentUnderEntireToken(t *testing.T) {
+	t.Setenv(auth.EnvTokenVar, "tok")
+	assert.Empty(t, wizardLoginNote())
 }
