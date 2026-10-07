@@ -17,8 +17,10 @@ import (
 // flagOutputFormat selects the CLI's response encoding; modelHaiku is the
 // default model for Entire's own generation calls (fast and cheap).
 const (
-	flagOutputFormat = "--output-format"
-	modelHaiku       = "haiku"
+	flagOutputFormat   = "--output-format"
+	flagSettingSources = "--setting-sources"
+	flagStrictMCP      = "--strict-mcp-config"
+	modelHaiku         = "haiku"
 )
 
 // buildGenerateArgs assembles the claude CLI argv for a --print text-generation
@@ -29,6 +31,19 @@ const (
 // user-level tool permissions (e.g. permissions.defaultMode=bypassPermissions),
 // which would let prompt-injection in the untrusted dispatch data drive tool
 // execution. So we pass --setting-sources "" (load nothing).
+//
+// Settings isolation alone still leaves every built-in tool available, and in
+// the default permission mode Read and read-only Bash run without approval
+// inside the working directory, so an injected "read this file" instruction
+// could copy a file's contents into the summary. --tools "" removes the tools
+// entirely; summary generation needs none, because the transcript is already
+// in the prompt.
+//
+// --tools "" covers the built-in set only: MCP servers from the user's
+// ~/.claude.json keep their tools under it (verified: a user-scope server
+// stayed connected with its 76 tools). --setting-sources "" also drops them on
+// Claude Code 2.1.285, but that is not documented behavior of the flag, so
+// --strict-mcp-config (with no --mcp-config) states it explicitly.
 //
 // The one thing we genuinely need from the user settings is auth. Users on API
 // billing configure it with `apiKeyHelper` (a command that prints the key),
@@ -50,7 +65,9 @@ func buildGenerateArgs(model, settingsPath string) []string {
 	args := []string{
 		"--print", flagOutputFormat, "json",
 		"--model", model,
-		"--setting-sources", "",
+		flagSettingSources, "",
+		"--tools", "",
+		flagStrictMCP,
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -70,7 +87,9 @@ func buildStreamingGenerateArgs(model, settingsPath string) []string {
 		"--include-partial-messages",
 		"--verbose",
 		"--model", model,
-		"--setting-sources", "",
+		flagSettingSources, "",
+		"--tools", "",
+		flagStrictMCP,
 	}
 	if settingsPath != "" {
 		args = append(args, "--settings", settingsPath)
@@ -176,11 +195,18 @@ func (c *ClaudeCodeAgent) GenerateText(ctx context.Context, prompt string, model
 		defer cleanup()
 	}
 
+	workDir, cleanupDir, err := agent.NewTextGenerationDir()
+	if err != nil {
+		return "", err //nolint:wrapcheck // NewTextGenerationDir already names what failed
+	}
+	defer cleanupDir()
+
 	cmd := commandRunner(ctx, claudePath, buildGenerateArgs(model, settingsPath)...)
 
 	// Isolate from the user's git repo to prevent recursive hook triggers
-	// and index pollution (matches agent.RunIsolatedTextGeneratorCLI behavior).
-	cmd.Dir = os.TempDir()
+	// and index pollution, in an empty directory rather than the shared temp
+	// dir (matches agent.RunIsolatedTextGeneratorCLI behavior).
+	cmd.Dir = workDir
 	cmd.Env = agent.StripGitEnv(os.Environ())
 	cmd.Stdin = strings.NewReader(prompt)
 
