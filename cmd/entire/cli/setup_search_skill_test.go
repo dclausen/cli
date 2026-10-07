@@ -603,7 +603,6 @@ func assertStrictJSONSearchInstructions(t *testing.T, content string) {
 		t.Fatal("scaffolded file should tell agents repo/pr and cross-repo session hits aren't explainable")
 	}
 	// ENT-2102: agents paste a commit hit's id (its SHA) into `explain --repo`.
-	// The skill must say that works, and that only a complete id does.
 	if !strings.Contains(content, "For a checkpoint or commit hit from another repo") {
 		t.Fatal("scaffolded file should allow cross-repo explain for commit hits as well as checkpoint hits")
 	}

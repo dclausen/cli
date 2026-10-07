@@ -127,11 +127,9 @@ func TestExplainRepoIsCurrent(t *testing.T) {
 // stubCrossRepoReader serves a fixed checkpoint so the render paths can be
 // exercised without a cell.
 type stubCrossRepoReader struct {
-	transcript []byte
-	metaErr    error
-	sessions   int
-	// resolvedSHA records the commit SHA resolveCommitCheckpoint was asked
-	// about; resolveErr makes it fail.
+	transcript  []byte
+	metaErr     error
+	sessions    int
 	resolvedSHA string
 	resolveErr  error
 }
@@ -353,9 +351,7 @@ func TestRunCrossRepoExplain_RejectsPrefix(t *testing.T) {
 	}
 }
 
-// ENT-2102: a search hit's commit SHA is what agents paste. Cross-repo has no
-// local git to read the Entire-Checkpoint trailer from, so the SHA resolves to
-// its checkpoint through the owning repo's cell, then renders as usual.
+// ENT-2102: a search hit's commit SHA is what agents paste into explain --repo.
 func TestRunCrossRepoExplain_CommitSHAResolvesToCheckpoint(t *testing.T) {
 	stub := &stubCrossRepoReader{transcript: []byte(`{"type":"user","message":{"role":"user","content":"do the foreign thing"}}` + "\n")}
 	asked := withStubCrossRepoReader(t, stub)
@@ -375,8 +371,6 @@ func TestRunCrossRepoExplain_CommitSHAResolvesToCheckpoint(t *testing.T) {
 	assert.Contains(t, out.String(), "do the foreign thing")
 }
 
-// --commit is the explicit spelling of the same thing; it must not be routed
-// by shape, and --checkpoint must stay strict (pinned at the flag layer).
 func TestRunCrossRepoExplain_CommitFlagResolvesToCheckpoint(t *testing.T) {
 	stub := &stubCrossRepoReader{}
 	withStubCrossRepoReader(t, stub)

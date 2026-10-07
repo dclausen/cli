@@ -522,8 +522,7 @@ func TestParseAPITime(t *testing.T) {
 
 const testAPICommitSHA = "13e379e4b0000000000000000000000000000000"
 
-// commitCheckpointsHandler serves body as the commit→checkpoints listing. The
-// resolver makes exactly one request, so no routing is needed.
+// commitCheckpointsHandler serves body as the commit→checkpoints listing.
 func commitCheckpointsHandler(body string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, body)
@@ -536,8 +535,7 @@ func TestAPICheckpointReader_ResolveCommitCheckpoint(t *testing.T) {
 	reader, paths := newTestAPIReader(t, commitCheckpointsHandler(
 		`{"repo_full_name":"acme/widgets","checkpoints":[{"checkpointId":"`+testAPICheckpointID.String()+`","commitSha":"`+testAPICommitSHA+`"}]}`))
 
-	// Uppercase input: the server canonicalizes SHAs to lowercase, so the
-	// request must too rather than depending on the route being case-blind.
+	// Uppercase input: the route is not case-blind, so the request must lowercase.
 	cid, err := reader.resolveCommitCheckpoint(context.Background(), strings.ToUpper(testAPICommitSHA))
 	require.NoError(t, err)
 	assert.Equal(t, testAPICheckpointID, cid)
@@ -563,9 +561,6 @@ func TestAPICheckpointReader_ResolveCommitCheckpoint_NoCheckpoints(t *testing.T)
 	}
 }
 
-// A commit that links several checkpoints has no single "the" checkpoint to
-// explain. Mirror the local ambiguous-prefix behaviour: refuse, and list the
-// candidates so the caller can rerun with one of them.
 func TestAPICheckpointReader_ResolveCommitCheckpoint_Ambiguous(t *testing.T) {
 	t.Parallel()
 
@@ -578,9 +573,6 @@ func TestAPICheckpointReader_ResolveCommitCheckpoint_Ambiguous(t *testing.T) {
 	assert.Contains(t, err.Error(), "abcdef123456")
 }
 
-// The same repo-identity guard that protects the checkpoint envelope applies
-// here: a listing that claims a different repo must not be used to pick a
-// checkpoint ID that is then read and displayed as this repo's.
 func TestAPICheckpointReader_ResolveCommitCheckpoint_RepoMismatchIsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -601,8 +593,6 @@ func TestAPICheckpointReader_ResolveCommitCheckpoint_MissingRepoFullNameIsReject
 	require.ErrorContains(t, err, "identity unverifiable")
 }
 
-// A server-minted ID that fails the CLI's own validation must be refused here,
-// not passed on to a read that would then fail with a confusing message.
 func TestAPICheckpointReader_ResolveCommitCheckpoint_InvalidIDIsRejected(t *testing.T) {
 	t.Parallel()
 

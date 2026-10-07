@@ -81,12 +81,9 @@ type apiCheckpointEnvelope struct {
 	RepoFullName string             `json:"repo_full_name"`
 }
 
-// apiCommitCheckpointsBody is the body of GET
-// /repos/{repo_id}/commits/{sha}/checkpoints (entire-api's
-// RepoCheckpointsOutputBody): the checkpoints linked to one commit. Each entry
-// is a full CheckpointInfo on the wire, but only the ID is decoded: the
-// checkpoint is then read through loadDetail, whose envelope is what the
-// renderers consume and what the identity checks verify.
+// apiCommitCheckpointsBody is GET /repos/{repo_id}/commits/{sha}/checkpoints:
+// the checkpoints linked to one commit. Only the ID is decoded; loadDetail's
+// response, not this one, is what the identity checks verify.
 type apiCommitCheckpointsBody struct {
 	Checkpoints []struct {
 		CheckpointID string `json:"checkpointId"`
@@ -349,23 +346,14 @@ func (r *apiCheckpointReader) readRawTranscript(ctx context.Context, checkpointI
 // --- commit → checkpoint ------------------------------------------------
 
 // resolveCommitCheckpoint maps a full commit SHA to the checkpoint that
-// produced it, through the owning repo's cell: the cross-repo stand-in for
-// reading the commit's Entire-Checkpoint trailer out of local git.
-//
-// The server lists every checkpoint linked to the commit, and the list order
-// is not a contract, so exactly one is the only answer this can act on. Zero
-// and several are errors; several names the candidates so the caller can pick.
-// (The local path reads the commit's first trailer instead; a squash commit
-// carrying several therefore explains locally but not from here.)
-//
-// Only the listing's repo identity is verified here. The checkpoint it names
-// is read through loadDetail next, which verifies both repo and checkpoint ID
-// against an independent response, so a wrong-checkpoint listing cannot reach
-// the renderer unchecked.
+// produced it, through the owning repo's cell. Exactly one linked checkpoint
+// is required: the listing's order is not a contract, so several cannot be
+// picked from and are named instead (the local path reads the first trailer,
+// so a squash commit explains locally but not from here). Only the listing's
+// repo identity is verified; loadDetail verifies repo and checkpoint ID
+// against an independent response before anything is rendered.
 func (r *apiCheckpointReader) resolveCommitCheckpoint(ctx context.Context, sha string) (id.CheckpointID, error) {
-	// The server canonicalizes SHAs to lowercase; send that form rather than
-	// depending on the route being case-blind. This is the one place that
-	// normalizes; callers pass the SHA as given.
+	// Lowercase: the server canonicalizes SHAs and the route is not case-blind.
 	sha = strings.ToLower(sha)
 	short := abbreviateSHA(sha)
 
@@ -413,8 +401,6 @@ func (r *apiCheckpointReader) resolveCommitCheckpoint(ctx context.Context, sha s
 	}
 }
 
-// abbreviateSHA shortens a full SHA for messages; a value that is already
-// short (or not a SHA at all) is returned unchanged.
 func abbreviateSHA(sha string) string {
 	if len(sha) > 7 {
 		return sha[:7]
@@ -422,14 +408,12 @@ func abbreviateSHA(sha string) string {
 	return sha
 }
 
-// forbiddenError is the one message for a 403 from any cell route.
 func (r *apiCheckpointReader) forbiddenError() error {
 	return fmt.Errorf("your login cannot read checkpoints in %s", r.ownerRepo)
 }
 
-// notIngestedError is the one message for a 404 from any cell route. A thing
-// only becomes visible here once it has been pushed and ingested, and in an
-// active repo most of what is local is not pushed yet, so lead with that.
+// notIngestedError leads with "not pushed": in an active repo that is by far
+// the common cause of a 404, and blaming storage sends readers the wrong way.
 func (r *apiCheckpointReader) notIngestedError(what string) error {
 	return fmt.Errorf("%s is not available for %s yet: it may not have been pushed, or Entire may not have finished ingesting it", what, r.ownerRepo)
 }
