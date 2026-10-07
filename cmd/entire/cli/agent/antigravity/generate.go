@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/entireio/cli/cmd/entire/cli/agent"
+	"github.com/entireio/cli/cmd/entire/cli/osroot"
 )
 
 // GenerateText submits a non-interactive prompt to the Antigravity CLI. The
@@ -58,7 +59,7 @@ func (a *AntigravityAgent) GenerateText(ctx context.Context, prompt string, mode
 	result, capturedStderr, stdoutBytes, err := agent.RunIsolatedTextGeneratorCLI(ctx, a.CommandRunner, "agy", "antigravity", args, "", env...)
 	if err != nil {
 		if strings.Contains(capturedStderr, "Authentication required") {
-			err = fmt.Errorf("%w: agy runs summaries with an isolated home so your agy settings, hooks, and MCP servers are not loaded, and it could not find its sign-in there; use agy's Gemini API-key mode (\"modelProvider\": \"gemini\" in agy's settings.json plus GEMINI_API_KEY) or choose another summary provider", err)
+			err = fmt.Errorf("%w: agy runs summaries with an isolated home so your agy settings, hooks, and MCP servers are not loaded; only its sign-in is carried over (the OS keyring, its file token, application-default credentials, or Gemini API-key mode), and none of them authenticated. Run `agy` to sign in again, or choose another summary provider", err)
 		}
 		return "", &agent.TextGenerationError{
 			Err:         fmt.Errorf("antigravity text generation failed: %w", err),
@@ -78,22 +79,33 @@ func (a *AntigravityAgent) GenerateText(ctx context.Context, prompt string, mode
 // instruction can still name an absolute path, which only the empty working
 // directory and agy's own approvals stand against.
 //
-// agy keeps its sign-in in the macOS login keychain, which it locates through
-// $HOME, so on macOS the login keychain FILE is linked in (linkLoginKeychain).
-// Elsewhere the credential stores agy uses (Windows Credential Manager, the
-// Secret Service on Linux) are not under the home directory. API-key
-// authentication takes the key from the environment, which is inherited
-// unchanged, and the mode from settings.json, which carryAPIKeyMode recreates.
-// agy's file-backed token fallback, used where no keyring is reachable, and
-// gcloud application-default credentials both live under the home directory
-// and are deliberately not carried over: a machine that signs in that way
-// fails to authenticate, which GenerateText reports, rather than falling back
-// to the user's configuration.
+// Each way agy signs in is carried over, as a credential and nothing else:
+//   - keyring: agy keeps its sign-in in the macOS login keychain, which it
+//     locates through $HOME, so on macOS the login keychain FILE is linked in
+//     (linkLoginKeychain). Elsewhere the keyring (Windows Credential Manager,
+//     the Secret Service on Linux) is not under the home directory.
+//   - file token: where no keyring is usable (agy detects an SSH session, for
+//     one), agy stores its sign-in in antigravity-oauth-token in its config
+//     directory, so that one file is linked in (linkFileToken).
+//   - application-default credentials: agy's ADC mode (AGY_ADC_AUTH, which is
+//     inherited) honours GOOGLE_APPLICATION_CREDENTIALS before looking under
+//     $HOME, so the variable is pointed at the user's credentials file
+//     (adcCredentialsEnv). On Windows the file is found through %APPDATA%,
+//     which is inherited unchanged.
+//   - API key: the key comes from the environment, which is inherited
+//     unchanged, and the mode from settings.json, which carryAPIKeyMode
+//     recreates.
+//
+// The file locations were observed on agy 1.3.1 by tracing which paths it
+// opens under an empty home.
 func isolatedHomeEnv(home string) ([]string, error) {
 	if runtime.GOOS == "darwin" {
 		if err := linkLoginKeychain(home); err != nil {
 			return nil, err
 		}
+	}
+	if err := linkFileToken(home); err != nil {
+		return nil, err
 	}
 	if err := carryAPIKeyMode(home); err != nil {
 		return nil, err
@@ -108,7 +120,79 @@ func isolatedHomeEnv(home string) ([]string, error) {
 	if runtime.GOOS == "windows" {
 		env = append(env, "USERPROFILE="+home)
 	}
-	return env, nil
+	return append(env, adcCredentialsEnv()...), nil
+}
+
+// agyFileTokenName is the file agy stores its sign-in in, inside its config
+// directory, when it does not use the OS keyring.
+const agyFileTokenName = "antigravity-oauth-token" //nolint:gosec // a file name, not a credential
+
+// linkFileToken links home/.gemini/antigravity-cli/antigravity-oauth-token to
+// the user's file token, when there is one. Only a regular file is linked: a
+// symlinked token is refused, as settings.json is, rather than followed to
+// wherever it points. The link is to the file, so there is no ".." to walk
+// back into the real home, and agy's own config directory, which holds the
+// title command, is not reachable through it. Where a symlink cannot be made
+// (Windows without the privilege), the token is copied instead; the isolated
+// home is removed when the run ends.
+func linkFileToken(home string) error {
+	root, err := openAgyConfigRoot(false)
+	if err != nil {
+		return nil // no agy config directory: no file token to carry
+	}
+	defer root.Close()
+	info, err := root.Lstat(agyFileTokenName)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil // absent, or not a regular file: agy reports the missing sign-in
+	}
+	configDir, err := agyConfigDir()
+	if err != nil {
+		return nil // the root above resolved it; nothing to link if it no longer does
+	}
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create isolated home: %w", err)
+	}
+	dst := filepath.Join(dir, agyFileTokenName)
+	if err := os.Symlink(filepath.Join(configDir, agyFileTokenName), dst); err == nil {
+		return nil
+	}
+	data, err := osroot.ReadFileNoFollow(root, agyFileTokenName)
+	if err != nil {
+		return fmt.Errorf("read agy file token: %w", err)
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("copy agy file token into isolated home: %w", err)
+	}
+	return nil
+}
+
+// adcCredentialsEnvVar names the application-default credentials file for
+// Google client libraries, agy among them.
+const adcCredentialsEnvVar = "GOOGLE_APPLICATION_CREDENTIALS" //nolint:gosec // a variable name, not a credential
+
+// adcCredentialsFile is where gcloud writes application-default credentials
+// under a Unix home, and where agy looks for them when
+// GOOGLE_APPLICATION_CREDENTIALS is unset.
+var adcCredentialsFile = filepath.Join(".config", "gcloud", "application_default_credentials.json")
+
+// adcCredentialsEnv points GOOGLE_APPLICATION_CREDENTIALS at the user's
+// application-default credentials, which agy would otherwise look for under
+// the isolated home. A variable the user already set is inherited as it is,
+// and Windows needs nothing because agy finds the file through %APPDATA%.
+func adcCredentialsEnv() []string {
+	if runtime.GOOS == "windows" || os.Getenv(adcCredentialsEnvVar) != "" {
+		return nil
+	}
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	path := filepath.Join(realHome, adcCredentialsFile)
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	return []string{adcCredentialsEnvVar + "=" + path}
 }
 
 // linkLoginKeychain links home/Library/Keychains/login.keychain-db to the
