@@ -133,10 +133,15 @@ func (r projectRegion) display() string {
 
 // projectCreateAnswers is what the wizard collects. It is its own struct so
 // the summary can bind to the answers alone rather than to every listing.
+//
+// The fields are exported on purpose: huh re-runs a DescriptionFunc only when
+// the hashstructure hash of its binding changes, and hashstructure ignores
+// unexported fields, so with unexported ones the summary kept its first render
+// after a Shift+Tab revisit while the create used the new answers.
 type projectCreateAnswers struct {
-	ownerKey string
-	name     string
-	region   string
+	OwnerKey string
+	Name     string
+	Region   string
 }
 
 // projectCreateState is the wizard's model: the choices on offer, the answers
@@ -366,14 +371,14 @@ func newProjectCreateState(d projectCreateData, name, defaultName string) (*proj
 	if len(s.regions) == 0 {
 		return nil, errors.New("no regions available to create a project in")
 	}
-	s.answers.name = cmp.Or(name, defaultName)
+	s.answers.Name = cmp.Or(name, defaultName)
 	s.setOwner(s.owners[0].key)
 	return s, nil
 }
 
 func (s *projectCreateState) owner() projectOwner {
 	for _, o := range s.owners {
-		if o.key == s.answers.ownerKey {
+		if o.key == s.answers.OwnerKey {
 			return o
 		}
 	}
@@ -385,17 +390,17 @@ func (s *projectCreateState) owner() projectOwner {
 // Re-setting the current owner is a no-op: huh writes a select's value back
 // after every message, which must not undo a region the user picked.
 func (s *projectCreateState) setOwner(key string) {
-	if key == s.answers.ownerKey {
+	if key == s.answers.OwnerKey {
 		return
 	}
-	s.answers.ownerKey = key
+	s.answers.OwnerKey = key
 	s.ownerChanges++
 	defer s.refreshPageTitles()
 	if r, ok := s.regionByID(s.owner().region); ok {
-		s.answers.region = r.id
+		s.answers.Region = r.id
 		return
 	}
-	s.answers.region = s.regions[0].id
+	s.answers.Region = s.regions[0].id
 }
 
 func (s *projectCreateState) regionByID(id string) (projectRegion, bool) {
@@ -454,10 +459,10 @@ func (s *projectCreateState) ownerDisplay() string {
 }
 
 func (s *projectCreateState) regionDisplay() string {
-	if r, ok := s.regionByID(s.answers.region); ok {
+	if r, ok := s.regionByID(s.answers.Region); ok {
 		return r.display()
 	}
-	return s.answers.region
+	return s.answers.Region
 }
 
 // command is the flag form of the answers, so the summary teaches the
@@ -468,17 +473,17 @@ func (s *projectCreateState) command() string {
 	if o.flagRef == "" {
 		return ""
 	}
-	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.name)), "--owner", shellArg(o.flagRef)}
+	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.Name)), "--owner", shellArg(o.flagRef)}
 	if o.kind == coreapi.CreateProjectInputBodyOwnerTypeAccount {
 		parts = append(parts, "--owner-type", ownerTypeAccount)
 	}
-	parts = append(parts, "--region", s.answers.region)
+	parts = append(parts, "--region", s.answers.Region)
 	return strings.Join(parts, " ")
 }
 
 func (s *projectCreateState) summary() string {
 	rows := [][2]string{
-		{"Name", strings.TrimSpace(s.answers.name)},
+		{"Name", strings.TrimSpace(s.answers.Name)},
 		{"Owner", s.ownerDisplay()},
 		{"Region", s.regionDisplay()},
 	}
@@ -500,10 +505,10 @@ func (s *projectCreateState) summary() string {
 func (s *projectCreateState) request() *coreapi.CreateProjectInputBody {
 	o := s.owner()
 	return &coreapi.CreateProjectInputBody{
-		Name:      strings.TrimSpace(s.answers.name),
+		Name:      strings.TrimSpace(s.answers.Name),
 		OwnerId:   o.id,
 		OwnerType: o.kind,
-		Region:    coreapi.NewOptString(s.answers.region),
+		Region:    coreapi.NewOptString(s.answers.Region),
 	}
 }
 
@@ -654,7 +659,7 @@ func (s *projectCreateState) ownerGroup(accessible bool) *huh.Group {
 	const question = "Who will own this project?"
 	sel := huh.NewSelect[string]().Title(question)
 	if accessible {
-		s.pickedOwner = s.answers.ownerKey
+		s.pickedOwner = s.answers.OwnerKey
 		sel.Options(opts...).Value(&s.pickedOwner)
 	} else {
 		sel.Options(opts...).Accessor(projectOwnerAccessor{s: s})
@@ -694,7 +699,7 @@ const (
 func (s *projectCreateState) decided(stages int) string {
 	lines := []string{"✓ Owner  " + s.ownerDisplay()}
 	if stages >= projectStageName {
-		lines = append(lines, "✓ Name   "+strings.TrimSpace(s.answers.name))
+		lines = append(lines, "✓ Name   "+strings.TrimSpace(s.answers.Name))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -759,8 +764,8 @@ func (s *projectCreateState) nameGroup(dynamic bool) *huh.Group {
 // so a pre-filled name could not be accepted. It also never shows the value it
 // would keep, so the question names it.
 func (s *projectCreateState) accessibleName(in *huh.Input) *huh.Input {
-	in.Value(&s.answers.name)
-	current := strings.TrimSpace(s.answers.name)
+	in.Value(&s.answers.Name)
+	current := strings.TrimSpace(s.answers.Name)
 	if current == "" {
 		return in
 	}
@@ -783,7 +788,7 @@ func (s *projectCreateState) regionGroup(dynamic bool) *huh.Group {
 	}
 	sel := huh.NewSelect[string]().
 		Title("Where should its data live?").
-		Value(&s.answers.region)
+		Value(&s.answers.Region)
 	if !dynamic {
 		return huh.NewGroup(sel.Options(opts...)).Title(projectHeadingRegion)
 	}
@@ -822,17 +827,17 @@ func (s *projectCreateState) summaryGroup(dynamic bool) *huh.Group {
 // cursor also moves the region default.
 type projectOwnerAccessor struct{ s *projectCreateState }
 
-func (a projectOwnerAccessor) Get() string  { return a.s.answers.ownerKey }
+func (a projectOwnerAccessor) Get() string  { return a.s.answers.OwnerKey }
 func (a projectOwnerAccessor) Set(v string) { a.s.setOwner(v) }
 
 // projectNameAccessor keeps the region page's recap in step with the name.
 type projectNameAccessor struct{ s *projectCreateState }
 
-func (a projectNameAccessor) Get() string { return a.s.answers.name }
+func (a projectNameAccessor) Get() string { return a.s.answers.Name }
 func (a projectNameAccessor) Set(v string) {
-	if v == a.s.answers.name {
+	if v == a.s.answers.Name {
 		return
 	}
-	a.s.answers.name = v
+	a.s.answers.Name = v
 	a.s.refreshPageTitles()
 }

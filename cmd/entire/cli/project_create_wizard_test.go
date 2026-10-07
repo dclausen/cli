@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -109,16 +110,16 @@ func TestNewProjectCreateState_Defaults(t *testing.T) {
 	t.Parallel()
 	s, err := newProjectCreateState(wizardTestData(), "", "my-repo")
 	require.NoError(t, err)
-	assert.Equal(t, "my-repo", s.answers.name, "the folder name is suggested when no name was given")
+	assert.Equal(t, "my-repo", s.answers.Name, "the folder name is suggested when no name was given")
 	assert.True(t, s.owner().personal, "the personal row is the starting owner")
-	assert.Equal(t, "us", s.answers.region)
+	assert.Equal(t, "us", s.answers.Region)
 }
 
 func TestNewProjectCreateState_NameArgumentBeatsTheFolderName(t *testing.T) {
 	t.Parallel()
 	s, err := newProjectCreateState(wizardTestData(), "widgets", "my-repo")
 	require.NoError(t, err)
-	assert.Equal(t, "widgets", s.answers.name)
+	assert.Equal(t, "widgets", s.answers.Name)
 	assert.True(t, s.owner().personal, "the owner still starts on the first row")
 }
 
@@ -141,19 +142,19 @@ func TestProjectOwnerAccessor_MovesTheRegion(t *testing.T) {
 	acc := projectOwnerAccessor{s: s}
 
 	acc.Set("org:" + testWizardBetaULID)
-	assert.Equal(t, "eu", s.answers.region)
+	assert.Equal(t, "eu", s.answers.Region)
 	acc.Set(projectOwnerKeyPersonal)
-	assert.Equal(t, "us", s.answers.region)
+	assert.Equal(t, "us", s.answers.Region)
 	acc.Set("org:01HZX7QAP0C00000000000000")
-	assert.Equal(t, "us", s.answers.region, "an owner region not on offer falls back to the first region")
+	assert.Equal(t, "us", s.answers.Region, "an owner region not on offer falls back to the first region")
 	assert.Equal(t, "org:01HZX7QAP0C00000000000000", acc.Get())
 
 	// huh writes the value back after every message; that must not undo a
 	// region picked by hand, nor count as an owner change.
-	s.answers.region = "eu"
+	s.answers.Region = "eu"
 	changes := s.ownerChanges
 	acc.Set(acc.Get())
-	assert.Equal(t, "eu", s.answers.region)
+	assert.Equal(t, "eu", s.answers.Region)
 	assert.Equal(t, changes, s.ownerChanges)
 }
 
@@ -359,11 +360,11 @@ func TestProjectCreate_WizardCreatesWhatTheSummaryShowed(t *testing.T) {
 	t.Setenv(interactive.EnvTestTTY, "1")
 	fake := newProjectCoreFixture(t)
 	stubProjectCreatePrompt(t, func(_ *cobra.Command, s *projectCreateState) (bool, error) {
-		assert.Equal(t, "widgets", s.answers.name, "the argument is the starting name")
+		assert.Equal(t, "widgets", s.answers.Name, "the argument is the starting name")
 		assert.True(t, s.owner().personal)
-		assert.Equal(t, "us", s.answers.region)
+		assert.Equal(t, "us", s.answers.Region)
 		projectOwnerAccessor{s: s}.Set("org:" + testWizardAcmeULID)
-		assert.Equal(t, "eu", s.answers.region, "the region follows the owner")
+		assert.Equal(t, "eu", s.answers.Region, "the region follows the owner")
 		return true, nil
 	})
 
@@ -422,7 +423,7 @@ func TestProjectCreateState_Decided(t *testing.T) {
 	assert.Equal(t, "✓ Owner  Acme (organization)\n✓ Name   widgets", s.decided(projectStageName))
 
 	s.setOwner(projectOwnerKeyPersonal)
-	s.answers.name = "tools"
+	s.answers.Name = "tools"
 	assert.Equal(t, "✓ Owner  github:alice (you)\n✓ Name   tools", s.decided(projectStageName))
 	assert.NotContains(t, s.decided(projectStageName), testWizardAccountULID)
 
@@ -444,7 +445,7 @@ func TestProjectCreateState_PageTitlesFollowAnswers(t *testing.T) {
 	projectNameAccessor{s: s}.Set("tools")
 	assert.Contains(t, heading(s.nameGrp), "✓ Owner  github:alice (you)")
 	assert.Contains(t, heading(s.regionGrp), "✓ Owner  github:alice (you)\n✓ Name   tools")
-	assert.Equal(t, "tools", s.answers.name)
+	assert.Equal(t, "tools", s.answers.Name)
 }
 
 // A ULID --owner is accepted, but when the server does not name the owner the
@@ -504,16 +505,16 @@ func TestProjectCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
 	s := wizardState(t, wizardTestData(), "tools", "Acme")
 	in := s.accessibleName(huh.NewInput())
 	require.NoError(t, in.RunAccessible(io.Discard, strings.NewReader("\n")))
-	assert.Equal(t, "tools", s.answers.name)
+	assert.Equal(t, "tools", s.answers.Name)
 
 	// The kept value is still checked: a taken name is refused.
-	s.answers.name = "widgets"
+	s.answers.Name = "widgets"
 	var out bytes.Buffer
 	in = s.accessibleName(huh.NewInput())
 	require.NoError(t, in.RunAccessible(&out, strings.NewReader("\nfresh\n")))
 	assert.Contains(t, out.String(), `Project name (press Enter for "widgets")`)
 	assert.Contains(t, out.String(), `Acme already has a project named "widgets"`)
-	assert.Equal(t, "fresh", s.answers.name)
+	assert.Equal(t, "fresh", s.answers.Name)
 }
 
 // In accessible mode huh prints a select's title but not its description, and
@@ -535,7 +536,7 @@ func TestProjectCreateState_AccessibleOwnerPage(t *testing.T) {
 
 	assert.Equal(t, "org:"+testWizardBetaULID, s.pickedOwner, "Enter keeps the pre-selected owner")
 	s.setOwner(s.pickedOwner)
-	assert.Equal(t, "eu", s.answers.region, "and applying it moves the region")
+	assert.Equal(t, "eu", s.answers.Region, "and applying it moves the region")
 }
 
 // Two orgs sharing a name and a region would read identically with ids never
@@ -670,4 +671,16 @@ func TestProjectCreate_OwnerFlagSaysRequired(t *testing.T) {
 	assert.Contains(t, usage, "required")
 	assert.Contains(t, usage, "github:handle")
 	assert.NotContains(t, usage, "ULID")
+}
+
+// The summary re-renders only when the hashstructure hash of its binding
+// (projectCreateAnswers) changes, and hashstructure ignores unexported fields.
+// An unexported field would leave the summary showing a stale answer after a
+// Shift+Tab revisit while the create used the new one.
+func TestProjectCreateAnswers_AllFieldsCountForTheSummaryRefresh(t *testing.T) {
+	t.Parallel()
+	typ := reflect.TypeFor[projectCreateAnswers]()
+	for i := range typ.NumField() {
+		assert.True(t, typ.Field(i).IsExported(), "%s must be exported to reach the summary's binding hash", typ.Field(i).Name)
+	}
 }
