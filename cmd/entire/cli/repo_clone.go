@@ -726,14 +726,14 @@ func resolvePullablePlacements(ctx context.Context, c *coreapi.Client, owner, re
 
 // detachedAddressRes read core's answer for a gh/ address a detach released:
 // a 404 whose detail names the et/ repo and the remote it serves at
-// (entiredb core/coreapi/tombstone.go, movedGitHubAddress.message). The
-// current wording is `gh/<owner>/<repo> was detached and moved to
-// et/<project>/<repo>. Clone using "entire repo clone /et/<project>/<repo>" or
-// update your remote using "git remote set-url origin entire://<host>/et/…"`;
-// cores that predate it say "gh/<owner>/<repo> moved to et/<project>/<repo>.
-// Update your remote: git remote set-url origin entire://<host>/et/…", and both
-// are accepted until those are gone. Each yields the et/ path, the remote's
-// host and the remote's path.
+// (entiredb core/coreapi/tombstone.go, movedGitHubAddress.message). Core says
+// "gh/<owner>/<repo> moved to et/<project>/<repo>. Update your remote: git
+// remote set-url origin entire://<host>/et/…". The sentence this command
+// prints — `gh/<owner>/<repo> was detached and moved to et/<project>/<repo>.
+// Clone using "entire repo clone /et/<project>/<repo>" or update your remote
+// using "git remote set-url origin entire://<host>/et/…"` — is accepted too,
+// so core can adopt it without a CLI release. Each yields the et/ path, the
+// remote's host and the remote's path.
 //
 // The detail is the only carrier — this problem has no structured field for
 // it — so this is a parse of server prose, anchored at both ends, and a detail

@@ -1339,8 +1339,9 @@ func TestRepoClone_GitHubWithoutTheDefaultClusterStillAsks(t *testing.T) {
 	require.ErrorContains(t, err, clusterSelectorFlag)
 }
 
-// testDetachedDetail is core's answer for a /gh/ address a detach released, as
-// sent to a caller who can pull the native repo it was moved to.
+// testDetachedDetail is the answer for a /gh/ address a detach released, in
+// the wording `repo clone` prints, which core may adopt; the parsing table
+// also pins the wording core sends today.
 const testDetachedDetail = `gh/owner/repo was detached and moved to et/acme/repo. Clone using "entire repo clone /et/acme/repo" or update your remote using "git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/repo"`
 
 // detachedMessage is what `repo clone` prints for testGitHubRef detached into
@@ -1374,7 +1375,8 @@ func servePlacementsNotFound(t *testing.T, detail string) string {
 //
 // Not parallel: swaps the package-global activeCoreClient.
 func TestRepoClone_DetachedAddressNamesTheNativeRepo(t *testing.T) {
-	srvURL := servePlacementsNotFound(t, testDetachedDetail)
+	// The wording core sends today.
+	srvURL := servePlacementsNotFound(t, "gh/owner/repo moved to et/acme/repo. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/repo")
 
 	_, err := resolveCloneURLAgainst(t, srvURL, "")
 	require.EqualError(t, err, testDetachedDetail)
@@ -1393,8 +1395,8 @@ func TestRepoClone_UnmirroredAddressOffersOnboarding(t *testing.T) {
 }
 
 // The message is rebuilt from core's prose, so the cases that prose can take
-// are pinned: a dotted repo name keeps its dot, a core that predates the
-// detached wording is answered the same way, and a 404 that is not a detached
+// are pinned: a dotted repo name keeps its dot, both wordings are answered
+// the same way, and a 404 that is not a detached
 // answer — or names a path the native grammar refuses — is rendered as core
 // sent it, with no command made up from it.
 //
@@ -1409,7 +1411,7 @@ func TestRepoClone_DetachedAnswerParsing(t *testing.T) {
 			want:   detachedMessage("acme/entire-trails.el", "/et/acme/entire-trails.el"),
 		},
 		{
-			name:   "wording of cores before the detached one",
+			name:   "the wording core sends today",
 			detail: "gh/owner/repo moved to et/acme/repo. Update your remote: git remote set-url origin entire://aws-us-east-2.entire.io/et/acme/repo",
 			want:   detachedMessage("acme/repo", "/et/acme/repo"),
 		},
