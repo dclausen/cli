@@ -753,8 +753,8 @@ func TestProjectCreateWizard_SummaryFollowsARevisit(t *testing.T) {
 	t.Parallel()
 	s, err := newProjectCreateState(wizardTestData(), "gadgets", "") // free: "widgets" is Acme's
 	require.NoError(t, err)
-	s.confirmed = true
-	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
+	s.startPaged()
+	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup())
 
 	var model huh.Model = form
 	// run executes a command as the program loop would, except that one not

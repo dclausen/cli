@@ -1091,7 +1091,7 @@ func TestRepoNameIndex_LoadsOnlyWhereTheCursorRests(t *testing.T) {
 func TestRepoCreate_ProjectFlagSaysRequired(t *testing.T) {
 	t.Parallel()
 	usage := newRepoCreateCmd().Flags().Lookup(projectFlagName).Usage
-	require.Contains(t, usage, "(required; omit every flag in a terminal to be asked instead)")
+	require.Contains(t, usage, "(required; run in a terminal without --project, --visibility or --object-format to be asked instead)")
 }
 
 // When nothing names the new repo — a project given as a ULID, and no full

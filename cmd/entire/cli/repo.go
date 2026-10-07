@@ -316,7 +316,7 @@ and recovery instructions go to stderr.`,
 	// "(required)" stays in the text although the flag is not cobra-required
 	// (the wizard asks for it): agents read this list and never have a
 	// terminal, so it is the only place they learn it.
-	cmd.Flags().StringVar(&projectRef, projectFlagName, "", "Owning project (by name) (required; omit every flag in a terminal to be asked instead)")
+	cmd.Flags().StringVar(&projectRef, projectFlagName, "", "Owning project (by name) (required; run in a terminal without --project, --visibility or --object-format to be asked instead)")
 	cmd.Flags().StringVar(&objectFormat, repoCreateFlagObjectFormat, "", "Git object format for the repository: sha1 or sha256 (defaults to the server default)")
 	cmd.Flags().StringVar(&visibility, repoCreateFlagVisibility, "", "Visibility to set after creation: public or private (new repositories are private)")
 	addJSONFlag(cmd)
