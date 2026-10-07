@@ -237,12 +237,12 @@ the commands are always runnable in every build.
   name or `--owner` is refused before any request, as is a missing input with
   no terminal, and the refusal spells out both `--owner` forms (a handle needs
   `--owner-type account`). `--json` and `--context` do not count. The success
-  line names the project by its path, `/et/<project>`, the prefix of its repos'
-  `/et/<project>/<repo>`, never by ULID. The personal account is listed first,
+  line names the project by its name (what every command takes) and the
+  region it landed in, never by ULID. The personal account is listed first,
   then only orgs whose `canCreateProject` is set; the wizard suggests the
   owner's region (the flag form's default is the server's jurisdiction). The
-  name must have the server's shape (`nativeProjectRe`; a folder-name
-  suggestion is normalized or dropped) and is checked against the caller's
+  name must have the server's shape (`nativeProjectRe`, checked on both paths
+  before any request; a folder-name suggestion is normalized or dropped) and is checked against the caller's
   visible projects, fetched once up front because huh validates on the UI
   loop. Accessible mode runs each stage as its own form, built only when it
   runs, since huh's accessible runner evaluates neither `OptionsFunc` nor
