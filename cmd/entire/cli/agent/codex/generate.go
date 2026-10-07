@@ -30,6 +30,13 @@ import (
 // view_image, multi_agent, and image_generation are listed because they are
 // stable, on by default, and reach files or spawn work. `codex features list`
 // shows candidates.
+//
+// Every other feature codex enables by default is classified, with the
+// reason it stays on, in generateTextAcceptedFeatures
+// (generate_features_test.go), where the residual tools above are listed. A
+// codex release that enables a feature nobody has classified fails that test
+// once its pinned feature list is refreshed, or against the installed codex
+// when the real-agent tests run.
 var generateTextDisabledFeatures = []string{
 	"shell_tool",
 	"unified_exec",
