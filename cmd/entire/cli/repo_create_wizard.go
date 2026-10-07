@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/entireio/cli/cmd/entire/cli/auth"
+	"github.com/entireio/cli/cmd/entire/cli/gitremote"
 	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/cmd/entire/cli/uiform"
 	"github.com/entireio/cli/internal/coreapi"
@@ -189,13 +190,14 @@ func (s *repoCreateState) validateName(value string) error {
 		return errors.New("a repository name cannot contain '/'")
 	case strings.IndexFunc(name, unicode.IsSpace) >= 0:
 		return errors.New("a repository name cannot contain spaces")
-	case strings.HasSuffix(name, gitDirSuffix):
-		// The same rule the direct path enforces (refuseGitSuffixRepoName),
-		// said briefly enough for the page.
-		if trimmed := strings.TrimSuffix(name, gitDirSuffix); trimmed != "" {
-			return fmt.Errorf("a repository name cannot end in %s (use %q)", gitDirSuffix, trimmed)
+	}
+	// The same rule the direct path enforces (refuseGitSuffixRepoName), in any
+	// case, said briefly enough for the page.
+	if rest, had := gitremote.CutGitDirSuffix(name); had {
+		if use, ok := suggestRepoName(rest); ok {
+			return fmt.Errorf("a repository name cannot end in %s, in any case (use %q)", gitDirSuffix, use)
 		}
-		return fmt.Errorf("a repository name cannot end in %s", gitDirSuffix)
+		return fmt.Errorf("a repository name cannot end in %s, in any case", gitDirSuffix)
 	}
 	if existing, ok := s.names.lookup(s.answers.projectID, name); ok {
 		return fmt.Errorf("%s already has a repository named %q", s.project().name, existing)

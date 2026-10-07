@@ -8,11 +8,11 @@ import (
 	"io"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/entireio/cli/cmd/entire/cli/gitremote"
 	"github.com/entireio/cli/internal/coreapi"
 )
 
@@ -40,18 +40,20 @@ type repoCreateOptions struct {
 	waitTimeout time.Duration
 }
 
-// refuseGitSuffixRepoName refuses a name that ends in `.git`. The suffix is
-// never part of a repo name (see gitDirSuffix): every ref parser drops it, so
-// the name would round-trip to a different string than the one typed. The
-// server refuses it too; saying so here costs no round trip and names the
-// spelling to use instead. An empty name passes: it is a missing one.
+// refuseGitSuffixRepoName refuses a name that ends in `.git`, whatever its
+// case. The suffix is never part of a repo name (see gitDirSuffix): every ref
+// parser drops it, so the name would round-trip to a different string than
+// the one typed. The server refuses it too; saying so here costs no round trip
+// and names the spelling to use instead, when there is one the server would
+// accept (suggestRepoName). An empty name passes: it is a missing one.
 func refuseGitSuffixRepoName(name string) error {
-	if !strings.HasSuffix(name, gitDirSuffix) {
+	rest, had := gitremote.CutGitDirSuffix(name)
+	if !had {
 		return nil
 	}
-	err := fmt.Errorf("repo name %q must not end in %s: the suffix is never part of a repo name, so Entire could not address the repo by the name you typed", name, gitDirSuffix)
-	if trimmed := strings.TrimSuffix(name, gitDirSuffix); trimmed != "" {
-		err = fmt.Errorf("%w (use %q)", err, trimmed)
+	err := fmt.Errorf("repo name %q must not end in %s, in any case: the suffix is never part of a repo name, so Entire could not address the repo by the name you typed", name, gitDirSuffix)
+	if use, ok := suggestRepoName(rest); ok {
+		err = fmt.Errorf("%w (use %q)", err, use)
 	}
 	return err
 }
@@ -70,12 +72,11 @@ var errRepoCreateFlagsNeedInput = errors.New("a repository name and --project ar
 // The flags that describe the repo itself. Readiness and output flags
 // (--no-wait, --wait-timeout, --json) apply to the wizard too.
 const (
-	repoCreateFlagProject      = "project"
 	repoCreateFlagVisibility   = "visibility"
 	repoCreateFlagObjectFormat = "object-format"
 )
 
-var repoCreateFlags = []string{repoCreateFlagProject, repoCreateFlagVisibility, repoCreateFlagObjectFormat}
+var repoCreateFlags = []string{projectFlagName, repoCreateFlagVisibility, repoCreateFlagObjectFormat}
 
 // repoCreateFlagsGiven reports whether any create flag was passed, even with
 // an empty value.

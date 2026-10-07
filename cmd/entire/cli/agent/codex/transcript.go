@@ -204,7 +204,7 @@ type contentItem struct {
 
 // eventMsgPayload is the payload for type="event_msg" lines.
 type eventMsgPayload struct {
-	Type   string          `json:"type"` // "token_count", "task_started", "user_message", "agent_message", "task_complete"
+	Type   string          `json:"type"` // "token_count", "task_started", "user_message", "agent_message", "task_complete", "turn_aborted"
 	TurnID *string         `json:"turn_id,omitempty"`
 	Info   json.RawMessage `json:"info,omitempty"`
 	Item   json.RawMessage `json:"item,omitempty"`
@@ -570,7 +570,7 @@ func analyzeRolloutForTurns(ctx context.Context, data []byte, observedTurns []st
 			terminalValid = false
 			continue
 		}
-		if header.Type != eventMsgTypeTokenCount && header.Type != "task_started" && header.Type != "task_complete" {
+		if header.Type != eventMsgTypeTokenCount && header.Type != "task_started" && header.Type != "task_complete" && header.Type != "turn_aborted" {
 			continue
 		}
 		var event eventMsgPayload
@@ -605,7 +605,9 @@ func analyzeRolloutForTurns(ctx context.Context, data []byte, observedTurns []st
 				continue
 			}
 			openTurn = *event.TurnID
-		case "task_complete":
+		case "task_complete", "turn_aborted":
+			// An aborted turn (a user interrupt, or a daemon restart that
+			// resumes in a new turn) has ended as surely as a completed one.
 			if openTurn == "" || (event.TurnID != nil && (*event.TurnID == "" || *event.TurnID != openTurn)) {
 				terminalValid = false
 				continue

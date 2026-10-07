@@ -538,8 +538,9 @@ func TestRepoCreateState_ValidateName(t *testing.T) {
 	require.ErrorContains(t, s.validateName("acme/web"), "cannot contain '/'")
 	require.ErrorContains(t, s.validateName("my repo"), "cannot contain spaces")
 	require.NoError(t, s.validateName("web.site"), "the server owns the naming rules")
-	require.EqualError(t, s.validateName("web.git"), `a repository name cannot end in .git (use "web")`, "the direct path's rule, on the page")
-	require.EqualError(t, s.validateName(".git"), "a repository name cannot end in .git")
+	require.EqualError(t, s.validateName("web.git"), `a repository name cannot end in .git, in any case (use "web")`, "the direct path's rule, on the page")
+	require.EqualError(t, s.validateName("Web.GIT"), `a repository name cannot end in .git, in any case (use "web")`)
+	require.EqualError(t, s.validateName(".git"), "a repository name cannot end in .git, in any case")
 	require.EqualError(t, s.validateName("WEB"), `Acme already has a repository named "web"`)
 
 	s.setProject(testCreateProjectBeta)
