@@ -712,6 +712,12 @@ func (x *repoNameIndex) fetch(projectID string) {
 		names, err := x.list(x.ctx, projectID)
 		if err != nil {
 			logging.Debug(x.ctx, "repo create: skipping duplicate-name pre-check", "error", err.Error())
+			// Not loaded after all: a later visit to the project tries
+			// again, so a one-off failure does not disable the check for
+			// the rest of the run.
+			x.mu.Lock()
+			delete(x.started, projectID)
+			x.mu.Unlock()
 			return
 		}
 		for _, n := range names {

@@ -1266,3 +1266,37 @@ func TestRepoCreateFolderName_MapsSeparators(t *testing.T) {
 		require.Equal(t, want, repoCreateFolderName(t.Context()), folder)
 	}
 }
+
+// A failed load does not mark the project as loaded: coming back to it tries
+// again, so a one-off failure does not disable the duplicate check for the
+// rest of the run.
+func TestRepoNameIndex_RetriesAfterAFailedLoad(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	calls := 0
+	x := &repoNameIndex{
+		ctx: t.Context(),
+		list: func(context.Context, string) ([]string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			if calls == 1 {
+				return nil, errors.New("connection reset")
+			}
+			return []string{"web"}, nil
+		},
+		started: map[string]bool{},
+		names:   map[string]map[string]string{},
+	}
+	x.load("p1")
+	require.Eventually(t, func() bool {
+		x.mu.Lock()
+		defer x.mu.Unlock()
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 1 && !x.started["p1"]
+	}, time.Second, 5*time.Millisecond, "the failed load is forgotten")
+
+	x.load("p1") // the user comes back to the project
+	require.Eventually(t, func() bool { _, ok := x.lookup("p1", "web"); return ok }, time.Second, 5*time.Millisecond)
+}
