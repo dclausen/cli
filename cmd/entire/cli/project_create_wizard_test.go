@@ -708,6 +708,7 @@ func TestSuggestProjectName(t *testing.T) {
 		"my_app":                "my-app",
 		"my app.v2":             "my-app-v2",
 		"_private_":             "private",
+		testWizardAcmeULID:      "",
 		"ui":                    "",
 		"":                      "",
 		strings.Repeat("x", 33): "",
@@ -813,10 +814,44 @@ func TestProjectCreateWizard_SummaryFollowsARevisit(t *testing.T) {
 // without a server 400.
 func TestProjectCreate_FlagFormChecksTheNameRule(t *testing.T) {
 	fake := newProjectCoreFixture(t)
-	for _, name := range []string{"my_app", "ui", "My.App"} {
+	// The flag form creates exactly what it is given, so uppercase is refused
+	// here, unlike in the wizard.
+	for _, name := range []string{"my_app", "ui", "My.App", "MyApp", "WIDGETS"} {
 		_, err := execProjectCreate(t, name, "--owner", "acme")
 		require.EqualError(t, err, `invalid project name "`+name+`": `+projectNameRule, name)
 	}
+	// A ULID-shaped name: uppercase already breaks the case rule; lowercase
+	// fits the pattern but would be read as an id by every command.
+	_, err := execProjectCreate(t, testWizardAcmeULID, "--owner", "acme")
+	require.EqualError(t, err, `invalid project name "`+testWizardAcmeULID+`": `+projectNameRule)
+	lowerID := strings.ToLower(testWizardAcmeULID)
+	_, err = execProjectCreate(t, lowerID, "--owner", "acme")
+	require.EqualError(t, err, `invalid project name "`+lowerID+`": `+projectNameNotID)
 	assert.Empty(t, fake.requests, "refused before resolving the owner")
-	assert.Contains(t, newProjectCreateCmd().Long, "3-32 letters, digits or hyphens")
+	assert.Contains(t, newProjectCreateCmd().Long, "3-32 lowercase letters, digits or hyphens")
+	assert.Contains(t, newProjectCreateCmd().Long, "can't look like an id")
+}
+
+// The wizard is lenient about case: it accepts a typed name with uppercase,
+// says on the Name page and in the summary that it will be lowercased, and
+// creates the lowercased name. A ULID-shaped name is refused in any case.
+func TestProjectCreateState_WizardLowercasesTypedNames(t *testing.T) {
+	t.Parallel()
+	s := wizardState(t, wizardTestData(), "MyApp", "Acme")
+	require.NoError(t, s.validateName("MyApp"))
+	assert.Equal(t, "myapp", s.createName())
+	assert.Equal(t, `Will be created as "myapp": project names are lowercase.`, s.nameHint())
+	assert.Contains(t, s.summary(), `Name     myapp (lowercased from "MyApp")`)
+	assert.Contains(t, s.decided(projectStageName), "✓ Name   myapp")
+	assert.Contains(t, s.command(), "entire project create myapp ")
+	assert.Equal(t, "myapp", s.request().Name)
+
+	s.answers.Name = "myapp"
+	assert.Empty(t, s.nameHint(), "no hint once it is lowercase")
+	assert.Contains(t, s.summary(), "Name     myapp\n")
+
+	require.EqualError(t, s.validateName("WIDGETS"), `Acme already has a project named "widgets"`, "checked as lowercased")
+	for _, id := range []string{testWizardAcmeULID, strings.ToLower(testWizardAcmeULID)} {
+		require.EqualError(t, s.validateName(id), projectNameNotID, id)
+	}
 }

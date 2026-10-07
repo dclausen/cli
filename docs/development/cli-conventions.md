@@ -241,8 +241,12 @@ the commands are always runnable in every build.
   region it landed in, never by ULID. The personal account is listed first,
   then only orgs whose `canCreateProject` is set; the wizard suggests the
   owner's region (the flag form's default is the server's jurisdiction). The
-  name must have the server's shape (`nativeProjectRe`, checked on both paths
-  before any request; a folder-name suggestion is normalized or dropped) and is checked against the caller's
+  name must have the server's create shape (`projectCreateNameRe`: 3-32
+  lowercase letters, digits or hyphens, and not ULID-shaped; not the
+  case-insensitive lookup pattern `nativeProjectRe`), checked on both paths
+  before any request. The wizard lowercases a typed name and says so on the
+  Name page and in the summary; the flag form refuses uppercase. A folder-name
+  suggestion is normalized or dropped) and is checked against the caller's
   visible projects, fetched once up front because huh validates on the UI
   loop. Accessible mode runs each stage as its own form, built only when it
   runs, since huh's accessible runner evaluates neither `OptionsFunc` nor

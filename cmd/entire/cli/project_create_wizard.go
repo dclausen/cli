@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -24,9 +25,38 @@ import (
 	"github.com/entireio/cli/internal/entireclient/contexts"
 )
 
-// projectNameRule describes nativeProjectRe, the server's project-name shape,
-// in the words the name page shows.
-const projectNameRule = "project names are 3-32 letters, digits or hyphens, starting and ending with a letter or digit"
+// projectCreateNameRe is the shape the server accepts for a NEW project's name:
+// 3-32 lowercase letters, digits or hyphens, alphanumeric at both ends.
+// nativeProjectRe (repo_clone.go) is the lookup pattern and allows uppercase,
+// because lookups fold case; it must not stand in for this one.
+var projectCreateNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$`)
+
+// The name rules, in the words the name page and the flag form show.
+const (
+	projectNameRule  = "project names are 3-32 lowercase letters, digits or hyphens, starting and ending with a letter or digit"
+	projectNameNotID = "project names can't look like an id (26 letters and digits)"
+)
+
+// checkProjectName reports why name, exactly as given, can't be a new
+// project's name. A ULID-shaped name is refused although it fits the
+// pattern: every command would read it as an id (looksLikeULID folds case),
+// so the project could never be found by its name.
+func checkProjectName(name string) error {
+	if !projectCreateNameRe.MatchString(name) {
+		return errors.New(projectNameRule)
+	}
+	if looksLikeULID(name) {
+		return errors.New(projectNameNotID)
+	}
+	return nil
+}
+
+// lowerProjectName is the name the wizard creates for what was typed: the
+// wizard is lenient about case (it says so on the Name page and in the
+// summary), the flag form is not.
+func lowerProjectName(typed string) string {
+	return strings.ToLower(strings.TrimSpace(typed))
+}
 
 // projectCreateCancelled names the flow in its cancellation line.
 const projectCreateCancelled = "Project create"
@@ -401,14 +431,15 @@ func (s *projectCreateState) regionByID(id string) (projectRegion, bool) {
 // loaded, that no visible project already has the name. Names are compared
 // case-insensitively, as the API's own name lookup is.
 func (s *projectCreateState) validateName(name string) error {
-	name = strings.TrimSpace(name)
+	// Uppercase is lowered rather than refused (nameHint says so); the rest
+	// of the server's shape is checked here so a bad name stops on this page
+	// rather than after the summary was confirmed.
+	name = lowerProjectName(name)
 	if name == "" {
 		return errors.New("enter a project name")
 	}
-	// The server's shape, checked here so a bad name stops on this page
-	// rather than after the summary was confirmed.
-	if !nativeProjectRe.MatchString(name) {
-		return errors.New(projectNameRule)
+	if err := checkProjectName(name); err != nil {
+		return err
 	}
 	// Project names are unique across owners (see resolveProjectByName), so
 	// any visible project of that name is a conflict, not only the chosen
@@ -430,6 +461,32 @@ func (s *projectCreateState) validateName(name string) error {
 		}
 	}
 	return nil
+}
+
+// createName is the name the project is created under: what was typed,
+// trimmed and lowercased.
+func (s *projectCreateState) createName() string {
+	return lowerProjectName(s.answers.Name)
+}
+
+// nameHint tells the user, under the name field, that what they typed will be
+// lowercased; empty when it already is.
+func (s *projectCreateState) nameHint() string {
+	if strings.TrimSpace(s.answers.Name) == s.createName() {
+		return ""
+	}
+	return fmt.Sprintf("Will be created as %q: project names are lowercase.", s.createName())
+}
+
+// summaryName is the summary's Name row: the name that will be created, plus
+// what was typed when the two differ. The accessible runner drops the Name
+// page's hint, so this is where it learns of the lowercasing.
+func (s *projectCreateState) summaryName() string {
+	typed := strings.TrimSpace(s.answers.Name)
+	if typed == s.createName() {
+		return typed
+	}
+	return fmt.Sprintf("%s (lowercased from %q)", s.createName(), typed)
 }
 
 // ownerDisplay names the chosen owner in the summary.
@@ -460,7 +517,7 @@ func (s *projectCreateState) command() string {
 	if o.flagRef == "" {
 		return ""
 	}
-	parts := []string{"entire project create", shellArg(strings.TrimSpace(s.answers.Name)), "--owner", shellArg(o.flagRef)}
+	parts := []string{"entire project create", shellArg(s.createName()), "--owner", shellArg(o.flagRef)}
 	if o.kind == coreapi.CreateProjectInputBodyOwnerTypeAccount {
 		parts = append(parts, "--owner-type", ownerTypeAccount)
 	}
@@ -470,7 +527,7 @@ func (s *projectCreateState) command() string {
 
 func (s *projectCreateState) summary() string {
 	rows := []wizardRow{
-		{"Name", strings.TrimSpace(s.answers.Name)},
+		{"Name", s.summaryName()},
 		{"Owner", s.ownerDisplay()},
 		{"Region", s.regionDisplay()},
 	}
@@ -485,7 +542,7 @@ func (s *projectCreateState) summary() string {
 func (s *projectCreateState) request() *coreapi.CreateProjectInputBody {
 	o := s.owner()
 	return &coreapi.CreateProjectInputBody{
-		Name:      strings.TrimSpace(s.answers.Name),
+		Name:      s.createName(),
 		OwnerId:   o.id,
 		OwnerType: o.kind,
 		Region:    coreapi.NewOptString(s.answers.Region),
@@ -563,7 +620,7 @@ func suggestProjectName(folder string) string {
 		}
 		return r
 	}, strings.ToLower(folder)), "-")
-	if !nativeProjectRe.MatchString(name) {
+	if checkProjectName(name) != nil {
 		return ""
 	}
 	return name
@@ -653,7 +710,7 @@ const (
 func (s *projectCreateState) decided(stages int) string {
 	rows := []wizardRow{{"✓ Owner", s.ownerDisplay()}}
 	if stages >= projectStageName {
-		rows = append(rows, wizardRow{"✓ Name", strings.TrimSpace(s.answers.Name)})
+		rows = append(rows, wizardRow{"✓ Name", s.createName()})
 	}
 	return wizardRows(rows, wizardLabelWidth("✓ Owner", "✓ Name")+2)
 }
@@ -695,6 +752,8 @@ func (s *projectCreateState) nameGroup(dynamic bool) *huh.Group {
 	// Shift+Tab off an invalid name must not strand the page; see
 	// uiform.BackNav. Enter still validates going forward.
 	in.Validate(uiform.Lenient(s.nav, s.validateName))
+	// Live as the user types: the hint appears once the name has uppercase.
+	in.DescriptionFunc(s.nameHint, &s.answers.Name)
 	s.nameGrp = huh.NewGroup(in.Accessor(projectNameAccessor{s: s}))
 	s.refreshPageTitles()
 	return s.nameGrp
