@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
+	"github.com/entireio/cli/cmd/entire/cli/testutil"
 	"github.com/entireio/cli/internal/coreapi"
 )
 
@@ -42,6 +45,11 @@ type fakeRepoCreateCore struct {
 	taken map[string]bool
 	// conflicts is how many creates are refused with a 409 before one succeeds.
 	conflicts int
+	// withPath adds the server's /et/<project>/<repo> path to the created repo.
+	withPath bool
+	// invalids is how many creates are refused with a 422 (after any
+	// conflicts) before one succeeds.
+	invalids int
 	// createdVisibility is the visibility the create response reports.
 	createdVisibility string
 	// omitFullName leaves fullName out of the created repo.
@@ -180,9 +188,17 @@ func (f *fakeRepoCreateCore) handle(w http.ResponseWriter, r *http.Request) {
 		if conflict {
 			f.conflicts--
 		}
+		invalid := !conflict && f.invalids > 0
+		if invalid {
+			f.invalids--
+		}
 		f.mu.Unlock()
 		if conflict {
 			problem(http.StatusConflict)
+			return
+		}
+		if invalid {
+			problem(http.StatusUnprocessableEntity)
 			return
 		}
 		projectID, _ := body["projectId"].(string) //nolint:errcheck // absent is caught by the assertions
@@ -194,6 +210,9 @@ func (f *fakeRepoCreateCore) handle(w http.ResponseWriter, r *http.Request) {
 		repo := createdRepoJSON(testCreatedRepoID, name, projectID, fullName)
 		if f.createdVisibility != "" {
 			repo["visibility"] = f.createdVisibility
+		}
+		if p, ok := f.project(projectID); ok && f.withPath {
+			repo["path"] = "/et/" + p.name + "/" + name
 		}
 		f.mu.Lock()
 		f.lastCreated = repo
@@ -424,12 +443,14 @@ func TestRepoCreate_NextSteps(t *testing.T) {
 		require.Contains(t, stdout, "entire repo clone /et/acme/web")
 	})
 
-	t.Run("left out when the ref is unknown", func(t *testing.T) {
-		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true}
+	t.Run("from the server's path, for a project given as a ULID", func(t *testing.T) {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true, withPath: true}
 		f.serve()
 		stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
 		require.NoError(t, err)
-		require.NotContains(t, stdout, "Next steps")
+		require.Contains(t, stdout, "✓ Created repository acme/web")
+		require.Contains(t, stdout, "entire repo clone /et/acme/web")
+		require.NotContains(t, stdout, testCreatedRepoID)
 	})
 
 	t.Run("left out of --json", func(t *testing.T) {
@@ -961,4 +982,95 @@ func TestRepoCreateBudget_PhasesShareOneTimeout(t *testing.T) {
 	ctx, done = b.phase(t.Context())
 	defer done()
 	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "a spent budget expires the next phase at once")
+}
+
+// A name the server judges invalid (it owns the naming rules) reopens the
+// wizard on the same answers with the server's reason, as a conflict does,
+// rather than ending a run the user answered.
+//
+// Not parallel: sets env vars and swaps package-level seams.
+func TestRepoCreateWizard_InvalidNameReopensTheWizard(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), invalids: 1}
+	f.serve()
+	runs := 0
+	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
+		runs++
+		if runs == 2 {
+			require.Contains(t, s.nameNote(), `Creating "MyApp" was refused (Unprocessable Entity)`)
+			require.NoError(t, s.validateName("MyApp"), "an invalid name is not a taken one: the server judges again")
+			s.answers.name = "myapp"
+		}
+		return true, nil
+	})
+	_, _, err := execRepoCreateArgs(t, "MyApp")
+	require.NoError(t, err)
+	require.Equal(t, 2, runs)
+	require.Len(t, f.createBodies, 2)
+	require.Equal(t, "myapp", f.createBodies[1]["name"])
+}
+
+// The folder-derived name is suggested as one the server would accept:
+// lowercased, since create refuses uppercase.
+//
+// Not parallel: changes the working directory.
+func TestRepoCreateFolderName_IsLowercased(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "MyApp")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	testutil.InitRepo(t, dir)
+	t.Chdir(dir)
+	require.Equal(t, "myapp", repoCreateFolderName(t.Context()))
+
+	odd := filepath.Join(t.TempDir(), "my app")
+	require.NoError(t, os.MkdirAll(odd, 0o755))
+	testutil.InitRepo(t, odd)
+	t.Chdir(odd)
+	require.Empty(t, repoCreateFolderName(t.Context()), "a folder name that cannot become a repo name suggests nothing")
+}
+
+// Scrolling past projects loads only the one the cursor rests on.
+func TestRepoNameIndex_LoadsOnlyWhereTheCursorRests(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var loaded []string
+	x := &repoNameIndex{
+		ctx:    t.Context(),
+		settle: 50 * time.Millisecond,
+		list: func(_ context.Context, id string) ([]string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			loaded = append(loaded, id)
+			return []string{"web"}, nil
+		},
+		started: map[string]bool{},
+		names:   map[string]map[string]string{},
+	}
+	for _, id := range []string{"p1", "p2", "p3"} {
+		x.load(id)
+	}
+	require.Eventually(t, func() bool { _, ok := x.lookup("p3", "web"); return ok }, time.Second, 5*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"p3"}, loaded)
+}
+
+// --project is not cobra-required (the wizard asks for it), so its help says
+// it is required: agents read the flag list and never have a terminal.
+func TestRepoCreate_ProjectFlagSaysRequired(t *testing.T) {
+	t.Parallel()
+	usage := newRepoCreateCmd().Flags().Lookup(projectFlagName).Usage
+	require.Contains(t, usage, "(required; omit every flag in a terminal to be asked instead)")
+}
+
+// Without a full name, path or project name there is nothing to name the repo
+// by, so no next steps are printed rather than ones that cannot work.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_NoNextStepsWithoutARef(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true}
+	f.serve()
+	stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
+	require.NoError(t, err)
+	require.NotContains(t, stdout, "Next steps")
 }

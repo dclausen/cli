@@ -707,7 +707,13 @@ func TestRepoCreateReadinessResults(t *testing.T) {
 				} else {
 					require.NoError(t, err)
 				}
-				require.Contains(t, out, testDeleteULID)
+				// The JSON object carries the id; the human line names the repo
+				// by the server's path instead.
+				if asJSON {
+					require.Contains(t, out, testDeleteULID)
+				} else {
+					require.Contains(t, out, "✓ Created repository project/web")
+				}
 				require.Contains(t, out, "entire://cell.example/et/project/web")
 				require.EqualValues(t, 1, posts.Load())
 				require.EqualValues(t, tc.polls, gets.Load())

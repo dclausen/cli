@@ -289,7 +289,7 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 		if err != nil {
 			return fmt.Errorf("list projects: %w", err)
 		}
-		s, err := newRepoCreateState(projects, name, currentFolderName(ctx))
+		s, err := newRepoCreateState(projects, name, repoCreateFolderName(ctx))
 		if err != nil {
 			return err
 		}
@@ -309,11 +309,14 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 			created, err := createRepo(createCtx, c, req)
 			if err != nil {
 				done()
-				// Typically the name was free when checked and someone took it
-				// since. Reopen the wizard on the same answers, with the
+				// Typically the name was taken since it was checked (409), or
+				// the server judged it invalid (400/422; it owns the naming
+				// rules). Reopen the wizard on the same answers, with the
 				// server's reason, rather than fail a run the user answered.
-				if isRepoCreateConflict(err) {
-					s.names.add(req.projectID, req.name)
+				if isRepoCreateRefusal(err) {
+					if isRepoCreateConflict(err) {
+						s.names.add(req.projectID, req.name)
+					}
 					s.conflict.projectID, s.conflict.name = req.projectID, req.name
 					s.conflict.reason = coreapi.APIError(err)
 					continue
@@ -325,6 +328,18 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 			return err
 		}
 	})
+}
+
+// repoCreateFolderName is the name the wizard suggests when none was given:
+// the current folder's, as one the server would accept (suggestRepoName
+// lowercases it, since create refuses uppercase), or nothing when the folder's
+// name cannot become one. It only fills the field; what is created stays the
+// server's to judge.
+func repoCreateFolderName(ctx context.Context) string {
+	if use, ok := suggestRepoName(currentFolderName(ctx)); ok {
+		return use
+	}
+	return ""
 }
 
 // repoCreateBudget is what is left of --wait-timeout for the server's work.
@@ -692,14 +707,25 @@ func (a repoVisibilityAccessor) Set(v coreapi.SetRepoVisibilityInputBodyVisibili
 // network: a project's names are loaded in the background when it is picked,
 // and a check made before they arrive (or after the load failed) passes —
 // the server's 409 is the backstop. A nil index checks nothing.
+//
+// huh sets a select's value on every cursor move, not only on submit, so
+// "picked" means the cursor came to rest: a load starts only once settle has
+// passed with no further move, and scrolling past N projects costs one load,
+// not N.
 type repoNameIndex struct {
-	ctx  context.Context //nolint:containedctx // bounds the background loads to the wizard's lifetime
-	list func(ctx context.Context, projectID string) ([]string, error)
+	ctx    context.Context //nolint:containedctx // bounds the background loads to the wizard's lifetime
+	list   func(ctx context.Context, projectID string) ([]string, error)
+	settle time.Duration
 
 	mu      sync.Mutex
+	pending *time.Timer
 	started map[string]bool
 	names   map[string]map[string]string // project id → folded name → name
 }
+
+// repoNameIndexSettle is how long the project cursor must rest before that
+// project's names are loaded.
+const repoNameIndexSettle = 300 * time.Millisecond
 
 func newRepoNameIndex(ctx context.Context, c *coreapi.Client) *repoNameIndex {
 	return &repoNameIndex{
@@ -707,18 +733,30 @@ func newRepoNameIndex(ctx context.Context, c *coreapi.Client) *repoNameIndex {
 		list: func(ctx context.Context, projectID string) ([]string, error) {
 			return listProjectRepoNames(ctx, c, projectID)
 		},
+		settle:  repoNameIndexSettle,
 		started: map[string]bool{},
 		names:   map[string]map[string]string{},
 	}
 }
 
-// load starts fetching a project's names unless that already happened.
+// load asks for a project's names: a later call before settle passes
+// replaces it, and a project already fetched is not fetched again.
 func (x *repoNameIndex) load(projectID string) {
 	if x == nil {
 		return
 	}
 	x.mu.Lock()
-	if x.started[projectID] {
+	defer x.mu.Unlock()
+	if x.pending != nil {
+		x.pending.Stop()
+	}
+	x.pending = time.AfterFunc(x.settle, func() { x.fetch(projectID) })
+}
+
+// fetch loads a project's names unless that already happened.
+func (x *repoNameIndex) fetch(projectID string) {
+	x.mu.Lock()
+	if x.started[projectID] || x.ctx.Err() != nil {
 		x.mu.Unlock()
 		return
 	}

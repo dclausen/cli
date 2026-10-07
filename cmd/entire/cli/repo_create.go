@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -106,6 +107,22 @@ func isRepoCreateConflict(err error) bool {
 	return errors.As(err, &se) && se.StatusCode == http.StatusConflict
 }
 
+// isRepoCreateRefusal reports the server refusing a create over what was
+// asked for — a conflict, or a name or setting it judged invalid — as opposed
+// to an auth, routing or server failure. The wizard can send the user back to
+// change the answer for these.
+func isRepoCreateRefusal(err error) bool {
+	var se *coreapi.ErrorModelStatusCode
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.StatusCode {
+	case http.StatusConflict, http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
 // finishRepoCreate runs everything after a successful create: the readiness
 // wait, the visibility change, and the report. The repo exists by now, so
 // every failure from here on is reported with the repository preserved rather
@@ -184,13 +201,17 @@ func applyRepoVisibility(ctx context.Context, c *coreapi.Client, created *coreap
 }
 
 // repoCreateRef is the /et/<project>/<repo> ref the output names the new repo
-// by. The server's full name wins; otherwise it is composed from the project
-// name the command resolved. Empty when neither is known (a project given as a
-// ULID, on a server that omits fullName): no next steps are printed then,
+// by. The server's own spellings win: its full name, else its /et/ path (see
+// repoViewRef) — which is how a project given as a ULID still gets named,
+// with no extra lookup. Otherwise it is composed from the project name the
+// command resolved. Empty when none is known: no next steps are printed then,
 // rather than ones that cannot work.
 func repoCreateRef(r *coreapi.Repo, projectName string) string {
 	if ref := nativeRepoPath(r.FullName.Or("")); ref != "" {
 		return ref
+	}
+	if path := repoViewRef(r); strings.HasPrefix(path, "/"+nativeCloneForge+"/") {
+		return path
 	}
 	if projectName == "" || r.Name == "" {
 		return ""

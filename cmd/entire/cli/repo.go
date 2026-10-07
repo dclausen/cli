@@ -307,7 +307,10 @@ and recovery instructions go to stderr.`,
 	}
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "Return after creation without confirming provisioning readiness")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "Time limit for project resolution, creation, and provisioning readiness")
-	cmd.Flags().StringVar(&projectRef, projectFlagName, "", "Owning project (by name)")
+	// "(required)" stays in the text although the flag is not cobra-required
+	// (the wizard asks for it): agents read this list and never have a
+	// terminal, so it is the only place they learn it.
+	cmd.Flags().StringVar(&projectRef, projectFlagName, "", "Owning project (by name) (required; omit every flag in a terminal to be asked instead)")
 	cmd.Flags().StringVar(&objectFormat, repoCreateFlagObjectFormat, "", "Git object format for the repository: sha1 or sha256 (defaults to the server default)")
 	cmd.Flags().StringVar(&visibility, repoCreateFlagVisibility, "", "Visibility to set after creation: public or private (defaults to the server default)")
 	addJSONFlag(cmd)
