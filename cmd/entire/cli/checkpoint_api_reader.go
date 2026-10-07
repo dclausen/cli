@@ -82,8 +82,10 @@ type apiCheckpointEnvelope struct {
 }
 
 // apiCommitCheckpointsBody is GET /repos/{repo_id}/commits/{sha}/checkpoints:
-// the checkpoints linked to one commit. Only the ID is decoded; loadDetail's
-// response, not this one, is what the identity checks verify.
+// the checkpoints linked to one commit. Its repo_full_name is verified like
+// any cell response; only the ID is decoded from each entry, because
+// loadDetail then verifies that ID and the repo against an independent
+// response before anything is rendered.
 type apiCommitCheckpointsBody struct {
 	Checkpoints []struct {
 		CheckpointID string `json:"checkpointId"`

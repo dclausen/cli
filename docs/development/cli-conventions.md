@@ -44,9 +44,10 @@ the commands are always runnable in every build.
   `/repos/{repo_id}/commits/{sha}/checkpoints`, the cross-repo stand-in for the
   local `Entire-Checkpoint` trailer read; zero linked checkpoints is an error,
   and several is an error that names them, unlike the local path which reads
-  the first trailer — and a pushed checkpoint; prefixes are rejected. `--commit`, `--session`, `--search-all`,
-  and `--generate` are rejected with it, and naming the current repo is a no-op
-  that falls through to the local path. See `checkpoint_api_reader.go`
+  the first trailer — and a pushed checkpoint; prefixes are rejected. `--commit`
+  is accepted with a full SHA only; `--session`, `--search-all`, and `--generate`
+  are rejected with it, and naming the current repo is a no-op that falls
+  through to the local path. See `checkpoint_api_reader.go`
   (`apiCheckpointReader`, which implements the two checkpoint reader tiers and
   deliberately not `Writer`) and `explain_repo.go`.
   For a local checkpoint, `explain --json` also lists the subagent task records
