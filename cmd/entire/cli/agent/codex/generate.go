@@ -101,10 +101,21 @@ func (c *CodexAgent) GenerateText(ctx context.Context, prompt string, model stri
 // list: a codex that changed the format would otherwise parse as knowing none
 // of generateTextDisabledFeatures, and filtering against that would drop
 // every --disable instead of falling back to the full list.
+//
+// The probe runs with an empty CODEX_HOME. The generation run passes
+// --ignore-user-config, which `features list` does not accept, and a
+// config.toml codex cannot parse fails the probe outright. The names listed do
+// not depend on the config (it changes only their enabled state), and the
+// probe needs no sign-in, so nothing is lost by leaving the user's home out.
 func (c *CodexAgent) knownFeatures(ctx context.Context) (map[string]bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout(ctx))
 	defer cancel()
-	out, _, _, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", []string{"features", "list"}, "")
+	codexHome, cleanup, err := agent.NewTextGenerationDir()
+	if err != nil {
+		return nil, fmt.Errorf("codex features list: %w", err)
+	}
+	defer cleanup()
+	out, _, _, err := agent.RunIsolatedTextGeneratorCLI(ctx, c.CommandRunner, "codex", "codex", []string{"features", "list"}, "", "CODEX_HOME="+codexHome)
 	if err != nil {
 		return nil, fmt.Errorf("codex features list: %w", err)
 	}
