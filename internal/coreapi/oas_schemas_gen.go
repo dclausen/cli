@@ -5057,7 +5057,8 @@ type CreatedRepo struct {
 	ProvisionAttempts OptInt64                `json:"provisionAttempts"`
 	ProvisionReason   OptString               `json:"provisionReason"`
 	RepoGroupId       OptString               `json:"repoGroupId"`
-	// Provisioning lifecycle. A mirror is active from creation, before its initial clone completes.
+	// Provisioning lifecycle. A mirror is active from creation, before its initial clone completes. A
+	// native primary reports deleting while a cascade delete removes its native mirrors; poll until 404.
 	State           OptString `json:"state"`
 	Visibility      OptString `json:"visibility"`
 	AdditionalProps CreatedRepoAdditional
@@ -18825,8 +18826,7 @@ type Repo struct {
 	ProvisionReason   OptString           `json:"provisionReason"`
 	RepoGroupId       OptString           `json:"repoGroupId"`
 	// Provisioning lifecycle. A mirror is active from creation, before its initial clone completes. A
-	// native primary whose group carries a cascade-delete tombstone reports "deleting" until its row is
-	// gone (then 404).
+	// native primary reports deleting while a cascade delete removes its native mirrors; poll until 404.
 	State           OptString `json:"state"`
 	Visibility      OptString `json:"visibility"`
 	AdditionalProps RepoAdditional

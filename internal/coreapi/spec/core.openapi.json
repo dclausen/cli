@@ -1879,11 +1879,12 @@
             "type": "string"
           },
           "state": {
-            "description": "Provisioning lifecycle. A mirror is active from creation, before its initial clone completes.",
+            "description": "Provisioning lifecycle. A mirror is active from creation, before its initial clone completes. A native primary reports deleting while a cascade delete removes its native mirrors; poll until 404.",
             "enum": [
               "provisioning",
               "active",
-              "failed"
+              "failed",
+              "deleting"
             ],
             "type": "string"
           },
@@ -5236,7 +5237,7 @@
             "type": "string"
           },
           "state": {
-            "description": "Provisioning lifecycle. A mirror is active from creation, before its initial clone completes. A native primary whose group carries a cascade-delete tombstone reports \"deleting\" until its row is gone (then 404).",
+            "description": "Provisioning lifecycle. A mirror is active from creation, before its initial clone completes. A native primary reports deleting while a cascade delete removes its native mirrors; poll until 404.",
             "enum": [
               "provisioning",
               "active",
@@ -16589,19 +16590,19 @@
             }
           },
           {
-            "description": "Also delete the repo's native mirrors. With one or more native-mirror rows the delete is asynchronous and answers 202; poll GET until it returns 404.",
+            "description": "Also delete the repo's native mirrors. With mirrors present the server marks every copy for teardown, answers 202, and deletes the primary once they are gone; poll GET /repos/{repoId} until 404. Without mirrors the delete runs synchronously as usual.",
             "explode": false,
             "in": "query",
             "name": "cascade",
             "schema": {
-              "description": "Also delete the repo's native mirrors. With one or more native-mirror rows the delete is asynchronous and answers 202; poll GET until it returns 404.",
+              "description": "Also delete the repo's native mirrors. With mirrors present the server marks every copy for teardown, answers 202, and deletes the primary once they are gone; poll GET /repos/{repoId} until 404. Without mirrors the delete runs synchronously as usual.",
               "type": "boolean"
             }
           }
         ],
         "responses": {
           "202": {
-            "description": "Accepted"
+            "description": "Accepted: cascade=true and the repo has native mirrors. Every copy is marked for teardown and the server deletes the primary once they are gone. Poll GET /repos/{repoId} until it answers 404."
           },
           "204": {
             "description": "No Content",
@@ -16771,7 +16772,7 @@
             "headers": {
               "Retry-After": {
                 "schema": {
-                  "description": "Seconds to wait before reading the repo again. Present only while state is \"provisioning\".",
+                  "description": "Seconds to wait before reading the repo again. Present while state is \"provisioning\" or \"deleting\".",
                   "type": "string"
                 }
               }
