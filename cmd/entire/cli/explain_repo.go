@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -300,6 +301,8 @@ func runCrossRepoExplain(ctx context.Context, w, errW io.Writer, opts crossRepoE
 // safe because the full forms are disjoint (12 or 26 chars vs 40 or 64).
 func classifyCrossRepoTarget(opts crossRepoExplainOptions) (id.CheckpointID, string, error) {
 	switch {
+	case opts.commitSHA != "" && opts.checkpointID != "":
+		return id.EmptyCheckpointID, "", errors.New("cannot combine --commit with --checkpoint")
 	case opts.commitSHA != "":
 		if !plumbing.IsHash(opts.commitSHA) {
 			return id.EmptyCheckpointID, "", fmt.Errorf("--commit with --repo requires a full commit SHA; %q cannot be resolved in another repo", opts.commitSHA)

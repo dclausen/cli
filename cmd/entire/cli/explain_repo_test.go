@@ -387,6 +387,18 @@ func TestRunCrossRepoExplain_CommitFlagResolvesToCheckpoint(t *testing.T) {
 	assert.Contains(t, out.String(), testAPICheckpointID.String())
 }
 
+// The flag layer rejects the pair first; this pins the classifier's own
+// refusal so a new caller cannot reach the reader with two targets.
+func TestClassifyCrossRepoTarget_RejectsTwoTargets(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := classifyCrossRepoTarget(crossRepoExplainOptions{
+		commitSHA:    strings.Repeat("a", 40),
+		checkpointID: testAPICheckpointID.String(),
+	})
+	require.ErrorContains(t, err, "cannot combine --commit with --checkpoint")
+}
+
 func TestRunCrossRepoExplain_CommitSHAResolutionErrorSurfaces(t *testing.T) {
 	stub := &stubCrossRepoReader{resolveErr: errors.New("commit 13e379e in gh/acme/widgets has no linked Entire checkpoint")}
 	withStubCrossRepoReader(t, stub)
@@ -433,6 +445,23 @@ func TestExplainCmd_RepoFlagValidation(t *testing.T) {
 			name:    "repo with a commit ref instead of a full SHA",
 			args:    []string{"checkpoint", "explain", "--repo", "gh/acme/widgets", "--commit", "HEAD"},
 			wantErr: "--commit with --repo requires a full commit SHA",
+		},
+		{
+			// Codex adversarial review: without this the classifier picked the
+			// SHA and silently explained a different checkpoint than --checkpoint named.
+			name:    "repo with both --commit and --checkpoint",
+			args:    []string{"checkpoint", "explain", "--repo", "gh/acme/widgets", "--commit", strings.Repeat("a", 40), "--checkpoint", testAPICheckpointID.String()},
+			wantErr: "[commit checkpoint]",
+		},
+		{
+			name:    "repo with both targets under --json",
+			args:    []string{"checkpoint", "explain", "--repo", "gh/acme/widgets", "--commit", strings.Repeat("a", 40), "--checkpoint", testAPICheckpointID.String(), "--json"},
+			wantErr: "[commit checkpoint]",
+		},
+		{
+			name:    "repo with both targets under --transcript",
+			args:    []string{"checkpoint", "explain", "--repo", "gh/acme/widgets", "--commit", strings.Repeat("a", 40), "--checkpoint", testAPICheckpointID.String(), "--transcript"},
+			wantErr: "[commit checkpoint]",
 		},
 		{
 			name:    "repo with a SHA under --checkpoint",

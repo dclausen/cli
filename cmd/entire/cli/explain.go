@@ -424,6 +424,10 @@ Note: --session filters the list view; the positional arg, --commit, and --check
 	// view, --search-all walks local commits, and --generate would write a
 	// summary the foreign repo never sees. --commit is allowed: a full SHA
 	// resolves through the foreign repo's cell instead of local history.
+	// Two explicit targets are rejected before any dispatch: the cross-repo
+	// path does not reach runExplain's runtime check, and picking one would
+	// silently explain a checkpoint the caller did not name.
+	cmd.MarkFlagsMutuallyExclusive("commit", "checkpoint")
 	cmd.MarkFlagsMutuallyExclusive("repo", "session")
 	cmd.MarkFlagsMutuallyExclusive("repo", "generate")
 	cmd.MarkFlagsMutuallyExclusive("repo", "search-all")
