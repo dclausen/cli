@@ -48,8 +48,9 @@ func resolveTranscriptPath(ctx context.Context, sessionID string, agent agentpkg
 
 // discoverTranscript returns the transcript of sessionID in ag's session
 // directory for the current worktree: the first of the agent's candidate files
-// that is a regular file, following symbolic links as later reads do. It
-// returns "" and no error when no candidate is one.
+// that is a regular file, following symbolic links as later reads do (the
+// fallback search is stricter; see isTranscriptFileInStore). It returns "" and
+// no error when no candidate is one.
 //
 // When the session directory lies in a store of the agent's home layout, the
 // candidates may also lie in the home's other stores, such as a Codex rollout
@@ -176,6 +177,11 @@ func searchTranscriptInProjectDirs(sessionID string, ag agentpkg.Agent) (string,
 // isTranscriptFileInStore reports whether name, the store's name for path, is a
 // regular file or a symbolic link to one. Like the store's other reads it
 // refuses a path whose directories below the store include a link.
+//
+// That is stricter than discoverTranscript, which follows a link anywhere on
+// the path, as the transcript read after it does. This search reaches each
+// store through filepath.WalkDir, which does not follow linked directories, and
+// the check keeps it from following one below the store either.
 func isTranscriptFileInStore(store *agentpkg.SessionStore, name, path string) bool {
 	info, err := store.Lstat(name)
 	if err != nil {

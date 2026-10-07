@@ -99,22 +99,38 @@ func writeTranscriptFile(t *testing.T, path string) {
 }
 
 func TestResolveAndValidateTranscript_FindsArchivedCodexRollout(t *testing.T) {
-	setupAttachTestRepo(t)
-	home := relocateAgentHome(t, agent.AgentTypeCodex)
 	const sessionID = "019a0000-0000-7000-8000-00000000c0de"
-	archived := filepath.Join(home, "archived_sessions", "2026", "09", "30", "rollout-2026-09-30T10-00-00-"+sessionID+".jsonl")
-	writeTranscriptFile(t, archived)
-	ag, err := agent.Get(agent.AgentNameCodex)
-	if err != nil {
-		t.Fatal(err)
+	const name = "rollout-2026-09-30T10-00-00-" + sessionID + ".jsonl"
+	tests := []struct {
+		name string
+		// dir is the rollout's directory below archived_sessions.
+		dir []string
+	}{
+		// Codex archives a rollout directly under archived_sessions, keeping
+		// its file name.
+		{name: "flat", dir: nil},
+		{name: "dated", dir: []string{"2026", "09", "30"}},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setupAttachTestRepo(t)
+			home := relocateAgentHome(t, agent.AgentTypeCodex)
+			parts := append([]string{home, "archived_sessions"}, tt.dir...)
+			archived := filepath.Join(append(parts, name)...)
+			writeTranscriptFile(t, archived)
+			ag, err := agent.Get(agent.AgentNameCodex)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	got, err := resolveAndValidateTranscript(context.Background(), sessionID, ag, lookupLocalOnly)
-	if err != nil {
-		t.Fatalf("resolveAndValidateTranscript: %v", err)
-	}
-	if got != archived {
-		t.Fatalf("transcript = %q, want the archived rollout %q", got, archived)
+			got, err := resolveAndValidateTranscript(context.Background(), sessionID, ag, lookupLocalOnly)
+			if err != nil {
+				t.Fatalf("resolveAndValidateTranscript: %v", err)
+			}
+			if got != archived {
+				t.Fatalf("transcript = %q, want the archived rollout %q", got, archived)
+			}
+		})
 	}
 }
 
@@ -225,5 +241,51 @@ func TestResolveAndValidateTranscript_FollowsSymlinkedTranscript(t *testing.T) {
 	}
 	if got != link {
 		t.Fatalf("transcript = %q, want the linked transcript %q", got, link)
+	}
+}
+
+// strayCandidateAgent has a one-store home and lists, ahead of its store's
+// transcript, a candidate inside the home but outside that store.
+type strayCandidateAgent struct {
+	agent.Agent
+
+	home string
+}
+
+func (a strayCandidateAgent) GetSessionDir(string) (string, error) {
+	return filepath.Join(a.home, "sessions"), nil
+}
+
+func (a strayCandidateAgent) SessionHome() (string, error) { return a.home, nil } //nolint:unparam // agent.HomeLayoutProvider signature
+
+func (a strayCandidateAgent) HomeLayout() agent.HomeLayout {
+	return agent.HomeLayout{Stores: []string{"sessions"}}
+}
+
+func (a strayCandidateAgent) ResolveSessionFileCandidates(sessionDir, agentSessionID string) []string {
+	return []string{
+		filepath.Join(a.home, "stray", agentSessionID+".jsonl"),
+		filepath.Join(sessionDir, agentSessionID+".jsonl"),
+	}
+}
+
+func TestDiscoverTranscript_SkipsCandidateOutsideTheHomeStores(t *testing.T) {
+	setupAttachTestRepo(t)
+	codex, err := agent.Get(agent.AgentNameCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := strayCandidateAgent{Agent: codex, home: t.TempDir()}
+	const sessionID = "stray-session"
+	writeTranscriptFile(t, filepath.Join(ag.home, "stray", sessionID+".jsonl"))
+	stored := filepath.Join(ag.home, "sessions", sessionID+".jsonl")
+	writeTranscriptFile(t, stored)
+
+	got, err := discoverTranscript(context.Background(), sessionID, ag)
+	if err != nil {
+		t.Fatalf("discoverTranscript: %v", err)
+	}
+	if got != stored {
+		t.Fatalf("transcript = %q, want %q from the home's store", got, stored)
 	}
 }
