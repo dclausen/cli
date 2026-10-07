@@ -47,7 +47,9 @@ func newProjectCreateCmd() *cobra.Command {
 			"Run in an interactive terminal without --owner, --owner-type or " +
 			"--region (optionally with a name), a wizard asks for the owner, name " +
 			"and region; those flags always mean the flag form, so one given with " +
-			"a missing name or --owner is an error.",
+			"a missing name or --owner is an error.\n\n" +
+			"Project names are 3-32 letters, digits or hyphens, starting and ending " +
+			"with a letter or digit, and unique across all owners.",
 		Example: "  # Project under an org (by name)\n" +
 			"  entire project create widgets --owner acme --owner-type org\n\n" +
 			"  # Project owned by an account (by handle)\n" +
@@ -78,7 +80,7 @@ func newProjectCreateCmd() *cobra.Command {
 			return runProjectCreateWizard(cmd, in.name)
 		},
 	}
-	cmd.Flags().StringVar(&in.owner, "owner", "", "Owning org (name), or account (github:handle) (required; omit every flag in a terminal to be asked instead)")
+	cmd.Flags().StringVar(&in.owner, "owner", "", "Owning org (name), or account (github:handle) (required; run in a terminal without --owner, --owner-type or --region to be asked instead)")
 	cmd.Flags().StringVar(&in.ownerType, "owner-type", ownerTypeOrg, "Owner kind: org or account")
 	cmd.Flags().StringVar(&in.region, "region", "", "Jurisdiction slug (defaults to the server's jurisdiction; the wizard suggests the owner's region)")
 	addJSONFlag(cmd)
@@ -111,6 +113,11 @@ func projectCreateMissingErr(in projectCreateInput) error {
 // the command has always sent. An omitted --region stays omitted so the server
 // picks its home jurisdiction.
 func createProjectDirect(cmd *cobra.Command, in projectCreateInput, ot coreapi.CreateProjectInputBodyOwnerType) error {
+	// The wizard's Name-page rule, checked before any request so scripts and
+	// agents learn it from the command rather than from a server 400.
+	if !nativeProjectRe.MatchString(in.name) {
+		return fmt.Errorf("invalid project name %q: %s", in.name, projectNameRule)
+	}
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
 		// Orgs are addressed by name, accounts by github:handle; both
 		// also accept a raw ULID.
@@ -144,13 +151,17 @@ func createProjectDirect(cmd *cobra.Command, in projectCreateInput, ot coreapi.C
 
 // printProjectCreated renders a created project the way runCoreMutation renders
 // any mutation: the wire object under --json, else a ✓ line naming the project
-// by its fully qualified path, /et/<project>, the prefix of every repo path in
-// it (/et/<project>/<repo>). Never by id.
+// the way every command takes it (its name, unique across owners) and the
+// region it landed in, which the flag form leaves to the server. Never by id.
 func printProjectCreated(cmd *cobra.Command, project *coreapi.CreatedProject) error {
 	if jsonRequested(cmd) {
 		return printJSON(cmd.OutOrStdout(), project)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project /%s/%s\n", nativeCloneForge, project.Name)
+	if project.Region != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s in %s\n", project.Name, project.Region)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "✓ Created project %s\n", project.Name)
 	return nil
 }
 

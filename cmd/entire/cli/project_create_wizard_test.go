@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
@@ -23,6 +25,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/auth"
 	"github.com/entireio/cli/cmd/entire/cli/interactive"
 	"github.com/entireio/cli/internal/coreapi"
+	"github.com/entireio/cli/internal/entireclient/contexts"
 )
 
 const (
@@ -308,7 +311,7 @@ func TestProjectCreate_CompleteFlagsSkipTheWizard(t *testing.T) {
 
 	out, err := execProjectCreate(t, "widgets", "--owner", "acme")
 	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project /et/widgets\n", out)
+	assert.Equal(t, "✓ Created project widgets in us\n", out)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, testWizardAcmeULID, fake.created.OwnerId)
 	assert.False(t, fake.created.Region.IsSet(), "the server picks the region")
@@ -386,7 +389,7 @@ func TestProjectCreate_WizardCreatesWhatTheSummaryShowed(t *testing.T) {
 
 	out, err := execProjectCreate(t, "widgets")
 	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project /et/widgets\n", out)
+	assert.Equal(t, "✓ Created project widgets in eu\n", out)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, testWizardAcmeULID, fake.created.OwnerId)
 	assert.Equal(t, coreapi.CreateProjectInputBodyOwnerTypeOrg, fake.created.OwnerType)
@@ -400,7 +403,7 @@ func TestProjectCreate_WizardPersonalProject(t *testing.T) {
 
 	out, err := execProjectCreate(t, "widgets")
 	require.NoError(t, err)
-	assert.Equal(t, "✓ Created project /et/widgets\n", out)
+	assert.Equal(t, "✓ Created project widgets in us\n", out)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, testWizardAccountULID, fake.created.OwnerId)
 	assert.Equal(t, coreapi.CreateProjectInputBodyOwnerTypeAccount, fake.created.OwnerType)
@@ -464,15 +467,15 @@ func TestProjectCreateState_PageTitlesFollowAnswers(t *testing.T) {
 	assert.Equal(t, "tools", s.answers.Name)
 }
 
-// The success line names the project by its fully qualified path, the prefix
-// of its repos' paths: never by id, and the same whatever --owner looked like.
-func TestProjectCreate_SuccessLineIsTheProjectPath(t *testing.T) {
+// The success line names the project the way every command takes it, plus the
+// region it landed in: never by id, and the same whatever --owner looked like.
+func TestProjectCreate_SuccessLineNamesTheProject(t *testing.T) {
 	fake := newProjectCoreFixture(t)
 	fake.omitOwnerName = true
 	for _, owner := range []string{testWizardAcmeULID, "acme"} {
 		out, err := execProjectCreate(t, "widgets", "--owner", owner)
 		require.NoError(t, err)
-		assert.Equal(t, "✓ Created project /et/widgets\n", out, owner)
+		assert.Equal(t, "✓ Created project widgets in us\n", out, owner)
 	}
 }
 
@@ -666,7 +669,7 @@ func TestProjectCreate_NameArgumentIsTrimmed(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fake.created)
 	assert.Equal(t, "widgets", fake.created.Name)
-	assert.Equal(t, "✓ Created project /et/widgets\n", out)
+	assert.Equal(t, "✓ Created project widgets in us\n", out)
 
 	fake.created = nil
 	_, err = execProjectCreate(t, "   ", "--owner", "acme")
@@ -714,10 +717,106 @@ func TestSuggestProjectName(t *testing.T) {
 	}
 }
 
-// ENTIRE_TOKEN beats every saved login, so the wizard must not name one.
+// ENTIRE_TOKEN beats every saved login, so the wizard must not name one. With
+// two logins saved the note names the active one, and the token silences it.
 //
-// Not parallel: sets ENTIRE_TOKEN.
+// Not parallel: sets ENTIRE_CONFIG_DIR and ENTIRE_TOKEN.
 func TestWizardLoginNote_SilentUnderEntireToken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ENTIRE_CONFIG_DIR", dir)
+	t.Setenv(contexts.EnvContextVar, "")
+	os.Unsetenv(contexts.EnvContextVar)
+	contexts.SetFlagOverrideForTest(t, "")
+	t.Setenv(auth.EnvTokenVar, "")
+	os.Unsetenv(auth.EnvTokenVar)
+	require.NoError(t, contexts.Save(dir, &contexts.File{
+		CurrentContext: "work",
+		Contexts: []*contexts.Context{
+			{Name: "work", CoreURL: "https://core.work.example", Handle: "me", KeychainService: "kc:work"},
+			{Name: "home", CoreURL: "https://core.home.example", Handle: "me", KeychainService: "kc:home"},
+		},
+	}))
+	require.Equal(t, "Using context 'work'.", wizardLoginNote(), "two logins saved: the active one is named")
+
 	t.Setenv(auth.EnvTokenVar, "tok")
-	assert.Empty(t, wizardLoginNote())
+	assert.Empty(t, wizardLoginNote(), "the token, not 'work', is what the wizard acts as")
+}
+
+// The summary follows a revisited answer. Driving the paged form itself:
+// through to the summary, Shift+Tab back to the region page, a different
+// region, forward again: the summary must show what will be created. It used
+// to keep its first render, because huh re-renders a DescriptionFunc only when
+// its binding's hash changes and the answers' fields were unexported. Unlike
+// TestProjectCreateAnswers_AllFieldsCountForTheSummaryRefresh this catches the
+// regression whatever its cause.
+func TestProjectCreateWizard_SummaryFollowsARevisit(t *testing.T) {
+	t.Parallel()
+	s, err := newProjectCreateState(wizardTestData(), "gadgets", "") // free: "widgets" is Acme's
+	require.NoError(t, err)
+	s.confirmed = true
+	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
+
+	var model huh.Model = form
+	// run executes a command as the program loop would, except that one not
+	// answering at once (a cursor-blink timer) is dropped: timers re-arm
+	// forever and nothing here depends on them.
+	run := func(cmd tea.Cmd) tea.Msg {
+		out := make(chan tea.Msg, 1)
+		go func() { out <- cmd() }()
+		select {
+		case msg := <-out:
+			return msg
+		case <-time.After(20 * time.Millisecond):
+			return nil
+		}
+	}
+	send := func(msgs ...tea.Msg) {
+		for _, msg := range msgs {
+			var cmd tea.Cmd
+			model, cmd = model.Update(msg)
+			// Run the commands the form asks for (focus moves, page changes,
+			// the region options load) until none is left.
+			for steps, queue := 0, []tea.Cmd{cmd}; len(queue) > 0 && steps < 200; steps++ {
+				next := queue[0]
+				queue = queue[1:]
+				if next == nil {
+					continue
+				}
+				switch m := run(next).(type) {
+				case tea.BatchMsg:
+					queue = append(queue, m...)
+				case nil:
+				default:
+					var more tea.Cmd
+					model, more = model.Update(m)
+					queue = append(queue, more)
+				}
+			}
+		}
+	}
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	send(tea.WindowSizeMsg{Width: 120, Height: 40}, run(form.Init()))
+	send(enter, enter, enter) // owner (personal), name, region (the owner's: us)
+	require.Contains(t, ansi.Strip(form.View()), "--region us", "on the summary")
+
+	send(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}) // back to the region page
+	send(tea.KeyPressMsg{Code: tea.KeyDown}, enter)            // eu, forward
+	require.Equal(t, "eu", s.request().Region.Or(""))
+	view := ansi.Strip(form.View())
+	require.Contains(t, view, "--region eu", "the summary shows what will be created")
+	require.Contains(t, view, "Europe (eu)")
+	require.NotContains(t, view, "--region us")
+}
+
+// The flag form checks the name rule before any request, as the wizard's Name
+// page does, and the help states the rule, so scripts and agents learn it
+// without a server 400.
+func TestProjectCreate_FlagFormChecksTheNameRule(t *testing.T) {
+	fake := newProjectCoreFixture(t)
+	for _, name := range []string{"my_app", "ui", "My.App"} {
+		_, err := execProjectCreate(t, name, "--owner", "acme")
+		require.EqualError(t, err, `invalid project name "`+name+`": `+projectNameRule, name)
+	}
+	assert.Empty(t, fake.requests, "refused before resolving the owner")
+	assert.Contains(t, newProjectCreateCmd().Long, "3-32 letters, digits or hyphens")
 }
