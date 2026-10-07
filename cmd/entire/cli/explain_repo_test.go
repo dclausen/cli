@@ -370,9 +370,27 @@ func TestRunCrossRepoExplain_CommitSHAResolvesToCheckpoint(t *testing.T) {
 		verbose:      true,
 	}))
 	assert.Equal(t, "gh/acme/widgets", *asked)
-	assert.Equal(t, strings.ToLower(sha), stub.resolvedSHA, "the SHA is resolved in the target repo, lowercased")
+	assert.Equal(t, sha, stub.resolvedSHA, "the SHA reaches the reader as given; the reader owns normalization")
 	assert.Contains(t, out.String(), testAPICheckpointID.String(), "the resolved checkpoint is what gets rendered")
 	assert.Contains(t, out.String(), "do the foreign thing")
+}
+
+// --commit is the explicit spelling of the same thing; it must not be routed
+// by shape, and --checkpoint must stay strict (pinned at the flag layer).
+func TestRunCrossRepoExplain_CommitFlagResolvesToCheckpoint(t *testing.T) {
+	stub := &stubCrossRepoReader{}
+	withStubCrossRepoReader(t, stub)
+
+	sha := "13e379e4b0000000000000000000000000000000"
+	var out bytes.Buffer
+	require.NoError(t, runCrossRepoExplain(context.Background(), &out, io.Discard, crossRepoExplainOptions{
+		repoFlag:     "gh/acme/widgets",
+		commitSHA:    sha,
+		sessionIndex: -1,
+		noPager:      true,
+	}))
+	assert.Equal(t, sha, stub.resolvedSHA)
+	assert.Contains(t, out.String(), testAPICheckpointID.String())
 }
 
 func TestRunCrossRepoExplain_CommitSHAResolutionErrorSurfaces(t *testing.T) {
@@ -418,9 +436,14 @@ func TestExplainCmd_RepoFlagValidation(t *testing.T) {
 			wantErr: "forge prefix is required",
 		},
 		{
-			name:    "repo with commit",
+			name:    "repo with a commit ref instead of a full SHA",
 			args:    []string{"checkpoint", "explain", "--repo", "gh/acme/widgets", "--commit", "HEAD"},
-			wantErr: "[repo commit]",
+			wantErr: "--commit with --repo requires a full commit SHA",
+		},
+		{
+			name:    "repo with a SHA under --checkpoint",
+			args:    []string{"checkpoint", "explain", "--repo", "gh/acme/widgets", "--checkpoint", strings.Repeat("a", 40)},
+			wantErr: "--checkpoint with --repo requires a full checkpoint ID",
 		},
 		{
 			name:    "repo with generate",

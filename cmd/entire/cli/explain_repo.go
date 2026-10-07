@@ -23,9 +23,7 @@ type crossRepoReader interface {
 	checkpoint.SessionReader
 	GetCheckpointAuthor(ctx context.Context, checkpointID id.CheckpointID) (checkpoint.Author, error)
 	checkpointCommit(ctx context.Context, checkpointID id.CheckpointID) ([]associatedCommit, error)
-	// resolveCommitCheckpoint maps a full commit SHA to the one checkpoint
-	// that produced it (ENT-2102): the cross-repo stand-in for reading the
-	// commit's Entire-Checkpoint trailer out of local git.
+	// resolveCommitCheckpoint maps a full commit SHA to its single checkpoint.
 	resolveCommitCheckpoint(ctx context.Context, sha string) (id.CheckpointID, error)
 }
 
@@ -73,9 +71,13 @@ func crossRepoReadSource(ctx context.Context) (string, bool) {
 // foreign repo's checkpoint.
 type crossRepoExplainOptions struct {
 	repoFlag string
-	// target is the checkpoint ID or full commit SHA the user asked for,
-	// before validation.
-	target string
+	// target is the positional argument: a full checkpoint ID or a full
+	// commit SHA, told apart by shape. checkpointID and commitSHA are the
+	// explicit --checkpoint and --commit flags, which skip the shape
+	// classification. Exactly one of the three is set.
+	target       string
+	checkpointID string
+	commitSHA    string
 
 	json          bool
 	transcript    bool
@@ -91,6 +93,12 @@ type crossRepoExplainOptions struct {
 }
 
 const explainRepoFlagShapes = "gh/owner/name, et/project/repo, entire://<host>/gh/<owner>/<repo>, or entire://<host>/et/<project>/<repo>"
+
+// explainRepoTargetShapes is what `--repo` can explain, shared by the help and
+// the error so they cannot drift. A prefix of either can't be resolved
+// without listing the foreign repo's checkpoints or commits, which is
+// `entire search`'s job.
+const explainRepoTargetShapes = "a full checkpoint ID (12-char hex or 26-char ULID) or a full commit SHA"
 
 // parseExplainRepoFlag parses `--repo`. Every accepted form states its forge:
 // gh/owner/repo or et/project/repo, including as the path of a full entire://
@@ -196,18 +204,10 @@ func runCrossRepoExplain(ctx context.Context, w, errW io.Writer, opts crossRepoE
 	}
 	repoRef := explainRepoRef(forge, owner, repoName)
 
-	// The target is either a full checkpoint ID or a full commit SHA — the
-	// two identifiers a search hit carries. A prefix of either can't be
-	// resolved without listing the foreign repo's checkpoints or commits,
-	// which is `entire search`'s job, so cross-repo needs the whole thing.
 	// Shape is checked before any network call so a typo fails instantly.
-	var cid id.CheckpointID
-	isCommit := plumbing.IsHash(opts.target)
-	if !isCommit {
-		cid, err = id.NewCheckpointID(opts.target)
-		if err != nil {
-			return fmt.Errorf("--repo requires a full checkpoint ID (12-char hex or 26-char ULID) or a full commit SHA; a prefix cannot be resolved in another repo: %w", err)
-		}
+	cid, sha, err := classifyCrossRepoTarget(opts)
+	if err != nil {
+		return err
 	}
 
 	reader, err := newCrossRepoReader(ctx, opts.insecureHTTP, forge, owner, repoName)
@@ -217,10 +217,9 @@ func runCrossRepoExplain(ctx context.Context, w, errW io.Writer, opts crossRepoE
 		}
 		return err
 	}
-	if isCommit {
+	if sha != "" {
 		// No local git here to read the Entire-Checkpoint trailer from, so
 		// ask the owning repo's cell which checkpoint the commit links.
-		sha := strings.ToLower(opts.target)
 		stop := startSpinner(errW, fmt.Sprintf("Resolving commit %s in %s", abbreviateSHA(sha), repoRef))
 		cid, err = reader.resolveCommitCheckpoint(ctx, sha)
 		if err != nil {
@@ -299,6 +298,36 @@ func runCrossRepoExplain(ctx context.Context, w, errW io.Writer, opts crossRepoE
 		output := formatCheckpointOutput(ctx, summary, content, cid, commits, author, opts.verbose, opts.full, w)
 		outputExplainContent(w, output, opts.noPager)
 		return nil
+	}
+}
+
+// classifyCrossRepoTarget turns the options' one target into either a
+// checkpoint ID or a commit SHA (exactly one is non-zero on success). The
+// explicit flags are strict about their kind; the positional is told apart by
+// shape, which is unambiguous because the full forms are disjoint (12 or 26
+// characters for an ID, 40 or 64 for a SHA).
+func classifyCrossRepoTarget(opts crossRepoExplainOptions) (id.CheckpointID, string, error) {
+	switch {
+	case opts.commitSHA != "":
+		if !plumbing.IsHash(opts.commitSHA) {
+			return id.EmptyCheckpointID, "", fmt.Errorf("--commit with --repo requires a full commit SHA; %q cannot be resolved in another repo", opts.commitSHA)
+		}
+		return id.EmptyCheckpointID, opts.commitSHA, nil
+	case opts.checkpointID != "":
+		cid, err := id.NewCheckpointID(opts.checkpointID)
+		if err != nil {
+			return id.EmptyCheckpointID, "", fmt.Errorf("--checkpoint with --repo requires a full checkpoint ID; a prefix cannot be resolved in another repo: %w", err)
+		}
+		return cid, "", nil
+	default:
+		if plumbing.IsHash(opts.target) {
+			return id.EmptyCheckpointID, opts.target, nil
+		}
+		cid, err := id.NewCheckpointID(opts.target)
+		if err != nil {
+			return id.EmptyCheckpointID, "", fmt.Errorf("--repo requires %s; a prefix cannot be resolved in another repo: %w", explainRepoTargetShapes, err)
+		}
+		return cid, "", nil
 	}
 }
 

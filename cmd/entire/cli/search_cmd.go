@@ -61,10 +61,10 @@ for a single result with 'entire checkpoint explain <id>', or add --full to
 that command to pull the checkpoint's entire session transcript. For a
 checkpoint or commit hit from another repo, add --repo gh/<owner>/<repo> for
 a GitHub mirror or --repo et/<project>/<repo> for an Entire-native repo. The
-forge prefix is required, and the hit's id must be complete: a full checkpoint
-ID, or a full commit SHA (resolved to its checkpoint by that repo's Entire
-API). Prefixes cannot be resolved in another repo. This is unrelated to this
-command's --repo filter below.
+forge prefix is required, and the hit's id must be ` + explainRepoTargetShapes + `
+(a SHA is resolved to its checkpoint by that repo's Entire API). Prefixes
+cannot be resolved in another repo. This is unrelated to this command's
+--repo filter below.
 
 CLI queries also support inline filters like author:<name>, date:<week|month>,
 branch:<name>, repo:<owner/name>, and repo:* to search all accessible repos.`,

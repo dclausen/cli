@@ -522,16 +522,11 @@ func TestParseAPITime(t *testing.T) {
 
 const testAPICommitSHA = "13e379e4b0000000000000000000000000000000"
 
-// commitCheckpointsHandler serves the commit→checkpoints listing with the given
-// body and the detail envelope for the follow-up checkpoint read.
+// commitCheckpointsHandler serves body as the commit→checkpoints listing. The
+// resolver makes exactly one request, so no routing is needed.
 func commitCheckpointsHandler(body string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/commits/") {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, body)
-			return
-		}
-		defaultAPIHandler(w, r)
+	return func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, body)
 	}
 }
 

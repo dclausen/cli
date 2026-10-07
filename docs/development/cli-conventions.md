@@ -42,9 +42,9 @@ the commands are always runnable in every build.
   object store, ref namespace, or `tokens profile`. It takes a full checkpoint
   ID or a full commit SHA — the SHA is resolved through
   `/repos/{repo_id}/commits/{sha}/checkpoints`, the cross-repo stand-in for the
-  local `Entire-Checkpoint` trailer read, and exactly one linked checkpoint is
-  required (zero or several is an error naming the candidates) — and a pushed
-  checkpoint; prefixes are rejected. `--commit`, `--session`, `--search-all`,
+  local `Entire-Checkpoint` trailer read; zero linked checkpoints is an error,
+  and several is an error that names them, unlike the local path which reads
+  the first trailer — and a pushed checkpoint; prefixes are rejected. `--commit`, `--session`, `--search-all`,
   and `--generate` are rejected with it, and naming the current repo is a no-op
   that falls through to the local path. See `checkpoint_api_reader.go`
   (`apiCheckpointReader`, which implements the two checkpoint reader tiers and
