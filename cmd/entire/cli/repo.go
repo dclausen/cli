@@ -201,18 +201,23 @@ default. Active means provisioning completed; later pushes or mirror
 creation can still fail for other reasons.
 
 With both a name and --project the repository is created directly.
-With at most a name and no create flags, in an interactive terminal, a
-wizard asks for the project, name, visibility and advanced options,
-starting from the given name (or the current folder's), and shows a
-summary before creating anything. With --json the prompts stay off
-stdout, which carries only the repository object. --project,
---visibility and --object-format mean the flag form: with any of them,
-a name and --project are both required.
 
---visibility sets the repository's visibility right after creation: public
-grants read-only (pull) access to any authenticated Entire user, private
-restricts it to explicit grantees. Omitted, the server default applies;
-the wizard defaults to private.
+In an interactive terminal, 'entire repo create' or 'entire repo create
+<name>' opens a wizard instead. It asks for the project, name,
+visibility and advanced options, starting from the given name (or the
+current folder's), and shows a summary before creating anything. With
+--json the prompts stay off stdout, which carries only the repository
+object.
+
+--project, --visibility and --object-format are the flag form: give any
+of them and both a name and --project are required.
+
+--visibility is set once the repository is ready (straight away with
+--no-wait): public grants read-only (pull) access to any authenticated
+Entire user, private restricts it to explicit grantees. Omitted, the
+server default applies; the wizard defaults to private. If setting it
+fails, the command exits nonzero, keeps the repository and prints the
+'entire repo edit' that finishes the job.
 
 --wait-timeout must be positive. It bounds project resolution, creation,
 and readiness polling after client setup, including creation with
@@ -282,10 +287,10 @@ and recovery instructions go to stderr.`,
 				// without one.
 				cmd.SilenceUsage = true
 				if !interactive.CanPromptInteractively() {
-					return errRepoCreateNeedsInput
+					return repoCreateMissingInput(req.name, projectRef, errRepoCreateNeedsInput)
 				}
 				if repoCreateFlagsGiven(cmd) {
-					return errRepoCreateFlagsNeedInput
+					return repoCreateMissingInput(req.name, projectRef, errRepoCreateFlagsNeedInput)
 				}
 				return runRepoCreateWizard(cmd, req.name, opts)
 			}

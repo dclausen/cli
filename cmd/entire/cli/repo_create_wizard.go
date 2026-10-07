@@ -69,12 +69,19 @@ func (p repoProject) label(width int) string {
 
 // repoCreateAnswers is what the wizard collects. It is its own struct so the
 // summary can bind to the answers alone.
+//
+// Its fields are exported for one reason: the summary's DescriptionFunc binds
+// to this struct, and huh re-renders only when the binding's hash changes.
+// hashstructure skips unexported fields, so with them the hash never changed
+// and the summary kept showing the answers from its first render — a
+// revisited page could change what was created without changing what was
+// confirmed.
 type repoCreateAnswers struct {
-	projectID    string
-	name         string
-	visibility   coreapi.SetRepoVisibilityInputBodyVisibility
-	advanced     bool
-	objectFormat coreapi.CreateRepoInputBodyObjectFormat
+	ProjectID    string
+	Name         string
+	Visibility   coreapi.SetRepoVisibilityInputBodyVisibility
+	Advanced     bool
+	ObjectFormat coreapi.CreateRepoInputBodyObjectFormat
 }
 
 // repoCreateState is the wizard's model: the projects on offer, the answers
@@ -147,17 +154,17 @@ func newRepoCreateState(projects []coreapi.Project, name, defaultName string) (*
 	}
 	s := &repoCreateState{projects: rows, hiddenProjects: hidden}
 	s.answers = repoCreateAnswers{
-		projectID:    rows[0].id,
-		name:         cmp.Or(name, defaultName),
-		visibility:   repoCreateDefaultVisibility,
-		objectFormat: repoCreateDefaultObjectFormat,
+		ProjectID:    rows[0].id,
+		Name:         cmp.Or(name, defaultName),
+		Visibility:   repoCreateDefaultVisibility,
+		ObjectFormat: repoCreateDefaultObjectFormat,
 	}
 	return s, nil
 }
 
 func (s *repoCreateState) project() repoProject {
 	for _, p := range s.projects {
-		if p.id == s.answers.projectID {
+		if p.id == s.answers.ProjectID {
 			return p
 		}
 	}
@@ -168,10 +175,10 @@ func (s *repoCreateState) project() repoProject {
 // duplicate check. Re-setting the current project is a no-op: huh writes a
 // select's value back after every message.
 func (s *repoCreateState) setProject(id string) {
-	if id == s.answers.projectID {
+	if id == s.answers.ProjectID {
 		return
 	}
-	s.answers.projectID = id
+	s.answers.ProjectID = id
 	s.names.load(id)
 	s.refreshPageTitles()
 }
@@ -199,7 +206,7 @@ func (s *repoCreateState) validateName(value string) error {
 		}
 		return fmt.Errorf("a repository name cannot end in %s, in any case", gitDirSuffix)
 	}
-	if existing, ok := s.names.lookup(s.answers.projectID, name); ok {
+	if existing, ok := s.names.lookup(s.answers.ProjectID, name); ok {
 		return fmt.Errorf("%s already has a repository named %q", s.project().name, existing)
 	}
 	return nil
@@ -207,14 +214,14 @@ func (s *repoCreateState) validateName(value string) error {
 
 func (s *repoCreateState) request() repoCreateRequest {
 	req := repoCreateRequest{
-		projectID:   s.answers.projectID,
+		projectID:   s.answers.ProjectID,
 		projectName: s.project().name,
-		name:        strings.TrimSpace(s.answers.name),
-		visibility:  s.answers.visibility,
+		name:        strings.TrimSpace(s.answers.Name),
+		visibility:  s.answers.Visibility,
 	}
 	// A declined advanced step leaves the format to the server.
-	if s.answers.advanced {
-		req.objectFormat = s.answers.objectFormat
+	if s.answers.Advanced {
+		req.objectFormat = s.answers.ObjectFormat
 	}
 	return req
 }
@@ -297,7 +304,7 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 		namesCtx, cancelNames := context.WithCancel(ctx)
 		defer cancelNames()
 		s.names = newRepoNameIndex(namesCtx, c)
-		s.names.load(s.answers.projectID)
+		s.names.load(s.answers.ProjectID)
 
 		for {
 			ok, err := repoCreatePrompt(cmd, s)
@@ -374,7 +381,7 @@ func runRepoCreateForms(cmd *cobra.Command, s *repoCreateState) (bool, error) {
 				return []*huh.Group{s.nameGroup(false), s.visibilityGroup(false), s.advancedGroup(false)}
 			},
 			func() []*huh.Group {
-				if !s.answers.advanced {
+				if !s.answers.Advanced {
 					return nil
 				}
 				return []*huh.Group{s.formatGroup(false)}
@@ -446,12 +453,17 @@ func (s *repoCreateState) projectGroup(accessible bool) *huh.Group {
 	const question = "Which project should hold it?"
 	sel := huh.NewSelect[string]().Title(question).Options(opts...)
 	if accessible {
-		s.pickedProject = s.answers.projectID
+		s.pickedProject = s.answers.ProjectID
 		sel.Value(&s.pickedProject)
 	} else {
 		sel.Accessor(repoProjectAccessor{s: s})
 	}
 	var notes []string
+	// A reopened wizard starts here, so this is where it says why: the name
+	// page repeats it while the refused project is chosen.
+	if note := s.refusalNote(); note != "" {
+		notes = append(notes, note)
+	}
 	switch s.hiddenProjects {
 	case 0:
 	case 1:
@@ -495,10 +507,10 @@ const (
 func (s *repoCreateState) decided(stages int) string {
 	lines := []string{"✓ Project     " + s.project().name}
 	if stages >= repoStageName {
-		lines = append(lines, "✓ Name        "+strings.TrimSpace(s.answers.name))
+		lines = append(lines, "✓ Name        "+strings.TrimSpace(s.answers.Name))
 	}
 	if stages >= repoStageVisibility {
-		lines = append(lines, "✓ Visibility  "+string(s.answers.visibility))
+		lines = append(lines, "✓ Visibility  "+string(s.answers.Visibility))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -543,7 +555,15 @@ func (s *repoCreateState) refreshPageTitles() {
 // concern another answer (the object format, say), so the server's own words
 // say which, and the note asks for whichever answer they name.
 func (s *repoCreateState) nameNote() string {
-	if s.conflict.name == "" || s.conflict.projectID != s.answers.projectID {
+	if s.conflict.projectID != s.answers.ProjectID {
+		return ""
+	}
+	return s.refusalNote()
+}
+
+// refusalNote says why the wizard reopened, or nothing when it did not.
+func (s *repoCreateState) refusalNote() string {
+	if s.conflict.name == "" {
 		return ""
 	}
 	if s.conflict.reason != "" {
@@ -568,7 +588,7 @@ func (s *repoCreateState) nameGroup(dynamic bool) *huh.Group {
 		// create was refused in. A blank line stands in elsewhere, because huh
 		// sizes the page once and the height must not change.
 		note := func() string { return cmp.Or(s.nameNote(), " ") }
-		in.Description(note()).DescriptionFunc(note, &s.answers.projectID)
+		in.Description(note()).DescriptionFunc(note, &s.answers.ProjectID)
 	}
 	// A name page that fails validation must still let Shift+Tab leave it.
 	in.Validate(uiform.Lenient(s.nav, s.validateName))
@@ -583,12 +603,12 @@ func (s *repoCreateState) nameGroup(dynamic bool) *huh.Group {
 // would keep, so the question names it. Descriptions are dropped there too, so
 // a name note leads the question.
 func (s *repoCreateState) accessibleName(in *huh.Input) *huh.Input {
-	in.Value(&s.answers.name)
+	in.Value(&s.answers.Name)
 	title := "Repository name"
 	if note := s.nameNote(); note != "" {
 		title = note + " " + title
 	}
-	current := strings.TrimSpace(s.answers.name)
+	current := strings.TrimSpace(s.answers.Name)
 	if current == "" {
 		return in.Title(title)
 	}
@@ -607,7 +627,7 @@ func (s *repoCreateState) visibilityGroup(dynamic bool) *huh.Group {
 			huh.NewOption("public   (any signed-in Entire user can read)", coreapi.SetRepoVisibilityInputBodyVisibilityPublic),
 		)
 	if !dynamic {
-		return huh.NewGroup(sel.Value(&s.answers.visibility)).Title(repoHeadingVisibility)
+		return huh.NewGroup(sel.Value(&s.answers.Visibility)).Title(repoHeadingVisibility)
 	}
 	s.visibilityGrp = huh.NewGroup(sel.Accessor(repoVisibilityAccessor{s: s}))
 	s.refreshPageTitles()
@@ -621,7 +641,7 @@ func (s *repoCreateState) advancedGroup(dynamic bool) *huh.Group {
 		Title("Customize advanced options?").
 		Affirmative("Yes").
 		Negative("No").
-		Value(&s.answers.advanced)
+		Value(&s.answers.Advanced)
 	if !dynamic {
 		return huh.NewGroup(confirm).Title(repoHeadingAdvanced)
 	}
@@ -639,11 +659,11 @@ func (s *repoCreateState) formatGroup(dynamic bool) *huh.Group {
 			huh.NewOption("sha1    (the default, supported by every git tool)", coreapi.CreateRepoInputBodyObjectFormatSHA1),
 			huh.NewOption("sha256  (not yet supported by every git tool)", coreapi.CreateRepoInputBodyObjectFormatSHA256),
 		).
-		Value(&s.answers.objectFormat)
+		Value(&s.answers.ObjectFormat)
 	if !dynamic {
 		return huh.NewGroup(sel).Title(repoHeadingFormat)
 	}
-	s.formatGrp = huh.NewGroup(sel).WithHideFunc(func() bool { return !s.answers.advanced })
+	s.formatGrp = huh.NewGroup(sel).WithHideFunc(func() bool { return !s.answers.Advanced })
 	s.refreshPageTitles()
 	return s.formatGrp
 }
@@ -674,18 +694,18 @@ func (s *repoCreateState) summaryGroup(dynamic bool) *huh.Group {
 // cursor move also loads that project's names and refreshes the recaps.
 type repoProjectAccessor struct{ s *repoCreateState }
 
-func (a repoProjectAccessor) Get() string  { return a.s.answers.projectID }
+func (a repoProjectAccessor) Get() string  { return a.s.answers.ProjectID }
 func (a repoProjectAccessor) Set(v string) { a.s.setProject(v) }
 
 // repoNameAccessor keeps later pages' recaps in step with the name.
 type repoNameAccessor struct{ s *repoCreateState }
 
-func (a repoNameAccessor) Get() string { return a.s.answers.name }
+func (a repoNameAccessor) Get() string { return a.s.answers.Name }
 func (a repoNameAccessor) Set(v string) {
-	if v == a.s.answers.name {
+	if v == a.s.answers.Name {
 		return
 	}
-	a.s.answers.name = v
+	a.s.answers.Name = v
 	a.s.refreshPageTitles()
 }
 
@@ -693,14 +713,14 @@ func (a repoNameAccessor) Set(v string) {
 type repoVisibilityAccessor struct{ s *repoCreateState }
 
 func (a repoVisibilityAccessor) Get() coreapi.SetRepoVisibilityInputBodyVisibility {
-	return a.s.answers.visibility
+	return a.s.answers.Visibility
 }
 
 func (a repoVisibilityAccessor) Set(v coreapi.SetRepoVisibilityInputBodyVisibility) {
-	if v == a.s.answers.visibility {
+	if v == a.s.answers.Visibility {
 		return
 	}
-	a.s.answers.visibility = v
+	a.s.answers.Visibility = v
 	a.s.refreshPageTitles()
 }
 

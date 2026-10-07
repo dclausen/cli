@@ -17,6 +17,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
@@ -323,11 +324,21 @@ func answerRepoCreatePrompts(t *testing.T, answers ...string) *bytes.Buffer {
 //
 // Not parallel: swaps the package-level activeCoreClient seam.
 func TestRepoCreate_MissingInputsWithoutTerminal(t *testing.T) {
-	for _, args := range [][]string{nil, {"web"}, {"web", "--json"}} {
+	for _, tc := range []struct {
+		args    []string
+		missing string
+	}{
+		{nil, "a repository name and --project are required"},
+		{[]string{"web"}, "--project is required"},
+		{[]string{"web", "--json"}, "--project is required"},
+		{[]string{"--project", "acme"}, "a repository name is required"},
+	} {
 		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
 		f.serve()
-		_, _, err := execRepoCreateArgs(t, args...)
-		require.ErrorContains(t, err, "a repository name and --project are required without an interactive terminal: entire repo create <name> --project <project>", args)
+		_, _, err := execRepoCreateArgs(t, tc.args...)
+		require.ErrorIs(t, err, errRepoCreateNeedsInput, tc.args)
+		require.ErrorContains(t, err, tc.missing+" without an interactive terminal: entire repo create <name> --project <project>", "names what is missing: %v", tc.args)
+		require.ErrorContains(t, err, "'entire project list' shows project names")
 		require.NotContains(t, err.Error(), "ULID")
 		require.Zero(t, f.requestCount(), "refused before any request")
 	}
@@ -354,7 +365,7 @@ func TestRepoCreate_FlagsMeanTheFlagForm(t *testing.T) {
 		f.serve()
 		_, _, err := execRepoCreateArgs(t, args...)
 		require.ErrorIs(t, err, errRepoCreateFlagsNeedInput, args)
-		require.ErrorContains(t, err, "entire repo create <name> --project <project>")
+		require.ErrorContains(t, err, "required when create flags are given: entire repo create <name> --project <project> (or run 'entire repo create [<name>]' in a terminal, without flags, to be asked)")
 		require.Zero(t, f.requestCount(), "refused before any request: %v", args)
 	}
 }
@@ -525,10 +536,10 @@ func TestNewRepoCreateState_Defaults(t *testing.T) {
 	t.Parallel()
 	s, err := newRepoCreateState(wizardTestProjects(), "", "my-repo")
 	require.NoError(t, err)
-	require.Equal(t, "my-repo", s.answers.name, "the folder name is suggested when no name was given")
+	require.Equal(t, "my-repo", s.answers.Name, "the folder name is suggested when no name was given")
 	require.Equal(t, "Acme", s.project().name, "the first project is the starting one")
-	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPrivate, s.answers.visibility)
-	require.False(t, s.answers.advanced)
+	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPrivate, s.answers.Visibility)
+	require.False(t, s.answers.Advanced)
 
 	req := s.request()
 	require.Empty(t, req.objectFormat, "a declined advanced step leaves the format to the server")
@@ -540,10 +551,10 @@ func TestNewRepoCreateState_TakesOnlyTheName(t *testing.T) {
 	t.Parallel()
 	s, err := newRepoCreateState(wizardTestProjects(), "web", "my-repo")
 	require.NoError(t, err)
-	require.Equal(t, "web", s.answers.name, "the argument beats the folder name")
+	require.Equal(t, "web", s.answers.Name, "the argument beats the folder name")
 	require.Equal(t, "Acme", s.project().name)
-	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPrivate, s.answers.visibility)
-	require.False(t, s.answers.advanced)
+	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPrivate, s.answers.Visibility)
+	require.False(t, s.answers.Advanced)
 
 	_, err = newRepoCreateState(wizardTestProjects()[1:2], "", "")
 	require.ErrorContains(t, err, "no project you can create repositories in")
@@ -582,8 +593,8 @@ func TestRepoCreateState_SummaryNamesNoIDs(t *testing.T) {
 		"Object format  sha1 (server default)\n"+
 		"Command        entire repo create 'my web' --project Acme --visibility private", s.summary())
 
-	s.answers.advanced = true
-	s.answers.objectFormat = coreapi.CreateRepoInputBodyObjectFormatSHA256
+	s.answers.Advanced = true
+	s.answers.ObjectFormat = coreapi.CreateRepoInputBodyObjectFormatSHA256
 	require.Equal(t, "entire repo create 'my web' --project Acme --visibility private --object-format sha256", s.command())
 	require.NotContains(t, s.summary(), testCreateProjectAcme)
 }
@@ -622,16 +633,16 @@ func TestRepoCreateState_AccessibleNameKeepsTheSuggestion(t *testing.T) {
 	s, err := newRepoCreateState(wizardTestProjects(), "tools", "")
 	require.NoError(t, err)
 	require.NoError(t, s.accessibleName(huh.NewInput()).RunAccessible(io.Discard, strings.NewReader("\n")))
-	require.Equal(t, "tools", s.answers.name)
+	require.Equal(t, "tools", s.answers.Name)
 
 	// The kept value is still checked: a taken name is refused.
 	s.names = fixedNames(t, map[string][]string{testCreateProjectAcme: {"web"}})
-	s.answers.name = "web"
+	s.answers.Name = "web"
 	var out bytes.Buffer
 	require.NoError(t, s.accessibleName(huh.NewInput()).RunAccessible(&out, strings.NewReader("\nfresh\n")))
 	require.Contains(t, out.String(), `Repository name (press Enter for "web")`)
 	require.Contains(t, out.String(), `Acme already has a repository named "web"`)
-	require.Equal(t, "fresh", s.answers.name)
+	require.Equal(t, "fresh", s.answers.Name)
 }
 
 func TestRepoCreateState_DeclinedSummary(t *testing.T) {
@@ -713,13 +724,13 @@ func TestRepoCreateWizard_CreatesWhatTheSummaryShowed(t *testing.T) {
 	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), createdVisibility: "private"}
 	f.serve()
 	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
-		require.Equal(t, "web", s.answers.name, "the argument is the starting name")
+		require.Equal(t, "web", s.answers.Name, "the argument is the starting name")
 		require.Equal(t, "acme", s.project().name, "sorted first")
 		require.NotContains(t, s.summary(), "locked")
 		repoProjectAccessor{s: s}.Set(testCreateProjectBeta)
-		s.answers.visibility = coreapi.SetRepoVisibilityInputBodyVisibilityPublic
-		s.answers.advanced = true
-		s.answers.objectFormat = coreapi.CreateRepoInputBodyObjectFormatSHA256
+		s.answers.Visibility = coreapi.SetRepoVisibilityInputBodyVisibilityPublic
+		s.answers.Advanced = true
+		s.answers.ObjectFormat = coreapi.CreateRepoInputBodyObjectFormatSHA256
 		return true, nil
 	})
 	stdout, _, err := execRepoCreateArgs(t, "web")
@@ -757,12 +768,14 @@ func TestRepoCreateWizard_ConflictReopensTheWizard(t *testing.T) {
 		runs++
 		if runs == 2 {
 			require.Equal(t, `Creating "web" was refused: Conflict. Change the answer it concerns, or cancel.`, s.nameNote(), "the server's reason, not a guess")
+			require.Equal(t, s.nameNote(), s.refusalNote(), "the reopened wizard's first page says why")
 			repoProjectAccessor{s: s}.Set(testCreateProjectBeta)
 			require.Empty(t, s.nameNote(), "the note belongs to the project the create was refused in")
+			require.NotEmpty(t, s.refusalNote(), "the project page still says why it reopened")
 			repoProjectAccessor{s: s}.Set(testCreateProjectAcme)
 			require.NotEmpty(t, s.nameNote())
 			require.Error(t, s.validateName("web"), "the taken name is now refused on the page")
-			s.answers.name = "web2"
+			s.answers.Name = "web2"
 		}
 		return true, nil
 	})
@@ -934,7 +947,7 @@ func TestRepoCreate_NoTerminalRefusalWinsOverFlagForm(t *testing.T) {
 	f.serve()
 	_, _, err := execRepoCreateArgs(t, "--project", "acme")
 	require.ErrorIs(t, err, errRepoCreateNeedsInput)
-	require.NotContains(t, err.Error(), "to be prompted")
+	require.NotContains(t, err.Error(), "to be asked", "nothing can ask without a terminal")
 	require.Zero(t, f.requestCount())
 }
 
@@ -999,7 +1012,7 @@ func TestRepoCreateWizard_InvalidNameReopensTheWizard(t *testing.T) {
 		if runs == 2 {
 			require.Contains(t, s.nameNote(), `Creating "MyApp" was refused: Unprocessable Entity. Change the answer it concerns, or cancel.`)
 			require.NoError(t, s.validateName("MyApp"), "an invalid name is not a taken one: the server judges again")
-			s.answers.name = "myapp"
+			s.answers.Name = "myapp"
 		}
 		return true, nil
 	})
@@ -1073,4 +1086,91 @@ func TestRepoCreate_NoNextStepsWithoutARef(t *testing.T) {
 	stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
 	require.NoError(t, err)
 	require.NotContains(t, stdout, "Next steps")
+}
+
+// The summary follows a revisited answer. Driving the paged form itself:
+// through to the summary, Shift+Tab back to the visibility page, a different
+// choice, forward again — the summary must show what will be created. It used
+// to keep its first render, because huh re-renders a DescriptionFunc only when
+// its binding's hash changes and the answers' fields were unexported.
+func TestRepoCreateWizard_SummaryFollowsARevisit(t *testing.T) {
+	t.Parallel()
+	s, err := newRepoCreateState(wizardTestProjects(), "web", "")
+	require.NoError(t, err)
+	s.confirmed = true
+	form := huh.NewForm(s.projectGroup(false), s.nameGroup(true), s.visibilityGroup(true),
+		s.advancedGroup(true), s.formatGroup(true), s.summaryGroup(true))
+
+	var model huh.Model = form
+	// run executes a command as the program loop would, except that one not
+	// answering at once (a cursor-blink timer) is dropped: timers re-arm
+	// forever and nothing here depends on them.
+	run := func(cmd tea.Cmd) tea.Msg {
+		out := make(chan tea.Msg, 1)
+		go func() { out <- cmd() }()
+		select {
+		case msg := <-out:
+			return msg
+		case <-time.After(20 * time.Millisecond):
+			return nil
+		}
+	}
+	send := func(msgs ...tea.Msg) {
+		for _, msg := range msgs {
+			var cmd tea.Cmd
+			model, cmd = model.Update(msg)
+			// Run the commands the form asks for (focus moves, page changes)
+			// until none is left.
+			for steps, queue := 0, []tea.Cmd{cmd}; len(queue) > 0 && steps < 200; steps++ {
+				next := queue[0]
+				queue = queue[1:]
+				if next == nil {
+					continue
+				}
+				switch m := run(next).(type) {
+				case tea.BatchMsg:
+					queue = append(queue, m...)
+				case nil:
+				default:
+					var more tea.Cmd
+					model, more = model.Update(m)
+					queue = append(queue, more)
+				}
+			}
+		}
+	}
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	send(tea.WindowSizeMsg{Width: 120, Height: 40}, run(form.Init()))
+	send(enter, enter, enter, enter) // project, name, visibility (private), advanced (no)
+	require.Contains(t, ansi.Strip(form.View()), "--visibility private", "on the summary")
+
+	send(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}) // back past the hidden format page
+	send(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}) // to visibility
+	send(tea.KeyPressMsg{Code: tea.KeyDown}, enter, enter)     // public, then advanced (no)
+	require.Equal(t, coreapi.SetRepoVisibilityInputBodyVisibilityPublic, s.request().visibility)
+	view := ansi.Strip(form.View())
+	require.Contains(t, view, "--visibility public", "the summary shows what will be created")
+	require.NotContains(t, view, "--visibility private")
+}
+
+// A failed visibility write is explained after the success report, so the last
+// thing on screen is the problem the nonzero exit is about.
+//
+// Not parallel: swaps the package-level activeCoreClient seam.
+func TestRepoCreate_VisibilityFailureComesLast(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), failVisibility: true}
+	f.serve()
+	parent := &cobra.Command{Use: "repo", SilenceErrors: true}
+	addControlPlaneFlags(parent)
+	parent.AddCommand(newRepoCreateCmd())
+	var screen bytes.Buffer // stdout and stderr as a terminal interleaves them
+	parent.SetOut(&screen)
+	parent.SetErr(&screen)
+	parent.SetArgs([]string{"create", "web", "--project", "acme", "--visibility", "public"})
+	require.Error(t, parent.ExecuteContext(t.Context()))
+	out := screen.String()
+	created := strings.Index(out, "✓ Created repository")
+	failed := strings.Index(out, "setting its visibility to public failed")
+	require.GreaterOrEqual(t, created, 0)
+	require.Greater(t, failed, created, "the failure is the last word:\n%s", out)
 }

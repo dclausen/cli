@@ -60,15 +60,32 @@ func refuseGitSuffixRepoName(name string) error {
 }
 
 // errRepoCreateNeedsInput refuses a run that cannot be prompted and was not
-// given everything a create needs, naming the flag form instead.
-var errRepoCreateNeedsInput = errors.New("a repository name and --project are required without an interactive terminal: " +
-	"entire repo create <name> --project <project>")
+// given everything a create needs, naming the flag form instead. It is the
+// tail of the message repoCreateMissingInput builds.
+var errRepoCreateNeedsInput = errors.New("required without an interactive terminal: " +
+	"entire repo create <name> --project <project> ('entire project list' shows project names)")
 
 // errRepoCreateFlagsNeedInput refuses a create flag given with an input
 // missing. The wizard takes only the positional name, so a flag would be
-// silently dropped; flags mean the flag form.
-var errRepoCreateFlagsNeedInput = errors.New("a repository name and --project are required when create flags are given: " +
-	"entire repo create <name> --project <project>; run `entire repo create [<name>]` without flags to be prompted")
+// silently dropped; flags mean the flag form. Worded as `project create`
+// words its own.
+var errRepoCreateFlagsNeedInput = errors.New("required when create flags are given: " +
+	"entire repo create <name> --project <project> (or run 'entire repo create [<name>]' in a terminal, without flags, to be asked)")
+
+// repoCreateMissingInput names what is missing ahead of the refusal reason,
+// so `--project acme` alone is not told that --project is required.
+func repoCreateMissingInput(name, projectRef string, reason error) error {
+	var missing string
+	switch {
+	case name == "" && projectRef == "":
+		missing = "a repository name and --project are"
+	case name == "":
+		missing = "a repository name is"
+	default:
+		missing = "--project is"
+	}
+	return fmt.Errorf("%s %w", missing, reason)
+}
 
 // The flags that describe the repo itself. Readiness and output flags
 // (--no-wait, --wait-timeout, --json) apply to the wizard too.
@@ -153,24 +170,31 @@ func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client
 		visCtx, cancel = context.WithTimeout(cmd.Context(), repoVisibilityGrace)
 		defer cancel()
 	}
+	// The visibility is applied before the report, so the report (and
+	// --json) shows what now holds, but explained after it: the last thing on
+	// screen must be the problem the nonzero exit is about, not a success
+	// line.
 	var visErr error
+	visSkipped := false
 	switch {
 	case waitErr != nil && !errors.Is(waitErr, context.DeadlineExceeded) && req.visibility != "":
 		// Provisioning failed, readiness could not be read, or the command
 		// was interrupted: setting visibility now would pile a second error
 		// onto a repo that may never become usable. Say how to finish once it
 		// is active instead.
-		fmt.Fprintf(cmd.ErrOrStderr(), "Visibility was not set. Once the repository is active, set it with: entire repo edit %s --visibility %s\n",
-			shellArg(cmp.Or(ref, created.ID)), req.visibility)
+		visSkipped = true
 	default:
 		visErr = applyRepoVisibility(visCtx, c, created, req.visibility)
 	}
+	reportErr := reportRepoCreation(cmd, created, ref, opts.noWait, waitErr)
+	finish := shellArg(cmp.Or(ref, created.ID))
+	if visSkipped {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Visibility was not set. Once the repository is active, set it with: entire repo edit %s --visibility %s\n",
+			finish, req.visibility)
+	}
 	if visErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "The repository was created, but setting its visibility to %s failed: %v\nSet it with: entire repo edit %s --visibility %s\n",
-			req.visibility, renderCoreError(visErr), shellArg(cmp.Or(ref, created.ID)), req.visibility)
-	}
-	reportErr := reportRepoCreation(cmd, created, ref, opts.noWait, waitErr)
-	if visErr != nil {
+			req.visibility, renderCoreError(visErr), finish, req.visibility)
 		return NewSilentError(errors.Join(visErr, reportErr))
 	}
 	if reportErr == nil && !jsonRequested(cmd) {
