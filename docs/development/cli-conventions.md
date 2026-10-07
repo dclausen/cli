@@ -282,10 +282,15 @@ the commands are always runnable in every build.
   create reopens the wizard on the same answers. Client-side name validation
   stays minimal — the server owns the rules (COR-1891). The create endpoint
   takes no visibility, so `--visibility` (and the wizard's answer, default
-  private) is a second call after the create, skipped when the create already
-  reports it; its failure keeps the repo and prints the `repo edit` that
-  finishes the job. Output names the repo by `<project>/<repo>`; the ID is
-  shown only when no path is known, and in the support line. Recovery
+  private) is a second call after the create, once the repo is ready,
+  skipped when the create already reports it; its failure keeps the repo and
+  prints the `repo edit` that finishes the job. Whether the server takes a
+  visibility change mid-provisioning is unconfirmed, so `--no-wait` is refused
+  with `--visibility`, and with the wizard, which always sets one. Output
+  names the repo by `<project>/<repo>`: from the server's full name or `/et/`
+  path, else the resolved project name, else (a ULID `--project` with neither)
+  one project lookup, made only then and only when the output would use it.
+  The ID is shown only when none of those names it, and in the support line. Recovery
   `repo view` lines name the repo's path and are dropped when there is none,
   since that verb takes no ULID.
   `protection` (`list`, `add [--server-side-merge-only]`, `remove`) edits a

@@ -48,6 +48,9 @@ type fakeRepoCreateCore struct {
 	conflicts int
 	// withPath adds the server's /et/<project>/<repo> path to the created repo.
 	withPath bool
+	// lookupFails makes GET /projects/{id} fail; projectGets counts those reads.
+	lookupFails bool
+	projectGets int
 	// invalids is how many creates are refused with a 422 (after any
 	// conflicts) before one succeeds.
 	invalids int
@@ -168,6 +171,13 @@ func (f *fakeRepoCreateCore) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(http.StatusOK, map[string]any{"repos": repos})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/projects/"):
+		f.mu.Lock()
+		f.projectGets++
+		f.mu.Unlock()
+		if f.lookupFails {
+			problem(http.StatusInternalServerError)
+			return
+		}
 		p, ok := f.project(strings.TrimPrefix(path, "/projects/"))
 		if !ok {
 			problem(http.StatusNotFound)
@@ -1076,16 +1086,82 @@ func TestRepoCreate_ProjectFlagSaysRequired(t *testing.T) {
 	require.Contains(t, usage, "(required; omit every flag in a terminal to be asked instead)")
 }
 
-// Without a full name, path or project name there is nothing to name the repo
-// by, so no next steps are printed rather than ones that cannot work.
+// When nothing names the new repo — a project given as a ULID, and no full
+// name or /et/ path in the response — one project lookup names it for the
+// output. It is skipped when the output would not use it, and a failed lookup
+// falls back to the ID rather than failing a create that succeeded.
 //
 // Not parallel: swaps the package-level activeCoreClient seam.
-func TestRepoCreate_NoNextStepsWithoutARef(t *testing.T) {
-	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true}
+func TestRepoCreate_NamesTheProjectOnlyWhenNothingElseDoes(t *testing.T) {
+	t.Run("one lookup names it", func(t *testing.T) {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true}
+		f.serve()
+		stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
+		require.NoError(t, err)
+		require.Contains(t, stdout, "✓ Created repository acme/web")
+		require.Contains(t, stdout, "entire repo clone /et/acme/web")
+		require.Equal(t, 1, f.projectGets)
+	})
+
+	t.Run("no lookup when the server names it", func(t *testing.T) {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+		f.serve()
+		_, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
+		require.NoError(t, err)
+		require.Zero(t, f.projectGets)
+	})
+
+	t.Run("no lookup when --json on a ready repo would not use it", func(t *testing.T) {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true}
+		f.serve()
+		_, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme, "--json")
+		require.NoError(t, err)
+		require.Zero(t, f.projectGets)
+	})
+
+	t.Run("a failed lookup falls back to the ID", func(t *testing.T) {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), omitFullName: true, lookupFails: true}
+		f.serve()
+		stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
+		require.NoError(t, err, "the create succeeded")
+		require.Contains(t, stdout, "✓ Created repository web ("+testCreatedRepoID+")")
+		require.NotContains(t, stdout, "Next steps")
+	})
+}
+
+// --visibility needs a ready repository, which --no-wait does not wait for,
+// so the combination is refused before any request — and so is --no-wait for
+// the wizard, which always sets a visibility.
+//
+// Not parallel: sets env vars and swaps package-level seams.
+func TestRepoCreate_NoWaitRefusesAVisibility(t *testing.T) {
+	t.Setenv(interactive.EnvTestTTY, "1")
+	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
+		t.Error("the wizard must not open with --no-wait")
+		return false, nil
+	})
+	for _, tc := range []struct {
+		args []string
+		want error
+	}{
+		{[]string{"web", "--project", "acme", "--no-wait", "--visibility", "public"}, errRepoCreateNoWaitVisibility},
+		{[]string{"web", "--project", "acme", "--no-wait", "--visibility", "private"}, errRepoCreateNoWaitVisibility},
+		{[]string{"web", "--no-wait"}, errRepoCreateWizardNoWait},
+		{[]string{"--no-wait"}, errRepoCreateWizardNoWait},
+	} {
+		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
+		f.serve()
+		_, _, err := execRepoCreateArgs(t, tc.args...)
+		require.ErrorIs(t, err, tc.want, tc.args)
+		require.Zero(t, f.requestCount(), "refused before any request: %v", tc.args)
+	}
+
+	// --no-wait alone keeps the flag form.
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
 	f.serve()
-	stdout, _, err := execRepoCreateArgs(t, "web", "--project", testCreateProjectAcme)
+	_, _, err := execRepoCreateArgs(t, "web", "--project", "acme", "--no-wait")
 	require.NoError(t, err)
-	require.NotContains(t, stdout, "Next steps")
+	require.Len(t, f.createBodies, 1)
 }
 
 // The summary follows a revisited answer. Driving the paged form itself:

@@ -562,6 +562,12 @@ func TestRepoCreateReadinessFlags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var creates atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/"+testProjectULID {
+					// The one lookup made when nothing else names the new repo.
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprintf(w, `{"id":%q,"name":"acme","ownerType":"org","ownerId":"o","region":"us","createdAt":"2026-01-01T00:00:00Z","capabilities":{"canCreateRepository":true,"canDelete":false,"canManageAccess":false,"canManageTrails":false}}`, testProjectULID)
+					return
+				}
 				if r.Method != http.MethodPost {
 					t.Errorf("unexpected %s", r.Method)
 				}

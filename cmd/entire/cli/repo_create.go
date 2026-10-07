@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/entireio/cli/cmd/entire/cli/gitremote"
+	"github.com/entireio/cli/cmd/entire/cli/logging"
 	"github.com/entireio/cli/internal/coreapi"
 )
 
@@ -71,6 +72,17 @@ var errRepoCreateNeedsInput = errors.New("required without an interactive termin
 // words its own.
 var errRepoCreateFlagsNeedInput = errors.New("required when create flags are given: " +
 	"entire repo create <name> --project <project> (or run 'entire repo create [<name>]' in a terminal, without flags, to be asked)")
+
+// errRepoCreateNoWaitVisibility refuses --visibility with --no-wait: the
+// visibility is set on a ready repository, which --no-wait does not wait
+// for.
+var errRepoCreateNoWaitVisibility = errors.New("--visibility cannot be combined with --no-wait: the visibility is set once the repository is ready. " +
+	"Drop --no-wait, or create with --no-wait and set it later with 'entire repo edit <repo> --visibility <public|private>'")
+
+// errRepoCreateWizardNoWait refuses --no-wait for the wizard, which always
+// sets a visibility.
+var errRepoCreateWizardNoWait = errors.New("--no-wait cannot be used with the wizard, which always sets a visibility once the repository is ready. " +
+	"Drop --no-wait, or use the flag form: entire repo create <name> --project <project> --no-wait")
 
 // repoCreateMissingInput names what is missing ahead of the refusal reason,
 // so `--project acme` alone is not told that --project is required.
@@ -145,8 +157,8 @@ func isRepoCreateRefusal(err error) bool {
 // every failure from here on is reported with the repository preserved rather
 // than as a failed create — creating again is never the recovery.
 //
-// Visibility is set after the wait so it lands on a provisioned repo; with
-// --no-wait it is set straight away.
+// Visibility is set after the wait so it lands on a provisioned repo; it is
+// never asked for with --no-wait (see errRepoCreateNoWaitVisibility).
 func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client, req repoCreateRequest, created *coreapi.Repo, opts repoCreateOptions) error {
 	var waitErr error
 	if !opts.noWait {
@@ -158,17 +170,29 @@ func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client
 			finish(waitErr == nil)
 		}
 	}
-	ref := repoCreateRef(created, req.projectName)
-	// A wait that ran out --wait-timeout leaves ctx expired, and the
-	// visibility asked for is still owed on a repo that exists: give it its
-	// own short budget. Only the deadline earns that — an interrupted command
-	// (Ctrl+C) stays interrupted, since the budget derives from the command's
-	// own context.
+	// A wait that ran out --wait-timeout leaves ctx expired, and what is
+	// still owed on a repo that exists (its name for the output, the
+	// visibility asked for) gets its own short budget. Only the deadline earns
+	// that — an interrupted command (Ctrl+C) stays interrupted, since the
+	// budget derives from the command's own context.
 	visCtx := ctx
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		var cancel context.CancelFunc
 		visCtx, cancel = context.WithTimeout(cmd.Context(), repoVisibilityGrace)
 		defer cancel()
+	}
+	ref := repoCreateRef(created, req.projectName)
+	// --json on a confirmed repo prints only the wire object, which names
+	// nothing the lookup would add; every other outcome prints the repo's
+	// name or a command that needs it.
+	outputNamesRepo := !jsonRequested(cmd) || waitErr != nil || opts.noWait
+	if ref == "" && req.projectName == "" && outputNamesRepo {
+		// Nothing names the repo: the project was given as a ULID and the
+		// server returned neither a full name nor an /et/ path. One lookup
+		// names the project, only in this case, so the common path costs no
+		// extra request.
+		req.projectName = lookupRepoCreateProjectName(visCtx, c, req.projectID)
+		ref = repoCreateRef(created, req.projectName)
 	}
 	// The visibility is applied before the report, so the report (and
 	// --json) shows what now holds, but explained after it: the last thing on
@@ -201,6 +225,21 @@ func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client
 		printRepoCreateNextSteps(cmd.OutOrStdout(), ref)
 	}
 	return reportErr
+}
+
+// lookupRepoCreateProjectName is the project's name for the output, or ""
+// when it cannot be had: the output then falls back to the repo ID rather than
+// failing a create that succeeded.
+func lookupRepoCreateProjectName(ctx context.Context, c *coreapi.Client, projectID string) string {
+	if projectID == "" || ctx.Err() != nil {
+		return ""
+	}
+	p, err := c.GetProject(ctx, coreapi.GetProjectParams{ProjectId: projectID})
+	if err != nil {
+		logging.Debug(ctx, "repo create: could not name the project for the output", "error", err.Error())
+		return ""
+	}
+	return p.Name
 }
 
 // applyRepoVisibility sets the requested visibility on a freshly created repo.
