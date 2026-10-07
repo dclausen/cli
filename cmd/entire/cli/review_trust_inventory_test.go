@@ -438,11 +438,58 @@ func TestTrustInventory_MCPCredentialsAreNotShown(t *testing.T) {
 	for name, want := range map[string]string{
 		"flag":     "npx mcp-a --token " + trustHiddenValue + " --api-key=" + trustHiddenValue + " --verbose",
 		"query":    "https://mcp.example/sse?api_key=hidden&region=us",
-		"userinfo": "https://bot:hidden@mcp.example/sse",
+		"userinfo": "https://bot@mcp.example/sse",
 		"search":   "npx search-mcp --auth " + trustHiddenValue,
 	} {
 		if got[name] != want {
 			t.Errorf("entry %q = %q, want %q", name, got[name], want)
 		}
+	}
+}
+
+// Secrets whose surrounding names say nothing (a positional argument, a hook
+// command, an innocuous key) are caught by content, and only the secret span is
+// replaced so the command stays readable; an env var called FOO is hidden
+// because every env value is. Fixtures are assembled at runtime so secret
+// scanners do not flag this file.
+func TestTrustInventory_UnnamedSecretsAreRedactedByContent(t *testing.T) {
+	t.Parallel()
+	githubToken := "ghp_" + "a1b2c1d2e1f2g1h2a1b2c1d2e1f2g1h2a1b2"
+	anthropicKey := "sk-ant-" + "api03-xK9mZ2vL8nQ5rT1wY4bC7dF0gH3jE6pA"
+	awsKey := "AKIAYRWQG5" + "EJLPZLBYNP"
+	opaqueToken := "Zx8" + "qL2vN7pR4tY9wB3mK6hJ1fD5sG0aC8e"
+	secrets := []string{githubToken, anthropicKey, awsKey, opaqueToken}
+
+	hookCommand := `curl -H "Authorization: Bearer ` + anthropicKey + `" https://hooks.example/notify`
+	settings, err := json.Marshal(map[string]any{
+		"hooks": map[string]any{"Stop": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": hookCommand}}}}},
+		"env":   map[string]string{"FOO": awsKey},
+		"model": "opus",
+		"theme": opaqueToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := newTrustInventoryRepo(t, map[string]string{
+		".claude/settings.json": string(settings),
+		".mcp.json":             `{"mcpServers":{"gh":{"command":"docker","args":["run","` + githubToken + `"]}}}`,
+		".codex/config.toml":    "notify = [\"notify-send\", \"" + githubToken + "\"]\n",
+		".pi/settings.json":     `{"packages":["npm:tool@` + opaqueToken + `"]}`,
+	})
+	inv := trustInventoryBoth(t, dir, "claude-code", "codex", "pi")
+	got := map[string]string{}
+	for _, e := range inv.Entries {
+		got[e.Kind+" "+e.Name] = e.Command
+		for _, secret := range secrets {
+			if strings.Contains(e.Command, secret) || strings.Contains(e.Name, secret) {
+				t.Errorf("%s entry %q from %s shows a secret: %q", e.Kind, e.Name, e.Source, e.Command)
+			}
+		}
+	}
+	if want := `curl -H "Authorization: Bearer REDACTED" https://hooks.example/notify`; got["hook Stop"] != want {
+		t.Errorf("hook Stop = %q, want %q", got["hook Stop"], want)
+	}
+	if want := "docker run REDACTED"; got["mcp gh"] != want {
+		t.Errorf("mcp gh = %q, want %q", got["mcp gh"], want)
 	}
 }

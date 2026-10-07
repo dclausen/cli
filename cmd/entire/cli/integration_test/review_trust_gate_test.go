@@ -165,7 +165,9 @@ func TestReviewTrustGate_ShowConfigListsBranchHook(t *testing.T) {
 	}
 	found := false
 	for _, e := range cfg.Entries {
-		if e.Kind == "hook" && strings.Contains(e.Command, r.hookMarker) && !e.Entire {
+		// Matched on the file name: content redaction may replace a
+		// high-entropy segment of the temp directory above it.
+		if e.Kind == "hook" && strings.Contains(e.Command, filepath.Base(r.hookMarker)) && !e.Entire {
 			found = true
 		}
 	}

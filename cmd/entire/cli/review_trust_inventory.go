@@ -27,6 +27,7 @@ import (
 	"github.com/entireio/cli/cmd/entire/cli/gitexec"
 	cliReview "github.com/entireio/cli/cmd/entire/cli/review"
 	"github.com/entireio/cli/cmd/entire/cli/worktreedir"
+	"github.com/entireio/cli/redact"
 )
 
 // trustPathKind classifies a repo-relative path in the inspected checkout.
@@ -112,6 +113,14 @@ func buildTrustInventory(files trustFiles, agents []string) (cliReview.TrustInve
 		}
 		if err != nil {
 			return cliReview.TrustInventory{}, err
+		}
+		// Name-based hiding misses secrets in positional arguments, hook
+		// commands, and innocuously named keys, so everything displayed also
+		// goes through content-based redaction, which replaces only the
+		// secret span.
+		for i := range entries {
+			entries[i].Name = redact.String(entries[i].Name)
+			entries[i].Command = redact.String(entries[i].Command)
 		}
 		inv.Entries = append(inv.Entries, entries...)
 	}
@@ -834,7 +843,8 @@ func hideTrustSecretArgs(args []string) []string {
 	return out
 }
 
-// hideTrustURLSecrets hides a URL's password and credential query parameters.
+// hideTrustURLSecrets drops a URL's password and hides credential query
+// parameters.
 // A URL that will not parse is hidden whole rather than guessed at.
 func hideTrustURLSecrets(raw string) string {
 	const hidden = "hidden" // URL-safe, unlike trustHiddenValue
@@ -844,7 +854,9 @@ func hideTrustURLSecrets(raw string) string {
 	}
 	changed := false
 	if _, hasPassword := u.User.Password(); hasPassword {
-		u.User = url.UserPassword(u.User.Username(), hidden)
+		// Dropped, not replaced: content redaction would hide a whole URL that
+		// still carries any password.
+		u.User = url.User(u.User.Username())
 		changed = true
 	}
 	query := u.Query()
