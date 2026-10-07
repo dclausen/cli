@@ -668,14 +668,14 @@ func formatCommitDate(dateStr string) string {
 }
 
 func formatCommitDateAt(dateStr string, now time.Time, loc *time.Location) string {
-	t, err := time.ParseInLocation("2006-01-02", dateStr, loc)
+	t, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
 		return dateStr
 	}
 	now = now.In(loc)
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-
-	// Local calendar days can span 23 or 25 hours across DST transitions.
+	// Represent calendar dates in UTC: local days can span 23 or 25 hours,
+	// and DST can even skip local midnight.
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	switch {
 	case t.Equal(today):
 		return t.Format("Monday 2 Jan") + " (today)"

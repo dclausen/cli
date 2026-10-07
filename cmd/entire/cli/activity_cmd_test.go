@@ -325,6 +325,47 @@ func TestFormatCommitDate_DST(t *testing.T) {
 	}
 }
 
+func TestFormatCommitDate_MidnightDST(t *testing.T) {
+	t.Parallel()
+	havana, err := time.LoadLocation("America/Havana")
+	if err != nil {
+		t.Fatalf("load Havana timezone: %v", err)
+	}
+	tests := []struct {
+		name  string
+		now   time.Time
+		input string
+		want  string
+	}{
+		{
+			name:  "today when midnight is skipped",
+			now:   time.Date(2026, time.March, 8, 12, 0, 0, 0, havana),
+			input: "2026-03-08",
+			want:  "Sunday 8 Mar (today)",
+		},
+		{
+			name:  "yesterday when today's midnight is skipped",
+			now:   time.Date(2026, time.March, 8, 12, 0, 0, 0, havana),
+			input: "2026-03-07",
+			want:  "Saturday 7 Mar (yesterday)",
+		},
+		{
+			name:  "yesterday when its midnight was skipped",
+			now:   time.Date(2026, time.March, 9, 12, 0, 0, 0, havana),
+			input: "2026-03-08",
+			want:  "Sunday 8 Mar (yesterday)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatCommitDateAt(tt.input, tt.now, havana); got != tt.want {
+				t.Errorf("formatCommitDateAt(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectTimezone_HonoursTZEnv(t *testing.T) {
 	t.Setenv("TZ", "Europe/Berlin")
 	if got := detectTimezone(); got != "Europe/Berlin" {
