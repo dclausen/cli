@@ -758,16 +758,20 @@ func TestProjectCreateWizard_SummaryFollowsARevisit(t *testing.T) {
 	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
 
 	var model huh.Model = form
-	// run executes a command as the program loop would, except that one not
-	// answering at once (a cursor-blink timer) is dropped: timers re-arm
-	// forever and nothing here depends on them.
+	// run executes a command as the program loop would, except that the
+	// cursor-blink timer is dropped: it re-arms forever and nothing here
+	// depends on it. The cap sits between the spinner's tick (100ms, which
+	// stops re-arming once the region options load) and the blink (530ms),
+	// leaving real commands, which answer at once, ample room on a loaded CI
+	// runner; at 20ms the region options load was dropped there.
+	const blinkCutoff = 250 * time.Millisecond
 	run := func(cmd tea.Cmd) tea.Msg {
 		out := make(chan tea.Msg, 1)
 		go func() { out <- cmd() }()
 		select {
 		case msg := <-out:
 			return msg
-		case <-time.After(20 * time.Millisecond):
+		case <-time.After(blinkCutoff):
 			return nil
 		}
 	}
