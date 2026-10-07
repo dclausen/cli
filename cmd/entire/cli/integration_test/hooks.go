@@ -109,6 +109,21 @@ func (r *HookRunner) SimulateStop(sessionID, transcriptPath string) error {
 	return r.runHookWithInput("stop", input)
 }
 
+// SimulateStopFailure simulates Claude Code's StopFailure hook, which fires
+// instead of Stop when a turn ends on an API error.
+func (r *HookRunner) SimulateStopFailure(sessionID, transcriptPath, errorType string) error {
+	r.T.Helper()
+
+	input := map[string]string{
+		"session_id":      sessionID,
+		"transcript_path": transcriptPath,
+		"hook_event_name": "StopFailure",
+		"error":           errorType,
+	}
+
+	return r.runHookWithInput("stop-failure", input)
+}
+
 // SimulateSessionEnd simulates the Claude Code session-end hook.
 // This transitions a session from IDLE (or ACTIVE) to ENDED phase.
 func (r *HookRunner) SimulateSessionEnd(sessionID string) error {
@@ -435,6 +450,13 @@ func (env *TestEnv) SimulateStop(sessionID, transcriptPath string) error {
 	env.T.Helper()
 	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
 	return runner.SimulateStop(sessionID, transcriptPath)
+}
+
+// SimulateStopFailure is a convenience method on TestEnv.
+func (env *TestEnv) SimulateStopFailure(sessionID, transcriptPath, errorType string) error {
+	env.T.Helper()
+	runner := NewHookRunner(env.RepoDir, env.ClaudeProjectDir, env.T)
+	return runner.SimulateStopFailure(sessionID, transcriptPath, errorType)
 }
 
 // SimulateSessionEnd is a convenience method on TestEnv.

@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,24 @@ func TestParseHookEvent_TurnEnd(t *testing.T) {
 	if event.SessionID != "sess-789" {
 		t.Errorf("expected session_id 'sess-789', got %q", event.SessionID)
 	}
+}
+
+// TestParseHookEvent_StopFailure_EndsTurn verifies that a turn ending on an
+// API error ends the turn like Stop, so the session leaves ACTIVE instead of
+// waiting for the next prompt.
+func TestParseHookEvent_StopFailure_EndsTurn(t *testing.T) {
+	t.Parallel()
+
+	ag := &ClaudeCodeAgent{}
+	input := `{"session_id": "sess-fail", "transcript_path": "/tmp/fail.jsonl", "hook_event_name": "StopFailure", "error": "rate_limit"}`
+
+	event, err := ag.ParseHookEvent(context.Background(), HookNameStopFailure, strings.NewReader(input))
+
+	require.NoError(t, err)
+	require.NotNil(t, event)
+	require.Equal(t, agent.TurnEnd, event.Type)
+	require.Equal(t, "sess-fail", event.SessionID)
+	require.Equal(t, "/tmp/fail.jsonl", event.SessionRef)
 }
 
 func TestParseHookEvent_TurnEnd_IncludesModel(t *testing.T) {
@@ -505,6 +524,11 @@ func TestParseHookEvent_AllHookTypes(t *testing.T) {
 			inputTemplate: `{"session_id": "s3", "transcript_path": "/t"}`,
 		},
 		{
+			hookName:      HookNameStopFailure,
+			expectedType:  agent.TurnEnd,
+			inputTemplate: `{"session_id": "s3f", "transcript_path": "/t"}`,
+		},
+		{
 			hookName:      HookNameSessionEnd,
 			expectedType:  agent.SessionEnd,
 			inputTemplate: `{"session_id": "s4", "transcript_path": "/t"}`,
@@ -653,6 +677,26 @@ func TestWaitForTranscriptFlush_StaleFile_SkipsWait(t *testing.T) {
 
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("expected fast return for stale transcript, but took %v", elapsed)
+	}
+}
+
+// TestCheckStopSentinel_MatchesBothTurnEndHooks pins that the flush sentinel
+// recognizes the StopFailure hook as well as Stop. Tightening the match to the
+// exact stop command would make API-error turns fall back to the slower
+// size-stability wait.
+func TestCheckStopSentinel_MatchesBothTurnEndHooks(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	for _, verb := range []string{HookNameStop, HookNameStopFailure} {
+		t.Run(verb, func(t *testing.T) {
+			t.Parallel()
+			transcriptFile := filepath.Join(t.TempDir(), "transcript.jsonl")
+			line := fmt.Sprintf(`{"type":"progress","data":{"type":"hook_progress","command":"entire hooks claude-code %s"},"timestamp":%q}`,
+				verb, now.UTC().Format(time.RFC3339Nano))
+			require.NoError(t, os.WriteFile(transcriptFile, []byte(line+"\n"), 0o600))
+			require.True(t, checkStopSentinel(transcriptFile, 4096, now, 2*time.Second))
+		})
 	}
 }
 
