@@ -48,8 +48,10 @@ func newProjectCreateCmd() *cobra.Command {
 			"--region (optionally with a name), a wizard asks for the owner, name " +
 			"and region; those flags always mean the flag form, so one given with " +
 			"a missing name or --owner is an error.\n\n" +
-			"Project names are 3-32 letters, digits or hyphens, starting and ending " +
-			"with a letter or digit, and unique across all owners.",
+			"Project names are 3-32 lowercase letters, digits or hyphens, starting " +
+			"and ending with a letter or digit, can't look like an id, and are " +
+			"unique across all owners. The wizard lowercases a typed name and " +
+			"says so; the flag form refuses one with uppercase.",
 		Example: "  # Project under an org (by name)\n" +
 			"  entire project create widgets --owner acme --owner-type org\n\n" +
 			"  # Project owned by an account (by handle)\n" +
@@ -113,10 +115,12 @@ func projectCreateMissingErr(in projectCreateInput) error {
 // the command has always sent. An omitted --region stays omitted so the server
 // picks its home jurisdiction.
 func createProjectDirect(cmd *cobra.Command, in projectCreateInput, ot coreapi.CreateProjectInputBodyOwnerType) error {
-	// The wizard's Name-page rule, checked before any request so scripts and
-	// agents learn it from the command rather than from a server 400.
-	if !nativeProjectRe.MatchString(in.name) {
-		return fmt.Errorf("invalid project name %q: %s", in.name, projectNameRule)
+	// The server's name rule, checked before any request so scripts and
+	// agents learn it from the command rather than from a server 400. Unlike
+	// the wizard, the flag form does not lowercase: it creates exactly the
+	// name it was given, or refuses.
+	if err := checkProjectName(in.name); err != nil {
+		return fmt.Errorf("invalid project name %q: %w", in.name, err)
 	}
 	return runCore(cmd, func(ctx context.Context, c *coreapi.Client) error {
 		// Orgs are addressed by name, accounts by github:handle; both
