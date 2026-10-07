@@ -302,6 +302,9 @@ func execRepoCreateArgs(t *testing.T, args ...string) (stdout, stderr string, er
 // if a prompt goes unanswered or an answer goes unused.
 func answerRepoCreatePrompts(t *testing.T, answers ...string) *bytes.Buffer {
 	t.Helper()
+	// The wizard suggests the current folder's name, which runs git: keep it
+	// off the developer's checkout.
+	t.Chdir(t.TempDir())
 	t.Setenv("ACCESSIBLE", "1")
 	t.Setenv(interactive.EnvTestTTY, "1")
 	var terminal bytes.Buffer
@@ -704,6 +707,9 @@ func TestRepoNameIndex_LoadsEachProjectOnce(t *testing.T) {
 
 func stubRepoCreatePrompt(t *testing.T, fn func(*cobra.Command, *repoCreateState) (bool, error)) {
 	t.Helper()
+	// The wizard suggests the current folder's name, which runs git: keep it
+	// off the developer's checkout.
+	t.Chdir(t.TempDir())
 	prev := repoCreatePrompt
 	repoCreatePrompt = fn
 	t.Cleanup(func() { repoCreatePrompt = prev })
@@ -1131,41 +1137,6 @@ func TestRepoCreate_NamesTheProjectOnlyWhenNothingElseDoes(t *testing.T) {
 	})
 }
 
-// --visibility needs a ready repository, which --no-wait does not wait for,
-// so the combination is refused before any request — and so is --no-wait for
-// the wizard, which always sets a visibility.
-//
-// Not parallel: sets env vars and swaps package-level seams.
-func TestRepoCreate_NoWaitRefusesAVisibility(t *testing.T) {
-	t.Setenv(interactive.EnvTestTTY, "1")
-	stubRepoCreatePrompt(t, func(*cobra.Command, *repoCreateState) (bool, error) {
-		t.Error("the wizard must not open with --no-wait")
-		return false, nil
-	})
-	for _, tc := range []struct {
-		args []string
-		want error
-	}{
-		{[]string{"web", "--project", "acme", "--no-wait", "--visibility", "public"}, errRepoCreateNoWaitVisibility},
-		{[]string{"web", "--project", "acme", "--no-wait", "--visibility", "private"}, errRepoCreateNoWaitVisibility},
-		{[]string{"web", "--no-wait"}, errRepoCreateWizardNoWait},
-		{[]string{"--no-wait"}, errRepoCreateWizardNoWait},
-	} {
-		f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
-		f.serve()
-		_, _, err := execRepoCreateArgs(t, tc.args...)
-		require.ErrorIs(t, err, tc.want, tc.args)
-		require.Zero(t, f.requestCount(), "refused before any request: %v", tc.args)
-	}
-
-	// --no-wait alone keeps the flag form.
-	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects()}
-	f.serve()
-	_, _, err := execRepoCreateArgs(t, "web", "--project", "acme", "--no-wait")
-	require.NoError(t, err)
-	require.Len(t, f.createBodies, 1)
-}
-
 // The summary follows a revisited answer. Driving the paged form itself:
 // through to the summary, Shift+Tab back to the visibility page, a different
 // choice, forward again — the summary must show what will be created. It used
@@ -1175,9 +1146,9 @@ func TestRepoCreateWizard_SummaryFollowsARevisit(t *testing.T) {
 	t.Parallel()
 	s, err := newRepoCreateState(wizardTestProjects(), "web", "")
 	require.NoError(t, err)
-	s.confirmed = true
+	s.startPaged()
 	form := huh.NewForm(s.projectGroup(false), s.nameGroup(true), s.visibilityGroup(true),
-		s.advancedGroup(true), s.formatGroup(true), s.summaryGroup(true))
+		s.advancedGroup(true), s.formatGroup(true), s.summaryGroup())
 
 	var model huh.Model = form
 	// run executes a command as the program loop would, except that one not
@@ -1299,4 +1270,27 @@ func TestRepoNameIndex_RetriesAfterAFailedLoad(t *testing.T) {
 
 	x.load("p1") // the user comes back to the project
 	require.Eventually(t, func() bool { _, ok := x.lookup("p1", "web"); return ok }, time.Second, 5*time.Millisecond)
+}
+
+// core accepts a visibility change on a provisioning repo, so --no-wait sets
+// the requested visibility straight after the create, and runs the wizard.
+//
+// Not parallel: sets env vars and swaps package-level seams.
+func TestRepoCreate_NoWaitSetsTheVisibility(t *testing.T) {
+	f := &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), createdVisibility: "private"}
+	f.serve()
+	_, _, err := execRepoCreateArgs(t, "web", "--project", "acme", "--no-wait", "--visibility", "public")
+	require.NoError(t, err)
+	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies)
+
+	t.Setenv(interactive.EnvTestTTY, "1")
+	f = &fakeRepoCreateCore{t: t, projects: defaultCreateProjects(), createdVisibility: "private"}
+	f.serve()
+	stubRepoCreatePrompt(t, func(_ *cobra.Command, s *repoCreateState) (bool, error) {
+		s.answers.Visibility = coreapi.SetRepoVisibilityInputBodyVisibilityPublic
+		return true, nil
+	})
+	_, _, err = execRepoCreateArgs(t, "web", "--no-wait")
+	require.NoError(t, err, "the wizard runs with --no-wait")
+	require.Equal(t, []string{`{"visibility":"public"}`}, f.visBodies)
 }

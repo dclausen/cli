@@ -121,13 +121,9 @@ func (r projectRegion) display() string {
 	return fmt.Sprintf("%s (%s)", r.label, r.id)
 }
 
-// projectCreateAnswers is what the wizard collects. It is its own struct so
-// the summary can bind to the answers alone rather than to every listing.
-//
-// The fields are exported on purpose: huh re-runs a DescriptionFunc only when
-// the hashstructure hash of its binding changes, and hashstructure ignores
-// unexported fields, so with unexported ones the summary kept its first render
-// after a Shift+Tab revisit while the create used the new answers.
+// projectCreateAnswers is what the wizard collects. The summary page binds to
+// the summary text rather than to these fields (see summaryBinding), so it
+// follows any change to them.
 type projectCreateAnswers struct {
 	OwnerKey string
 	Name     string
@@ -479,7 +475,7 @@ func (s *projectCreateState) summary() string {
 		{"Region", s.regionDisplay()},
 	}
 	// The row count must not change while the form runs (huh sizes pages up
-	// front; see summaryGroup), so a missing command keeps its row.
+	// front; see createWizard.summaryPage), so a missing command keeps its row.
 	rows = append(rows, wizardRow{"Command", cmp.Or(s.command(), "(none: "+s.owner().noFlagReason()+")")})
 	return wizardRows(rows, wizardLabelWidth("Command")+2)
 }
@@ -587,7 +583,6 @@ func currentFolderName(ctx context.Context) string {
 // back through earlier answers and the region follows the owner; in
 // accessible mode, as one form per stage (see createWizard.runStages).
 func runProjectCreateForms(cmd *cobra.Command, s *projectCreateState) (bool, error) {
-	s.confirmed = true
 	if IsAccessibleMode() {
 		return s.runStages(cmd,
 			// Applied once the owner stage has run (a no-op after the
@@ -595,11 +590,11 @@ func runProjectCreateForms(cmd *cobra.Command, s *projectCreateState) (bool, err
 			func() { s.setOwner(s.pickedOwner) },
 			func() []*huh.Group { return []*huh.Group{s.ownerGroup(true)} },
 			func() []*huh.Group { return []*huh.Group{s.nameGroup(false), s.regionGroup(false)} },
-			func() []*huh.Group { return []*huh.Group{s.summaryGroup(false)} },
+			func() []*huh.Group { return []*huh.Group{s.summaryGroup()} },
 		)
 	}
 	s.startPaged()
-	return s.runForm(cmd, s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
+	return s.runForm(cmd, s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup())
 }
 
 // ownerGroup offers the owners. In accessible mode huh drops a select's
@@ -737,11 +732,10 @@ func (s *projectCreateState) regionGroup(dynamic bool) *huh.Group {
 	return s.regionGrp
 }
 
-// summaryGroup shows what will be created and asks to go ahead. dynamic keeps
-// the summary current as earlier pages are revisited; see
-// createWizard.summaryGroup for why projectCreateAnswers' fields are exported.
-func (s *projectCreateState) summaryGroup(dynamic bool) *huh.Group {
-	return s.createWizard.summaryGroup(s.summary, &s.answers, dynamic, "Create this project?", "")
+// summaryGroup shows what will be created and asks to go ahead (see
+// createWizard.summaryPage). In the paged form it follows revisited answers.
+func (s *projectCreateState) summaryGroup() *huh.Group {
+	return s.summaryPage(s.summary, "Create this project?", "")
 }
 
 // projectOwnerAccessor routes the owner select through setOwner, so moving the

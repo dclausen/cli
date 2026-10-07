@@ -73,17 +73,6 @@ var errRepoCreateNeedsInput = errors.New("required without an interactive termin
 var errRepoCreateFlagsNeedInput = errors.New("required when create flags are given: " +
 	"entire repo create <name> --project <project> (or, in a terminal and without flags, run 'entire repo create' or 'entire repo create <name>' to be asked)")
 
-// errRepoCreateNoWaitVisibility refuses --visibility with --no-wait: the
-// visibility is set on a ready repository, which --no-wait does not wait
-// for.
-var errRepoCreateNoWaitVisibility = errors.New("--visibility cannot be combined with --no-wait: the visibility is set once the repository is ready. " +
-	"Drop --no-wait, or create with --no-wait and set it later with 'entire repo edit <repo> --visibility <public|private>'")
-
-// errRepoCreateWizardNoWait refuses --no-wait for the wizard, which always
-// sets a visibility.
-var errRepoCreateWizardNoWait = errors.New("--no-wait cannot be used with the wizard, which always sets a visibility once the repository is ready. " +
-	"Drop --no-wait, or use the flag form: entire repo create <name> --project <project> --no-wait")
-
 // repoCreateMissingInput names what is missing ahead of the refusal reason,
 // so `--project acme` alone is not told that --project is required.
 func repoCreateMissingInput(name, projectRef string, reason error) error {
@@ -157,8 +146,9 @@ func isRepoCreateRefusal(err error) bool {
 // every failure from here on is reported with the repository preserved rather
 // than as a failed create — creating again is never the recovery.
 //
-// Visibility is set after the wait so it lands on a provisioned repo; it is
-// never asked for with --no-wait (see errRepoCreateNoWaitVisibility).
+// Visibility is set after the wait, or straight away with --no-wait: core
+// accepts it on a provisioning repo (its records exist once the create
+// returns, and the visibility write does not look at the repo's state).
 func finishRepoCreate(ctx context.Context, cmd *cobra.Command, c *coreapi.Client, req repoCreateRequest, created *coreapi.Repo, opts repoCreateOptions) error {
 	var waitErr error
 	if !opts.noWait {

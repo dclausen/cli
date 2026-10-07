@@ -212,14 +212,13 @@ object.
 --project, --visibility and --object-format are the flag form: give any
 of them and both a name and --project are required.
 
---visibility is set once the repository is ready: public grants
-read-only (pull) access to any authenticated Entire user, private
-restricts it to explicit grantees. Omitted, the server default applies;
-the wizard defaults to private. If setting it fails, the command exits
+--visibility is set once the repository is ready, or straight after
+creation with --no-wait: public grants read-only (pull) access to any
+authenticated Entire user, private restricts it to explicit grantees.
+New repositories are private, so omitting it (or the wizard's default)
+leaves the repository private. If setting it fails, the command exits
 nonzero, keeps the repository and prints the 'entire repo edit' that
-finishes the job. Because it waits for readiness, --visibility cannot be
-combined with --no-wait, and neither can the wizard, which always sets
-one.
+finishes the job.
 
 --wait-timeout must be positive. It bounds project resolution, creation,
 and readiness polling after client setup, including creation with
@@ -275,14 +274,6 @@ and recovery instructions go to stderr.`,
 				}
 				req.visibility = parsed
 			}
-			// A visibility needs a ready repository, which --no-wait does not
-			// wait for. Whether the server takes the change mid-provisioning
-			// is unconfirmed, so the combination is refused up front rather
-			// than left to fail on every run after the repo exists.
-			if noWait && cmd.Flags().Changed(repoCreateFlagVisibility) {
-				cmd.SilenceUsage = true
-				return errRepoCreateNoWaitVisibility
-			}
 			opts := repoCreateOptions{noWait: noWait, waitTimeout: waitTimeout}
 			if req.name == "" || projectRef == "" {
 				// Settled from the command line alone, before any request: a
@@ -301,11 +292,6 @@ and recovery instructions go to stderr.`,
 				}
 				if repoCreateFlagsGiven(cmd) {
 					return repoCreateMissingInput(req.name, projectRef, errRepoCreateFlagsNeedInput)
-				}
-				// The wizard always sets a visibility (private by default),
-				// so --no-wait there is the same refused combination.
-				if noWait {
-					return errRepoCreateWizardNoWait
 				}
 				return runRepoCreateWizard(cmd, req.name, opts)
 			}
@@ -332,7 +318,7 @@ and recovery instructions go to stderr.`,
 	// terminal, so it is the only place they learn it.
 	cmd.Flags().StringVar(&projectRef, projectFlagName, "", "Owning project (by name) (required; omit every flag in a terminal to be asked instead)")
 	cmd.Flags().StringVar(&objectFormat, repoCreateFlagObjectFormat, "", "Git object format for the repository: sha1 or sha256 (defaults to the server default)")
-	cmd.Flags().StringVar(&visibility, repoCreateFlagVisibility, "", "Visibility to set after creation: public or private (defaults to the server default)")
+	cmd.Flags().StringVar(&visibility, repoCreateFlagVisibility, "", "Visibility to set after creation: public or private (new repositories are private)")
 	addJSONFlag(cmd)
 	return cmd
 }

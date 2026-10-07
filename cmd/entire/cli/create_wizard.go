@@ -3,6 +3,7 @@ package cli
 import (
 	"cmp"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"strings"
 	"unicode/utf8"
@@ -37,10 +38,14 @@ type createWizard struct {
 }
 
 // startPaged prepares the paged (non-accessible) form; call it before
-// building the pages.
+// building the pages. The summary's answer starts at Create.
 func (w *createWizard) startPaged() {
 	w.nav = uiform.NewBackNav()
+	w.confirmed = true
 }
+
+// paged reports whether the pages are being built for the paged form.
+func (w *createWizard) paged() bool { return w.nav != nil }
 
 // runForm runs one form and classifies how it ended: a cancelled context is
 // an interruption and comes back as an error wrapping it; a user abort prints
@@ -88,6 +93,9 @@ func (w *createWizard) confirm(render io.Writer) bool {
 // each stage has been answered, to apply answers the stage bound to plain
 // values (see the accessible pickers).
 func (w *createWizard) runStages(cmd *cobra.Command, after func(), stages ...func() []*huh.Group) (bool, error) {
+	// runForm reports a decline after every stage, so the summary's answer
+	// must start at Create, or the first stage would read as cancelled.
+	w.confirmed = true
 	for _, stage := range stages {
 		groups := stage()
 		if len(groups) == 0 {
@@ -103,33 +111,49 @@ func (w *createWizard) runStages(cmd *cobra.Command, after func(), stages ...fun
 	return true, nil
 }
 
-// summaryGroup is the last page: what will be created, then Create or Cancel
+// summaryPage is the last page: what will be created, then Create or Cancel
 // (default Create). summary must keep its line count while the form runs.
 //
-// When dynamic, the text follows revisited answers through a DescriptionFunc
-// bound to binding — which huh re-evaluates only when the binding's hash
-// changes, and hashstructure skips unexported fields, so binding must be a
-// pointer to a struct whose answer fields are EXPORTED, or the summary keeps
-// its first render. The static text is set as well: huh sizes every page from
-// the first render, before a DescriptionFunc has run. The paged form renders
-// a note as markdown, so the text is escaped there; the accessible runner
-// prints it raw. hint, when not empty, is shown under the question (the paged
-// form only: accessible mode drops descriptions).
-func (w *createWizard) summaryGroup(summary func() string, binding any, dynamic bool, question, hint string) *huh.Group {
+// In the paged form the text follows revisited answers through a
+// DescriptionFunc, which huh re-evaluates only when its binding's hash
+// changes. The binding is the summary text itself (summaryBinding), so any
+// change to what the summary shows refreshes it — whatever state it reads.
+// The static text is set as well: huh sizes every page from the first render,
+// before a DescriptionFunc has run. The paged form renders a note as
+// markdown, so the text is escaped there; the accessible runner prints it
+// raw. hint, when not empty, is shown under the question in the paged form
+// (accessible mode drops descriptions).
+func (w *createWizard) summaryPage(summary func() string, question, hint string) *huh.Group {
 	note := huh.NewNote().Description(summary())
-	if dynamic {
+	if w.paged() {
 		escaped := func() string { return escapeNoteMarkdown(summary()) }
-		note.Description(escaped()).DescriptionFunc(escaped, binding)
+		note.Description(escaped()).DescriptionFunc(escaped, summaryBinding{summary})
 	}
 	confirm := huh.NewConfirm().
 		Title(question).
 		Affirmative("Create").
 		Negative("Cancel").
 		Value(&w.confirmed)
-	if dynamic && hint != "" {
+	if w.paged() && hint != "" {
 		confirm.Description(hint)
 	}
 	return huh.NewGroup(note, confirm).Title("Summary")
+}
+
+// summaryBinding is a summary page's DescriptionFunc binding. huh hashes a
+// binding with hashstructure, which skips unexported fields and so cannot see
+// a change in a struct of them — the cause of a summary that kept its first
+// render after Shift+Tab. Hashing the summary text instead (hashstructure
+// calls Hash for a type that has it) means the summary refreshes exactly when
+// what it shows changes.
+type summaryBinding struct{ summary func() string }
+
+// Hash implements hashstructure's Hashable, whose signature carries the
+// error; hashing a string never fails.
+func (b summaryBinding) Hash() (uint64, error) { //nolint:unparam // hashstructure.Hashable's signature
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(b.summary()))
+	return h.Sum64(), nil
 }
 
 // wizardDefaultInput adapts an input to huh's accessible runner, which keeps

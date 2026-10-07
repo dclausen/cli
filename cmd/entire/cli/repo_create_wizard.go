@@ -66,15 +66,9 @@ func (p repoProject) label(width int) string {
 	return fmt.Sprintf("%-*s  (%s)", width, p.name, strings.Join(details, ", "))
 }
 
-// repoCreateAnswers is what the wizard collects. It is its own struct so the
-// summary can bind to the answers alone.
-//
-// Its fields are exported for one reason: the summary's DescriptionFunc binds
-// to this struct, and huh re-renders only when the binding's hash changes.
-// hashstructure skips unexported fields, so with them the hash never changed
-// and the summary kept showing the answers from its first render — a
-// revisited page could change what was created without changing what was
-// confirmed.
+// repoCreateAnswers is what the wizard collects. The summary page binds to
+// the summary text rather than to these fields (see summaryBinding), so it
+// follows any change to them.
 type repoCreateAnswers struct {
 	ProjectID    string
 	Name         string
@@ -245,7 +239,7 @@ func (s *repoCreateState) command() string {
 func (s *repoCreateState) summary() string {
 	req := s.request()
 	// The row count must not change while the form runs: huh sizes pages up
-	// front (see summaryGroup).
+	// front (see createWizard.summaryPage).
 	rows := []wizardRow{
 		{"Project", req.projectName},
 		{"Name", req.name},
@@ -294,9 +288,12 @@ func runRepoCreateWizard(cmd *cobra.Command, name string, opts repoCreateOptions
 		namesCtx, cancelNames := context.WithCancel(ctx)
 		defer cancelNames()
 		s.names = newRepoNameIndex(namesCtx, c)
-		s.names.load(s.answers.ProjectID)
 
 		for {
+			// Every (re)opening loads the chosen project's names: a no-op
+			// once they are in, and a retry when an earlier load failed — a
+			// user with one project never moves the cursor to trigger it.
+			s.names.load(s.answers.ProjectID)
 			ok, err := repoCreatePrompt(cmd, s)
 			if err != nil || !ok {
 				return err
@@ -368,7 +365,6 @@ func (b *repoCreateBudget) phase(ctx context.Context) (context.Context, func()) 
 // back through earlier answers; in accessible mode, as one form per stage
 // (see createWizard.runStages).
 func runRepoCreateForms(cmd *cobra.Command, s *repoCreateState) (bool, error) {
-	s.confirmed = true
 	if IsAccessibleMode() {
 		return s.runStages(cmd,
 			// Applied once the project stage has run (a no-op after the
@@ -384,12 +380,12 @@ func runRepoCreateForms(cmd *cobra.Command, s *repoCreateState) (bool, error) {
 				}
 				return []*huh.Group{s.formatGroup(false)}
 			},
-			func() []*huh.Group { return []*huh.Group{s.summaryGroup(false)} },
+			func() []*huh.Group { return []*huh.Group{s.summaryGroup()} },
 		)
 	}
 	s.startPaged()
 	return s.runForm(cmd, s.projectGroup(false), s.nameGroup(true), s.visibilityGroup(true),
-		s.advancedGroup(true), s.formatGroup(true), s.summaryGroup(true))
+		s.advancedGroup(true), s.formatGroup(true), s.summaryGroup())
 }
 
 // projectGroup offers the projects. In accessible mode huh drops a select's
@@ -606,12 +602,10 @@ func (s *repoCreateState) formatGroup(dynamic bool) *huh.Group {
 	return s.formatGrp
 }
 
-// summaryGroup shows what will be created and asks to go ahead. dynamic keeps
-// the summary current as earlier pages are revisited; see
-// createWizard.summaryGroup for why repoCreateAnswers' fields are exported.
-func (s *repoCreateState) summaryGroup(dynamic bool) *huh.Group {
-	return s.createWizard.summaryGroup(s.summary, &s.answers, dynamic,
-		"Create this repository?", "Shift+Tab goes back to change an answer.")
+// summaryGroup shows what will be created and asks to go ahead (see
+// createWizard.summaryPage). In the paged form it follows revisited answers.
+func (s *repoCreateState) summaryGroup() *huh.Group {
+	return s.summaryPage(s.summary, "Create this repository?", "Shift+Tab goes back to change an answer.")
 }
 
 // repoProjectAccessor routes the project select through setProject, so a
