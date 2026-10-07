@@ -560,6 +560,11 @@ func resolveRepoRemoteURL(cmd *cobra.Command, ref, cluster string, picker placem
 	lister := func(ctx context.Context, c *coreapi.Client) error {
 		ps, err := resolvePullablePlacements(ctx, c, owner, repo)
 		if err != nil {
+			// Only here, not in the shared resolver: the clone command is
+			// advice for `repo clone`, and remote add has a clone to repoint.
+			if moved := movedAddressFrom(err); moved != nil {
+				return moved
+			}
 			return err
 		}
 		placements = ps
@@ -714,9 +719,6 @@ func resolvePullablePlacements(ctx context.Context, c *coreapi.Client, owner, re
 		Repo:     repo,
 	})
 	if err != nil {
-		if moved := movedAddressFrom(err); moved != nil {
-			return nil, moved
-		}
 		return nil, fmt.Errorf("resolve mirror placements: %w", err)
 	}
 	return out.Placements, nil

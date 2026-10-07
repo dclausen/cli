@@ -1462,3 +1462,17 @@ func TestRepoClone_ReleasedAddressThroughTheUnknownClusterFallback(t *testing.T)
 	_, err := resolveCloneURLAgainst(t, srvURL, "wrongcluster")
 	require.EqualError(t, err, testMovedDetail+"\nClone it with: entire repo clone /et/acme/repo")
 }
+
+// The placement resolver is shared by remote, mirror remove/detach and grant
+// routing, so the clone command is added by `repo clone` alone: the shared
+// resolver keeps core's answer as the plain API error it always was.
+func TestResolvePullablePlacements_MovedAnswerStaysCoreError(t *testing.T) {
+	t.Parallel()
+	c, err := coreapi.NewWithBearer(servePlacementsNotFound(t, testMovedDetail), "tok")
+	require.NoError(t, err)
+
+	_, err = resolvePullablePlacements(t.Context(), c, "owner", "repo")
+	require.Error(t, err)
+	require.Equal(t, testMovedDetail, coreapi.APIError(err))
+	require.NotContains(t, err.Error(), "Clone it with")
+}
