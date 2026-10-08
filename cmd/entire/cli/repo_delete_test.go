@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -75,7 +76,6 @@ func twoCopies() []coreapi.NativeMirrorPlacement {
 	eu := nativeMirrorAt(coreapi.NativeMirrorPlacementStatusReady)
 	au := nativeMirrorAt(coreapi.NativeMirrorPlacementStatusSuspended)
 	au.ClusterSlug = "aws-ap-southeast-2"
-	au.DesiredState = coreapi.NativeMirrorPlacementDesiredStateDeleted
 	return []coreapi.NativeMirrorPlacement{eu, au}
 }
 
@@ -91,11 +91,15 @@ func TestRepoDelete_Cascade(t *testing.T) {
 	mirrorPollInterval = time.Millisecond
 	t.Cleanup(func() { mirrorPollInterval = prev })
 
-	run := func(t *testing.T, fake *repoDeleteFake, args ...string) (string, error) {
+	runWithStderr := func(t *testing.T, fake *repoDeleteFake, args ...string) (string, string, error) {
 		t.Helper()
 		srv := httptest.NewServer(fake.handler(t))
 		t.Cleanup(srv.Close)
-		out, _, err := runCoreCmd(t, newRepoDeleteCmd, srv.URL, append([]string{testDeleteULID, "--force"}, args...)...)
+		return runCoreCmd(t, newRepoDeleteCmd, srv.URL, append([]string{testDeleteULID, "--force"}, args...)...)
+	}
+	run := func(t *testing.T, fake *repoDeleteFake, args ...string) (string, error) {
+		t.Helper()
+		out, _, err := runWithStderr(t, fake, args...)
 		return out, err
 	}
 
@@ -137,18 +141,29 @@ func TestRepoDelete_Cascade(t *testing.T) {
 		require.NotContains(t, out, "✓ Deleted")
 	})
 
-	t.Run("a failed copy count degrades the wording only", func(t *testing.T) {
-		fake := &repoDeleteFake{mirrorsStatus: http.StatusInternalServerError, deleteStatus: http.StatusAccepted}
+	t.Run("copies already being removed are not counted", func(t *testing.T) {
+		copies := twoCopies()
+		copies[1].DesiredState = coreapi.NativeMirrorPlacementDesiredStateDeleted
+		fake := &repoDeleteFake{mirrors: copies, deleteStatus: http.StatusAccepted}
 		out, err := run(t, fake, "--cascade")
 		require.NoError(t, err)
-		require.Contains(t, out, "Deleting repo "+testDeleteULID+" and its copies…")
+		require.Contains(t, out, "Deleting repo "+testDeleteULID+" and its copy…")
+	})
+
+	t.Run("a failed copy count degrades the wording only", func(t *testing.T) {
+		fake := &repoDeleteFake{mirrorsStatus: http.StatusNotFound, deleteStatus: http.StatusAccepted}
+		out, err := run(t, fake, "--cascade")
+		require.NoError(t, err)
+		require.Contains(t, out, "Deleting repo "+testDeleteULID+" and any copies…")
 		require.Contains(t, out, "✓ Deleted repo "+testDeleteULID)
 	})
 
-	t.Run("--wait-timeout bounds the wait", func(t *testing.T) {
-		fake := &repoDeleteFake{deleteStatus: http.StatusAccepted, readsBeforeGone: 1 << 30}
-		_, err := run(t, fake, "--cascade", "--wait-timeout", "20ms")
-		require.ErrorContains(t, err, "timed out waiting for the repository to be deleted")
+	t.Run("a timeout says the server is still deleting", func(t *testing.T) {
+		fake := &repoDeleteFake{mirrors: twoCopies(), deleteStatus: http.StatusAccepted, readsBeforeGone: 1 << 30}
+		_, stderr, err := runWithStderr(t, fake, "--cascade", "--wait-timeout", "20ms")
+		require.EqualError(t, err, "stopped waiting after 20ms (--wait-timeout)")
+		require.Contains(t, stderr, "The server is still deleting repo "+testDeleteULID+" and its 2 copies.")
+		require.Contains(t, stderr, "Check with: entire api /api/v1/repos/"+testDeleteULID)
 	})
 
 	t.Run("an already-gone repo is idempotent under --cascade", func(t *testing.T) {
@@ -267,4 +282,32 @@ func TestAwaitRepoDeleted(t *testing.T) {
 		require.ErrorContains(t, err, "timed out waiting for the repository to be deleted")
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
+}
+
+// TestReportUnfinishedDelete pins the hint every early exit prints.
+func TestReportUnfinishedDelete(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an interrupt keeps its silent exit", func(t *testing.T) {
+		t.Parallel()
+		var w strings.Builder
+		interrupted := NewSilentError(context.Canceled)
+		err := reportUnfinishedDelete(&w, "repo web", "entire repo view /et/acme/web", time.Minute, interrupted)
+		require.ErrorIs(t, err, interrupted)
+		require.Equal(t, "The server is still deleting repo web.\nCheck with: entire repo view /et/acme/web\n", w.String())
+	})
+
+	t.Run("a poll failure keeps its error", func(t *testing.T) {
+		t.Parallel()
+		glitch := errors.New("poll repository: connection reset")
+		err := reportUnfinishedDelete(io.Discard, "repo web", "x", time.Minute, glitch)
+		require.ErrorIs(t, err, glitch)
+	})
+}
+
+func TestRepoCheckCommand(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "entire repo view /et/acme/web", repoCheckCommand("/et/acme/web", testDeleteULID))
+	require.Equal(t, "entire api /api/v1/repos/"+testDeleteULID, repoCheckCommand("web", testDeleteULID))
+	require.Equal(t, "entire api /api/v1/repos/"+testDeleteULID, repoCheckCommand(testDeleteULID, testDeleteULID))
 }

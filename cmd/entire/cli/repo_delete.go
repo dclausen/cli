@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -106,27 +107,52 @@ func runRepoDelete(cmd *cobra.Command, ref, project string, opts repoDeleteOptio
 		waitCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
 		defer cancel()
 		if err := awaitRepoDeleted(waitCtx, c, resolved.ID); err != nil {
-			return err
+			return reportUnfinishedDelete(cmd.ErrOrStderr(), label+copies, repoCheckCommand(ref, resolved.ID), opts.waitTimeout, err)
 		}
 		fmt.Fprintf(out, "✓ Deleted %s\n", label)
 		return nil
 	})
 }
 
+// reportUnfinishedDelete explains a wait that ended early.
+func reportUnfinishedDelete(w io.Writer, what, check string, timeout time.Duration, err error) error {
+	fmt.Fprintf(w, "The server is still deleting %s.\nCheck with: %s\n", what, check)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("stopped waiting after %s (--wait-timeout)", timeout)
+	}
+	return err
+}
+
+// repoCheckCommand: `repo view` takes only paths.
+func repoCheckCommand(ref, repoID string) string {
+	if strings.HasPrefix(strings.TrimSpace(ref), "/"+nativeCloneForge+"/") {
+		return "entire repo view " + strings.TrimSpace(ref)
+	}
+	return "entire api /api/v1/repos/" + repoID
+}
+
 // copiesSuffix names the copies a cascade removes, for the prompt and the
 // progress line. Best-effort: the server decides what the cascade removes,
 // so a failed count degrades the wording rather than the command.
+// Copies already being removed are not counted.
 func copiesSuffix(ctx context.Context, c *coreapi.Client, repoID string) string {
 	mirrors, err := listNativeMirrors(ctx, c, repoID)
-	switch {
-	case err != nil:
-		return " and its copies"
-	case len(mirrors) == 0:
+	if err != nil {
+		return " and any copies"
+	}
+	n := 0
+	for _, m := range mirrors {
+		if m.DesiredState != coreapi.NativeMirrorPlacementDesiredStateDeleted {
+			n++
+		}
+	}
+	switch n {
+	case 0:
 		return ""
-	case len(mirrors) == 1:
+	case 1:
 		return " and its copy"
 	default:
-		return fmt.Sprintf(" and its %d copies", len(mirrors))
+		return fmt.Sprintf(" and its %d copies", n)
 	}
 }
 
@@ -150,6 +176,7 @@ func hintCascadeOnMirrorConflict(err error) error {
 // awaitRepoDeleted polls until the repo read answers 404. A 202 hands
 // completion to the server, so every 200 keeps the wait going whatever
 // state it reports: the server removes the row once the last copy is gone.
+// A stale read costs one more poll.
 func awaitRepoDeleted(ctx context.Context, c repoLifecycleGetter, repoID string) error {
 	ticker := time.NewTicker(mirrorPollInterval)
 	defer ticker.Stop()
