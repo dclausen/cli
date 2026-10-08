@@ -81,8 +81,8 @@ func TestBuildPluginDepsRejectsIncompleteInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("failed install left cache or staging entries: %v", entries)
+	if len(entries) != 1 || entries[0].Name() != "deps.lock" {
+		t.Fatalf("failed install left entries other than the persistent lock: %v", entries)
 	}
 }
 

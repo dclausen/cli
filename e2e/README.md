@@ -45,7 +45,10 @@ OpenCode setup shares a version-keyed plugin dependency tree under the system
 temporary directory. A reusable tree must contain a `node_modules` directory
 and regular `package.json` and `package-lock.json` files. Incomplete trees are
 removed and rebuilt in staging; setup validates the staged tree before publishing
-it and validates any competing process's tree before reusing it.
+it and validates any competing process's tree before reusing it. An interprocess
+lock beside the cache serializes validation, cleanup, installation, and publication;
+its lock file is retained so waiters keep using the same lock. Cache installs
+explicitly enable npm lockfile generation even when local npm settings disable it.
 
 ## Control-Plane Tests
 

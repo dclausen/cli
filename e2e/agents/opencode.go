@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 type openCodeAgent struct {
@@ -254,6 +256,22 @@ func validateOpenCodePluginDeps(dir string) error {
 }
 
 func buildPluginDepsAt(version, dir string, install func(string) error) (string, error) {
+	// Keep the lock outside the replaceable tree, and leave its file in place:
+	// unlinking it could let waiters lock different inodes for the same cache.
+	lock := flock.New(dir + ".lock")
+	ctx, cancel := context.WithTimeout(context.Background(), openCodeDepsBudget)
+	defer cancel()
+	locked, err := lock.TryLockContext(ctx, 50*time.Millisecond)
+	if err != nil {
+		return "", fmt.Errorf("lock plugin deps: %w", err)
+	}
+	if !locked {
+		return "", errors.New("timed out locking plugin deps")
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	// Validate only after acquiring the interprocess lock: otherwise a stale
+	// invalid verdict could delete a tree another process has just published.
 	if err := validateOpenCodePluginDeps(dir); err == nil {
 		return dir, nil
 	}
@@ -264,9 +282,8 @@ func buildPluginDepsAt(version, dir string, install func(string) error) (string,
 	}
 
 	// Built in a staging directory and renamed into place, so a reader never
-	// sees a half-installed tree. Bootstrap normally wins this race and the test
-	// process takes the validation above; if bootstrap was skipped, a loser here
-	// adopts the winner's tree rather than failing.
+	// sees a half-installed tree. Cooperating builders are serialized by the
+	// lock; the rename fallback also handles trees published by older binaries.
 	staging, err := os.MkdirTemp(filepath.Dir(dir), "entire-e2e-opencode-deps-*")
 	if err != nil {
 		return "", fmt.Errorf("create staging dir: %w", err)
@@ -302,7 +319,7 @@ func installOpenCodePluginDeps(dir string) error {
 	// The npm CLI, deliberately: opencode installs the same tree with
 	// @npmcli/arborist in-process, which measured 5m00s against npm's 3s for an
 	// identical result. Using npm here is the point of doing it ourselves.
-	cmd := exec.CommandContext(ctx, "npm", "install", "--no-audit", "--no-fund", "--loglevel=error")
+	cmd := exec.CommandContext(ctx, "npm", "install", "--package-lock=true", "--no-audit", "--no-fund", "--loglevel=error")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("npm install: %w\n%s", err, out)
