@@ -425,7 +425,7 @@ func TestProjectCreate_WizardCancelledCreatesNothing(t *testing.T) {
 func TestProjectCreateState_DeclinedSummary(t *testing.T) {
 	t.Parallel()
 	var w bytes.Buffer
-	s := &projectCreateState{confirmed: true}
+	s := &projectCreateState{createWizard: createWizard{action: projectCreateCancelled, confirmed: true}}
 	assert.True(t, s.confirm(&w))
 	assert.Empty(t, w.String())
 	s.confirmed = false
@@ -754,51 +754,10 @@ func TestProjectCreateWizard_SummaryFollowsARevisit(t *testing.T) {
 	t.Parallel()
 	s, err := newProjectCreateState(wizardTestData(), "gadgets", "") // free: "widgets" is Acme's
 	require.NoError(t, err)
-	s.confirmed = true
-	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
+	s.startPaged()
+	form := huh.NewForm(s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup())
 
-	var model huh.Model = form
-	// run executes a command as the program loop would, except that the
-	// cursor-blink timer is dropped: it re-arms forever and nothing here
-	// depends on it. The cap sits between the spinner's tick (100ms, which
-	// stops re-arming once the region options load) and the blink (530ms),
-	// leaving real commands, which answer at once, ample room on a loaded CI
-	// runner; at 20ms the region options load was dropped there.
-	const blinkCutoff = 250 * time.Millisecond
-	run := func(cmd tea.Cmd) tea.Msg {
-		out := make(chan tea.Msg, 1)
-		go func() { out <- cmd() }()
-		select {
-		case msg := <-out:
-			return msg
-		case <-time.After(blinkCutoff):
-			return nil
-		}
-	}
-	send := func(msgs ...tea.Msg) {
-		for _, msg := range msgs {
-			var cmd tea.Cmd
-			model, cmd = model.Update(msg)
-			// Run the commands the form asks for (focus moves, page changes,
-			// the region options load) until none is left.
-			for steps, queue := 0, []tea.Cmd{cmd}; len(queue) > 0 && steps < 200; steps++ {
-				next := queue[0]
-				queue = queue[1:]
-				if next == nil {
-					continue
-				}
-				switch m := run(next).(type) {
-				case tea.BatchMsg:
-					queue = append(queue, m...)
-				case nil:
-				default:
-					var more tea.Cmd
-					model, more = model.Update(m)
-					queue = append(queue, more)
-				}
-			}
-		}
-	}
+	send, run := driveForm(form)
 	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
 	send(tea.WindowSizeMsg{Width: 120, Height: 40}, run(form.Init()))
 	send(enter, enter, enter) // owner (personal), name, region (the owner's: us)

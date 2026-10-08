@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"charm.land/huh/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
@@ -153,13 +151,9 @@ func (r projectRegion) display() string {
 	return fmt.Sprintf("%s (%s)", r.label, r.id)
 }
 
-// projectCreateAnswers is what the wizard collects. It is its own struct so
-// the summary can bind to the answers alone rather than to every listing.
-//
-// The fields are exported on purpose: huh re-runs a DescriptionFunc only when
-// the hashstructure hash of its binding changes, and hashstructure ignores
-// unexported fields, so with unexported ones the summary kept its first render
-// after a Shift+Tab revisit while the create used the new answers.
+// projectCreateAnswers is what the wizard collects. The summary page binds to
+// the summary text rather than to these fields (see summaryBinding), so it
+// follows any change to them.
 type projectCreateAnswers struct {
 	OwnerKey string
 	Name     string
@@ -169,6 +163,9 @@ type projectCreateAnswers struct {
 // projectCreateState is the wizard's model: the choices on offer, the answers
 // so far, and the listing the duplicate-name check reads.
 type projectCreateState struct {
+	// createWizard runs the forms and holds the summary's answer.
+	createWizard
+
 	owners  []projectOwner
 	regions []projectRegion
 	// hiddenOrgs counts the orgs left out because the caller cannot create
@@ -193,12 +190,7 @@ type projectCreateState struct {
 	loginNote string
 	// pickedOwner is the accessible owner select's binding; see ownerGroup.
 	pickedOwner string
-	// nav keeps Shift+Tab working off an invalid page in the paged form;
-	// nil in accessible mode, which has no back key.
-	nav *uiform.BackNav
-
-	answers   projectCreateAnswers
-	confirmed bool
+	answers     projectCreateAnswers
 }
 
 // projectCreateData is everything the wizard loads before it opens.
@@ -385,10 +377,11 @@ func projectRegions(jurisdictions []coreapi.TopologyJurisdiction) []projectRegio
 func newProjectCreateState(d projectCreateData, name, defaultName string) (*projectCreateState, error) {
 	owners, hidden := projectOwners(d.me, d.orgs)
 	s := &projectCreateState{
-		owners:     owners,
-		regions:    projectRegions(d.regions),
-		hiddenOrgs: hidden,
-		existing:   d.projects,
+		owners:       owners,
+		regions:      projectRegions(d.regions),
+		hiddenOrgs:   hidden,
+		existing:     d.projects,
+		createWizard: createWizard{action: projectCreateCancelled},
 	}
 	if len(s.regions) == 0 {
 		return nil, errors.New("no regions available to create a project in")
@@ -533,22 +526,15 @@ func (s *projectCreateState) command() string {
 }
 
 func (s *projectCreateState) summary() string {
-	rows := [][2]string{
+	rows := []wizardRow{
 		{"Name", s.summaryName()},
 		{"Owner", s.ownerDisplay()},
 		{"Region", s.regionDisplay()},
 	}
 	// The row count must not change while the form runs (huh sizes pages up
-	// front; see summaryGroup), so a missing command keeps its row.
-	rows = append(rows, [2]string{"Command", cmp.Or(s.command(), "(none: "+s.owner().noFlagReason()+")")})
-	var b strings.Builder
-	for i, r := range rows {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		fmt.Fprintf(&b, "%-8s %s", r[0], r[1])
-	}
-	return b.String()
+	// front; see createWizard.summaryPage), so a missing command keeps its row.
+	rows = append(rows, wizardRow{"Command", cmp.Or(s.command(), "(none: "+s.owner().noFlagReason()+")")})
+	return wizardRows(rows, wizardLabelWidth("Command")+2)
 }
 
 // request is the create body the answers describe. The region is always sent:
@@ -651,64 +637,21 @@ func currentFolderName(ctx context.Context) string {
 }
 
 // runProjectCreateForms runs the wizard as one paged form, so Shift+Tab walks
-// back through earlier answers and the region follows the owner. huh's
-// accessible runner evaluates neither OptionsFunc nor DescriptionFunc, so there
-// each stage is its own form, built once the answers it depends on are in.
+// back through earlier answers and the region follows the owner; in
+// accessible mode, as one form per stage (see createWizard.runStages).
 func runProjectCreateForms(cmd *cobra.Command, s *projectCreateState) (bool, error) {
-	s.confirmed = true
 	if IsAccessibleMode() {
-		// Each stage is built only when it runs: the summary's text and the
-		// region's starting cursor are read at build time, so building them
-		// up front showed the answers from before the owner was picked.
-		for _, stage := range []func() []*huh.Group{
-			func() []*huh.Group { return []*huh.Group{s.ownerGroup(true)} },
-			func() []*huh.Group { return []*huh.Group{s.nameGroup(false), s.regionGroup(false)} },
-			func() []*huh.Group { return []*huh.Group{s.summaryGroup(false)} },
-		} {
-			if ok, err := runProjectCreateForm(cmd, s, stage()...); !ok || err != nil {
-				return ok, err
-			}
+		return s.runStages(cmd,
 			// Applied once the owner stage has run (a no-op after the
 			// others), so the region default follows it.
-			s.setOwner(s.pickedOwner)
-		}
-		return true, nil
+			func() { s.setOwner(s.pickedOwner) },
+			func() []*huh.Group { return []*huh.Group{s.ownerGroup(true)} },
+			func() []*huh.Group { return []*huh.Group{s.nameGroup(false), s.regionGroup(false)} },
+			func() []*huh.Group { return []*huh.Group{s.summaryGroup()} },
+		)
 	}
-	s.nav = uiform.NewBackNav()
-	return runProjectCreateForm(cmd, s, s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup(true))
-}
-
-// runProjectCreateForm runs one form and classifies how it ended: a cancelled
-// context is an interruption and comes back as an error, a user abort prints
-// the cancellation line where the prompt was, and a declined summary does too.
-func runProjectCreateForm(cmd *cobra.Command, s *projectCreateState, groups ...*huh.Group) (bool, error) {
-	ctx := cmd.Context()
-	if err := ctx.Err(); err != nil {
-		return false, fmt.Errorf("project create: %w", err)
-	}
-	form := NewAccessibleForm(groups...)
-	if s.nav != nil {
-		// WithProgramOptions replaces huh's option list rather than adding
-		// to it; the one default it drops (output) runPromptForm sets anyway.
-		form = form.WithProgramOptions(s.nav.ProgramOption())
-	}
-	render, err := runPromptForm(cmd, form)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, fmt.Errorf("project create: %w", ctxErr)
-	}
-	if err != nil {
-		return false, handleFormCancellation(render, projectCreateCancelled, err)
-	}
-	return s.confirm(render), nil
-}
-
-// confirm turns a declined summary into the cancellation line, written where
-// the prompt was drawn.
-func (s *projectCreateState) confirm(render io.Writer) bool {
-	if !s.confirmed {
-		fmt.Fprintln(render, projectCreateCancelled+" cancelled.")
-	}
-	return s.confirmed
+	s.startPaged()
+	return s.runForm(cmd, s.ownerGroup(false), s.nameGroup(true), s.regionGroup(true), s.summaryGroup())
 }
 
 // ownerGroup offers the owners. In accessible mode huh drops a select's
@@ -765,29 +708,16 @@ const (
 //	✓ Owner  acme (organization)
 //	✓ Name   widgets
 func (s *projectCreateState) decided(stages int) string {
-	lines := []string{"✓ Owner  " + s.ownerDisplay()}
+	rows := []wizardRow{{"✓ Owner", s.ownerDisplay()}}
 	if stages >= projectStageName {
-		lines = append(lines, "✓ Name   "+s.createName())
+		rows = append(rows, wizardRow{"✓ Name", s.createName()})
 	}
-	return strings.Join(lines, "\n")
+	return wizardRows(rows, wizardLabelWidth("✓ Owner", "✓ Name")+2)
 }
 
-// decidedDim sets the recap apart from the heading it sits above.
-var decidedDim = lipgloss.NewStyle().Faint(true)
-
-// pageTitle is a page's heading with the recap, dimmed, above it:
-//
-//	✓ Owner  acme (organization)
-//	✓ Name   widgets
-//	Region
+// pageTitle is a page's heading with the recap above it.
 func (s *projectCreateState) pageTitle(stages int, heading string) string {
-	// Line by line: rendering the block at once pads every line to the
-	// widest one.
-	lines := strings.Split(s.decided(stages), "\n")
-	for i, l := range lines {
-		lines[i] = decidedDim.Render(l)
-	}
-	return strings.Join(append(lines, heading), "\n")
+	return wizardPageTitle(s.decided(stages), heading)
 }
 
 // Page headings, which the recap sits above.
@@ -829,21 +759,10 @@ func (s *projectCreateState) nameGroup(dynamic bool) *huh.Group {
 	return s.nameGrp
 }
 
-// accessibleName adapts the name input to huh's accessible runner, which keeps
-// the current value on an empty answer but validates the empty answer first,
-// so a pre-filled name could not be accepted. It also never shows the value it
-// would keep, so the question names it.
+// accessibleName is the name input for huh's accessible runner (see
+// wizardDefaultInput).
 func (s *projectCreateState) accessibleName(in *huh.Input) *huh.Input {
-	in.Value(&s.answers.Name)
-	current := strings.TrimSpace(s.answers.Name)
-	if current == "" {
-		return in
-	}
-	return in.
-		Title(fmt.Sprintf("Project name (press Enter for %q)", current)).
-		Validate(func(v string) error {
-			return s.validateName(cmp.Or(strings.TrimSpace(v), current))
-		})
+	return wizardDefaultInput(in, &s.answers.Name, "Project name", s.validateName)
 }
 
 // regionGroup offers the jurisdictions. dynamic recaps the owner and name
@@ -872,25 +791,10 @@ func (s *projectCreateState) regionGroup(dynamic bool) *huh.Group {
 	return s.regionGrp
 }
 
-// summaryGroup shows what will be created and asks to go ahead. dynamic keeps
-// the summary current as earlier pages are revisited.
-func (s *projectCreateState) summaryGroup(dynamic bool) *huh.Group {
-	// The static text matters even when dynamic: huh sizes every page from
-	// the first render, before a DescriptionFunc has run, so an empty
-	// description left the page too short and scrolled the Name row out of
-	// view. The row count never changes, so the initial text sizes it right.
-	note := huh.NewNote().Description(s.summary())
-	if dynamic {
-		note.DescriptionFunc(s.summary, &s.answers)
-	}
-	return huh.NewGroup(
-		note,
-		huh.NewConfirm().
-			Title("Create this project?").
-			Affirmative("Create").
-			Negative("Cancel").
-			Value(&s.confirmed),
-	).Title("Summary")
+// summaryGroup shows what will be created and asks to go ahead (see
+// createWizard.summaryPage). In the paged form it follows revisited answers.
+func (s *projectCreateState) summaryGroup() *huh.Group {
+	return s.summaryPage(s.summary, "Create this project?", "")
 }
 
 // projectOwnerAccessor routes the owner select through setOwner, so moving the

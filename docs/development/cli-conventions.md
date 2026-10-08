@@ -274,7 +274,34 @@ the commands are always runnable in every build.
   `entire cluster list` is now the last place a column headed CLUSTER prints a
   slug; settling that is worth doing on its own and is not this change.
   `repo create` takes no cluster at all: a repo's home cluster is the primary
-  cell of its owning project's region.
+  cell of its owning project's region. `create <name> --project <project>`
+  creates without prompting even in a terminal. With at most a name and no
+  create flags, a terminal gets the same kind of paged wizard as `project
+  create` (project → name → visibility → advanced → object format →
+  summary); only the positional name is carried in. Flags mean the flag
+  form: `--project`, `--visibility` or `--object-format` with an input
+  missing is refused before any request, even in a terminal, and so is any
+  missing input without a terminal (`--json` still prompts, as `grant add` does:
+  stdout carries only the result). Projects reporting
+  `canCreateRepository: false` are hidden (one reporting no capabilities is
+  offered and the server decides, as with `project create`'s orgs). The
+  duplicate-name check reads each project's repo
+  names, loaded in the background when the project is picked, since huh
+  validates on the UI loop; a check before they arrive passes, and a 409 at
+  create reopens the wizard on the same answers. Client-side name validation
+  stays minimal — the server owns the rules (COR-1891). The create endpoint
+  takes no visibility, so `--visibility` (and the wizard's answer, default
+  private, which is also what core gives a new repo) is a second call after
+  the create — after the readiness wait, or straight away with `--no-wait`,
+  which core accepts on a provisioning repo — skipped when the create already
+  reports it; its failure keeps the repo and prints the `repo edit` that
+  finishes the job. Output names the repo by its path, `/et/<project>/<repo>`:
+  from the server's full name or `/et/`
+  path, else the resolved project name, else (a ULID `--project` with neither)
+  one project lookup, made only then and only when the output would use it.
+  The ID is shown only when none of those names it, and in the support line. Recovery
+  `repo view` lines name the repo's path and are dropped when there is none,
+  since that verb takes no ULID.
   `protection` (`list`, `add [--server-side-merge-only]`, `remove`) edits a
   native repo's branch-protection rules through core's
   `/repos/{repoId}/branch-protection` resource: `add` and `remove` are one
