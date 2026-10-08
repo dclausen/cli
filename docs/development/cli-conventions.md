@@ -227,7 +227,34 @@ the commands are always runnable in every build.
 - `project`: control-plane project management — `create`, `list`, `get`, `delete`,
   plus `grant` (`add`/`list`/`remove`): project access for a `provider:handle`
   grantee, roles reader/writer/admin; both `add` and `remove` take the grantee
-  optionally (see the grant-subtree notes below)
+  optionally (see the grant-subtree notes below). `create <name> --owner <ref>`
+  creates without prompting even in a terminal, leaving an omitted `--region`
+  to the server's jurisdiction. Without `--owner`, `--owner-type` or
+  `--region` (bare, or with just the name as the name field's starting text),
+  a terminal gets one paged wizard (owner → name → region → summary; Shift+Tab
+  goes back). Those flags always mean the flag form and never seed the wizard,
+  as `dispatch` opens its wizard only with no flags: one given with a missing
+  name or `--owner` is refused before any request, as is a missing input with
+  no terminal, and the refusal spells out both `--owner` forms (a handle needs
+  `--owner-type account`). `--json` and `--context` do not count. The success
+  line names the project by its name (what every command takes) and the
+  region it landed in, never by ULID. The personal account is listed first,
+  then only orgs whose `canCreateProject` is set; the wizard suggests the
+  owner's region (the flag form's default is the server's jurisdiction). The
+  name must have the server's create shape (`projectCreateNameRe`: 3-32
+  lowercase letters, digits or hyphens, and not ULID-shaped; not the
+  case-insensitive lookup pattern `nativeProjectRe`), checked on both paths
+  before any request. The wizard lowercases a typed name and says so on the
+  Name page and in the summary; the flag form refuses uppercase. A folder-name
+  suggestion is normalized or dropped. The wizard also checks the name against
+  the caller's visible projects, fetched once up front because huh validates
+  on the UI loop. Accessible mode runs each stage as its own form, built only when it
+  runs, since huh's accessible runner evaluates neither `OptionsFunc` nor
+  `DescriptionFunc`. The "Using context" notice is shown on the owner page
+  instead of above the form, under the same several-logins rule, and not at
+  all under `ENTIRE_TOKEN`. An owner with no `--owner` spelling but its ULID
+  (an account with no handle, an org sharing its name) gets no command in the
+  summary, which says why
 - `repo`: control-plane repository lifecycle — `create`, `list --project`,
   `view`, `edit`, `delete`, `clone`, plus the `mirror`, `remote`,
   `visibility`, `protection` and `grant` subtrees (`repo grant` mirrors
